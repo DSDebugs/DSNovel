@@ -1,0 +1,45 @@
+name: DSNovel
+options:
+  bundleIdPrefix: com.dsnovel
+  deploymentTarget:
+    iOS: "27.0"
+  xcodeVersion: "27.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.2"
+    IPHONEOS_DEPLOYMENT_TARGET: "27.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    PRODUCT_NAME: DSNovel
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    INFOPLIST_KEY_CFBundleDisplayName: DSNovel
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  DSNovel:
+    type: application
+    platform: iOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: Sources/DSNovel
+        excludes:
+          - "Resources/Info.plist"
+    info:
+      path: Sources/DSNovel/Resources/Info.plist
+      properties:
+        CFBundleName: DSNovel
+        CFBundleDisplayName: DSNovel
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleVersion: "70"
+        CFBundleShortVersionString: "7.0.0"
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIBackgroundModes:
+          - audio
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true

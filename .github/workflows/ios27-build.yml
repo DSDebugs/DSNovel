@@ -1,0 +1,75 @@
+name: Build DSNovel iOS IPA
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Select Latest Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen > /dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode Project (SDK compatibility adaptation)
+        run: |
+          SDK_VER=$(xcodebuild -showsdks | grep iphoneos | tail -n 1 | awk '{print $NF}' | sed 's/iphoneos//')
+          echo "Detected iOS SDK: ${SDK_VER}"
+          if [ -z "${SDK_VER}" ]; then
+            echo "::error::No iOS SDK found on this runner"
+            exit 1
+          fi
+          MAJOR="${SDK_VER%%.*}"
+          if [ "${MAJOR}" -lt 26 ]; then
+            echo "::warning::This app uses Liquid Glass (.glassEffect / GlassEffectContainer), which needs iOS 26 SDK or newer. Build will likely fail."
+          fi
+          # Keep the committed project.yml untouched: generate an adapted copy.
+          sed "s/27\.0/${SDK_VER}/g" project.yml > project.build.yml
+          xcodegen generate --spec project.build.yml
+          rm -f project.build.yml
+
+      - name: Build Unsigned Release App
+        run: |
+          xcodebuild clean build \
+            -project DSNovel.xcodeproj \
+            -scheme DSNovel \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package DSNovel.ipa
+        run: |
+          APP_PATH=$(find build -name "DSNovel.app" -type d | head -n 1)
+          if [ -z "${APP_PATH}" ]; then
+            echo "::error::DSNovel.app not found in build output"
+            exit 1
+          fi
+          rm -rf Payload && mkdir -p Payload
+          cp -R "${APP_PATH}" Payload/
+          rm -f DSNovel-iOS27-v7.0-unsigned.ipa
+          zip -q -r -9 DSNovel-iOS27-v7.0-unsigned.ipa Payload
+          unzip -l DSNovel-iOS27-v7.0-unsigned.ipa | head -20
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSNovel-iOS27-IPA
+          path: DSNovel-iOS27-v7.0-unsigned.ipa
+          retention-days: 30

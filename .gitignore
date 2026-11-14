@@ -1,0 +1,17 @@
+# XcodeGen / xcodebuild generated output
+DSNovel.xcodeproj/
+project.build.yml
+build/
+DerivedData/
+Payload/
+*.ipa
+*.xcarchive
+
+# kxapp / SourceKit-LSP
+buildServer.json
+.build/
+
+# macOS / editor
+.DS_Store
+.vscode/
+*.swp
