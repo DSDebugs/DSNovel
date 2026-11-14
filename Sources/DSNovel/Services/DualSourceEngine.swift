@@ -2,6 +2,13 @@ import Foundation
 import CommonCrypto
 import Observation
 
+/// JSONSerialization yields [[String: Any]]; Any is not Sendable in Swift 6.
+/// Wrap it in an immutable box to cross the task-group boundary. Data is
+/// consumed only inside this MainActor-isolated engine.
+private struct JSONPageBox: @unchecked Sendable {
+    let rows: [[String: Any]]
+}
+
 /// DSNovel v6.0 双核固定书源引擎（番茄畅听 + 喜马拉雅）
 /// 核心升级：
 /// 1. 彻底清除酷我听书 (`kuwo.cn`)，番茄畅听采用 100% 免费有声网关（听友免费有声引擎 `tingyou.fm` + 云图正版有声直链引擎 `open-service.yuntuys.com` + 喜马拉雅纯免费完本库 `paidFilter=true` + 番茄官方元数据 `api.fanqiesdk.com`），绝无任何“请下载酷我音乐”语音提示或收费锁。
@@ -420,7 +427,7 @@ final class DualSourceEngine {
         if totalPage > 1 {
             let token = yuntuToken
             let session = urlSession
-            await withTaskGroup(of: (Int, [[String: Any]]).self) { group in
+            await withTaskGroup(of: (Int, JSONPageBox).self) { group in
                 for page in 2...totalPage {
                     group.addTask {
                         let pageURLStr = "http://open-service.yuntuys.com/api/w_ys/book/getChapters/\(token)/\(bookId)/true/asc?pageSize=200&pageNum=\(page)"
@@ -430,14 +437,14 @@ final class DualSourceEngine {
                               let pDataObj = pJson["data"] as? [String: Any],
                               let pQuery = pDataObj["pageQuery"] as? [String: Any],
                               let pList = pQuery["list"] as? [[String: Any]] else {
-                            return (page, [])
+                            return (page, JSONPageBox(rows: []))
                         }
-                        return (page, pList)
+                        return (page, JSONPageBox(rows: pList))
                     }
                 }
-                for await (page, items) in group {
-                    if !items.isEmpty {
-                        allPages[page] = items
+                for await (page, box) in group {
+                    if !box.rows.isEmpty {
+                        allPages[page] = box.rows
                     }
                 }
             }
@@ -566,7 +573,7 @@ final class DualSourceEngine {
 
         if maxPage > 1 {
             let session = urlSession
-            await withTaskGroup(of: (Int, [[String: Any]]).self) { group in
+            await withTaskGroup(of: (Int, JSONPageBox).self) { group in
                 for p in 2...maxPage {
                     group.addTask {
                         let uStr = "https://mobile.ximalaya.com/mobile/v1/album/track?albumId=\(albumId)&pageId=\(p)&pageSize=200&isAsc=true&device=android"
@@ -575,14 +582,14 @@ final class DualSourceEngine {
                               let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
                               let pObj = pJson["data"] as? [String: Any],
                               let pList = pObj["list"] as? [[String: Any]] else {
-                            return (p, [])
+                            return (p, JSONPageBox(rows: []))
                         }
-                        return (p, pList)
+                        return (p, JSONPageBox(rows: pList))
                     }
                 }
-                for await (p, list) in group {
-                    if !list.isEmpty {
-                        pageMap[p] = list
+                for await (p, box) in group {
+                    if !box.rows.isEmpty {
+                        pageMap[p] = box.rows
                     }
                 }
             }
