@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-// MARK: - 底层双核书源标识（UI 层仅在封面上方角标与“我的-账号登录”中体现区分）
+// MARK: - 底层双核书源标识（UI 层仅在封面上方标签与“我的-账号登录”中体现区分）
 enum CoreSourceID: String, CaseIterable, Codable, Identifiable, Sendable {
     case fanqie = "fanqie"
     case ximalaya = "ximalaya"
@@ -26,7 +26,7 @@ enum CoreSourceID: String, CaseIterable, Codable, Identifiable, Sendable {
     var loginCardSubtitle: String {
         switch self {
         case .fanqie: return "官方免费有声书源 · 登录后可同步番茄偏好"
-        case .ximalaya: return "海量多人有声剧 · 登录后可畅听已购与VIP专辑"
+        case .ximalaya: return "海量多人有声剧 · 配合代理介入可畅听全站专辑"
         }
     }
 
@@ -66,10 +66,11 @@ enum CoreSourceID: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-// MARK: - 书城统一分类频道（双源后台无感融合，无需用户手动切源）
+// MARK: - 书城统一 12 大精选分类（双排六列网格直达）
 struct UnifiedCategory: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
+    let shortTitle: String
     let icon: String
     let fanqieKeyword: String
     let yuntuTypeId: Int
@@ -78,18 +79,18 @@ struct UnifiedCategory: Identifiable, Hashable, Sendable {
     let searchFallbackKeyword: String
 
     static let all: [UnifiedCategory] = [
-        UnifiedCategory(id: "hot", title: "精选热榜", icon: "flame.fill", fanqieKeyword: "凡人修仙传", yuntuTypeId: 125, xmlyCategory: "youshengshu", xmlySubcategory: "", searchFallbackKeyword: "凡人修仙传"),
-        UnifiedCategory(id: "free_best", title: "完本高分", icon: "crown.fill", fanqieKeyword: "剑来", yuntuTypeId: 137, xmlyCategory: "youshengshu", xmlySubcategory: "xianxia", searchFallbackKeyword: "剑来"),
-        UnifiedCategory(id: "urban", title: "都市爽文", icon: "building.2.fill", fanqieKeyword: "都市", yuntuTypeId: 143, xmlyCategory: "youshengshu", xmlySubcategory: "dushi", searchFallbackKeyword: "都市"),
-        UnifiedCategory(id: "fantasy", title: "玄幻修仙", icon: "sparkles", fanqieKeyword: "修仙", yuntuTypeId: 335, xmlyCategory: "youshengshu", xmlySubcategory: "xuanhuan", searchFallbackKeyword: "遮天"),
-        UnifiedCategory(id: "mystery", title: "悬疑盗墓", icon: "moon.stars.fill", fanqieKeyword: "盗墓", yuntuTypeId: 142, xmlyCategory: "youshengshu", xmlySubcategory: "xuanyi", searchFallbackKeyword: "盗墓笔记"),
-        UnifiedCategory(id: "history", title: "历史风云", icon: "shield.lefthalf.filled", fanqieKeyword: "历史", yuntuTypeId: 165, xmlyCategory: "youshengshu", xmlySubcategory: "lishi", searchFallbackKeyword: "明朝那些事儿"),
-        UnifiedCategory(id: "scifi", title: "科幻星际", icon: "globe.asia.australia.fill", fanqieKeyword: "科幻", yuntuTypeId: 139, xmlyCategory: "youshengshu", xmlySubcategory: "kehuan", searchFallbackKeyword: "三体"),
-        UnifiedCategory(id: "romance", title: "言情古风", icon: "heart.fill", fanqieKeyword: "古风", yuntuTypeId: 138, xmlyCategory: "youshengshu", xmlySubcategory: "yanqing", searchFallbackKeyword: "庆余年"),
-        UnifiedCategory(id: "wuxia", title: "武侠江湖", icon: "wind", fanqieKeyword: "武侠", yuntuTypeId: 335, xmlyCategory: "youshengshu", xmlySubcategory: "wuxia", searchFallbackKeyword: "雪中悍刀行"),
-        UnifiedCategory(id: "pingshu", title: "相声评书", icon: "theatermasks.fill", fanqieKeyword: "评书", yuntuTypeId: 168, xmlyCategory: "xiangsheng", xmlySubcategory: "", searchFallbackKeyword: "郭德纲相声"),
-        UnifiedCategory(id: "classic", title: "出版名著", icon: "book.closed.fill", fanqieKeyword: "名著", yuntuTypeId: 131, xmlyCategory: "youshengshu", xmlySubcategory: "wenxue", searchFallbackKeyword: "平凡的世界"),
-        UnifiedCategory(id: "humanities", title: "百家人文", icon: "graduationcap.fill", fanqieKeyword: "文化", yuntuTypeId: 164, xmlyCategory: "lishi", xmlySubcategory: "", searchFallbackKeyword: "百家讲坛")
+        UnifiedCategory(id: "hot", title: "精选热榜", shortTitle: "热播榜", icon: "flame.fill", fanqieKeyword: "凡人修仙传", yuntuTypeId: 125, xmlyCategory: "youshengshu", xmlySubcategory: "", searchFallbackKeyword: "凡人修仙传"),
+        UnifiedCategory(id: "free_best", title: "完本高分", shortTitle: "完本榜", icon: "crown.fill", fanqieKeyword: "剑来", yuntuTypeId: 137, xmlyCategory: "youshengshu", xmlySubcategory: "xianxia", searchFallbackKeyword: "剑来"),
+        UnifiedCategory(id: "urban", title: "都市爽文", shortTitle: "都市", icon: "building.2.fill", fanqieKeyword: "都市", yuntuTypeId: 143, xmlyCategory: "youshengshu", xmlySubcategory: "dushi", searchFallbackKeyword: "都市"),
+        UnifiedCategory(id: "fantasy", title: "玄幻修仙", shortTitle: "玄幻", icon: "sparkles", fanqieKeyword: "修仙", yuntuTypeId: 335, xmlyCategory: "youshengshu", xmlySubcategory: "xuanhuan", searchFallbackKeyword: "遮天"),
+        UnifiedCategory(id: "mystery", title: "悬疑盗墓", shortTitle: "悬疑", icon: "moon.stars.fill", fanqieKeyword: "盗墓", yuntuTypeId: 142, xmlyCategory: "youshengshu", xmlySubcategory: "xuanyi", searchFallbackKeyword: "盗墓笔记"),
+        UnifiedCategory(id: "history", title: "历史风云", shortTitle: "历史", icon: "shield.lefthalf.filled", fanqieKeyword: "历史", yuntuTypeId: 165, xmlyCategory: "youshengshu", xmlySubcategory: "lishi", searchFallbackKeyword: "明朝那些事儿"),
+        UnifiedCategory(id: "scifi", title: "科幻星际", shortTitle: "科幻", icon: "globe.asia.australia.fill", fanqieKeyword: "科幻", yuntuTypeId: 139, xmlyCategory: "youshengshu", xmlySubcategory: "kehuan", searchFallbackKeyword: "三体"),
+        UnifiedCategory(id: "romance", title: "言情古风", shortTitle: "古风", icon: "heart.fill", fanqieKeyword: "古风", yuntuTypeId: 138, xmlyCategory: "youshengshu", xmlySubcategory: "yanqing", searchFallbackKeyword: "庆余年"),
+        UnifiedCategory(id: "wuxia", title: "武侠江湖", shortTitle: "武侠", icon: "wind", fanqieKeyword: "武侠", yuntuTypeId: 335, xmlyCategory: "youshengshu", xmlySubcategory: "wuxia", searchFallbackKeyword: "雪中悍刀行"),
+        UnifiedCategory(id: "pingshu", title: "相声评书", shortTitle: "相声", icon: "theatermasks.fill", fanqieKeyword: "评书", yuntuTypeId: 168, xmlyCategory: "xiangsheng", xmlySubcategory: "", searchFallbackKeyword: "郭德纲相声"),
+        UnifiedCategory(id: "classic", title: "出版名著", shortTitle: "名著", icon: "book.closed.fill", fanqieKeyword: "名著", yuntuTypeId: 131, xmlyCategory: "youshengshu", xmlySubcategory: "wenxue", searchFallbackKeyword: "平凡的世界"),
+        UnifiedCategory(id: "humanities", title: "百家人文", shortTitle: "人文", icon: "graduationcap.fill", fanqieKeyword: "文化", yuntuTypeId: 164, xmlyCategory: "lishi", xmlySubcategory: "", searchFallbackKeyword: "百家讲坛")
     ]
 }
 
@@ -126,7 +127,7 @@ struct BookItem: Identifiable, Codable, Hashable, Sendable {
         self.title = Self.cleanBookTitle(title)
         self.author = author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "金牌演播" : author.trimmingCharacters(in: .whitespacesAndNewlines)
         self.coverURL = Self.normalizeHttps(coverURL)
-        self.intro = intro.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "精品有声剧，支持全量章节秒级加载与跨源无缝续听。" : intro.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.intro = intro.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "精品有声剧，支持全量章节秒级加载与断点续听。" : intro.trimmingCharacters(in: .whitespacesAndNewlines)
         self.categoryName = categoryName
         self.statusText = statusText
         self.totalTracks = totalTracks
@@ -147,13 +148,13 @@ struct BookItem: Identifiable, Codable, Hashable, Sendable {
 
     static func cleanBookTitle(_ raw: String) -> String {
         raw.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&quot;", with: "\u{22}")
+            .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&amp;", with: "&")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
-// MARK: - 统一章节模型（含规整化标题）
+// MARK: - 统一章节模型
 struct EpisodeItem: Identifiable, Codable, Hashable, Sendable {
     var id: String
     var trackId: String
@@ -185,7 +186,7 @@ struct EpisodeItem: Identifiable, Codable, Hashable, Sendable {
     }
 
     var formattedDuration: String {
-        guard durationSeconds > 0 else { return "高清人声" }
+        guard durationSeconds > 0 else { return "高清音质" }
         let m = durationSeconds / 60
         let s = durationSeconds % 60
         return String(format: "%02d:%02d", m, s)
@@ -226,38 +227,32 @@ struct EpisodeItem: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-// MARK: - 书架与历史进度条目
+// MARK: - 书架藏书与最近收听记录条目（含最新收听章节与时间记录）
 struct BookshelfEntry: Identifiable, Codable, Hashable, Sendable {
     var id: String { book.id }
     var book: BookItem
-    var isFavorite: Bool
     var lastEpisodeIndex: Int
     var lastEpisodeTitle: String
     var lastPlaybackTime: Double
     var updatedAt: Date
 
     var formattedProgressTime: String {
-        guard lastPlaybackTime > 1 else { return "刚刚开始" }
+        guard lastPlaybackTime > 1 else { return "00:00" }
         let m = Int(lastPlaybackTime) / 60
         let s = Int(lastPlaybackTime) % 60
         return String(format: "%02d:%02d", m, s)
     }
-}
 
-// MARK: - 音频书签模型
-struct AudioBookmark: Identifiable, Codable, Hashable, Sendable {
-    var id: String
-    var bookId: String
-    var bookTitle: String
-    var episodeIndex: Int
-    var episodeTitle: String
-    var timestamp: Double
-    var note: String
-    var createdAt: Date
+    var formattedDateRecord: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter.string(from: updatedAt)
+    }
 
-    var formattedTimestamp: String {
-        let mins = Int(timestamp) / 60
-        let secs = Int(timestamp) % 60
-        return String(format: "%02d:%02d", mins, secs)
+    var listeningRecordSummary: String {
+        if lastPlaybackTime > 1 || lastEpisodeIndex > 0 {
+            return "\(lastEpisodeTitle) (\(formattedProgressTime)) · \(formattedDateRecord)"
+        }
+        return "最新章节：\(lastEpisodeTitle) · \(formattedDateRecord)"
     }
 }

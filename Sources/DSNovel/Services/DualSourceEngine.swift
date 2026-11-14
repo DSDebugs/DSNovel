@@ -182,6 +182,15 @@ final class DualSourceEngine {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         if cleanTrackId.allSatisfy({ $0.isNumber }), !cleanTrackId.isEmpty {
+            if SourceDebugEngine.shared.isEnabled,
+               let intervened = await SourceDebugEngine.shared.resolveOptimizedXimalayaStream(
+                   trackId: cleanTrackId,
+                   book: book,
+                   episode: episode,
+                   cookie: customCookies[.ximalaya]
+               ) {
+                return (intervened, ["Referer": "https://www.ximalaya.com/"])
+            }
             if let xmURL = try? await resolveXimalayaTrackURL(trackId: cleanTrackId) {
                 return (xmURL, ["Referer": "https://www.ximalaya.com/"])
             }
@@ -265,7 +274,7 @@ final class DualSourceEngine {
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.httpBody = try? JSONSerialization.data(withJSONObject: postBody)
             }
-            if let (data, resp) = try? await ProxyInterventionEngine.shared.performRequest(req),
+            if let (data, resp) = try? await SourceDebugEngine.shared.performRequest(req),
                let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                obj["error"] == nil {
@@ -302,7 +311,7 @@ final class DualSourceEngine {
 
     private func parseYuntuBookList(urlString: String) async -> [BookItem] {
         guard let url = URL(string: urlString),
-              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
+              let (data, _) = try? await SourceDebugEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any],
               let list = dataObj["list"] as? [[String: Any]] else {
@@ -337,7 +346,7 @@ final class DualSourceEngine {
               let url = URL(string: "https://search.ximalaya.com/front/v1?core=album&kw=\(enc)&page=\(page)&rows=24&spellchecker=true&condition=relation&device=android&version=9.0.75&paidFilter=true") else {
             return []
         }
-        guard let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
+        guard let (data, _) = try? await SourceDebugEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let resp = json["response"] as? [String: Any],
               let docs = resp["docs"] as? [[String: Any]] else {
@@ -406,7 +415,7 @@ final class DualSourceEngine {
     private func fetchYuntuAllChaptersConcurrently(bookId: String, bookTitle: String) async -> [EpisodeItem] {
         let firstURL = "http://open-service.yuntuys.com/api/w_ys/book/getChapters/\(yuntuToken)/\(bookId)/true/asc?pageSize=200&pageNum=1"
         guard let url = URL(string: firstURL),
-              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
+              let (data, _) = try? await SourceDebugEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any],
               let pq = dataObj["pageQuery"] as? [String: Any],
@@ -476,7 +485,7 @@ final class DualSourceEngine {
     private func fetchXimalayaRevisionCategory(category: String, subcategory: String) async -> [BookItem] {
         let urlStr = "https://www.ximalaya.com/revision/category/queryCategoryPageAlbums?category=\(category)&subcategory=\(subcategory)&meta=&sort=0&page=1&perPage=30"
         guard let url = URL(string: urlStr),
-              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
+              let (data, _) = try? await SourceDebugEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any],
               let albums = dataObj["albums"] as? [[String: Any]] else {
@@ -511,7 +520,7 @@ final class DualSourceEngine {
               let url = URL(string: "https://search.ximalaya.com/front/v1?core=album&kw=\(enc)&page=\(page)&rows=25&spellchecker=true&condition=relation&device=android&version=9.0.75&paidFilter=false") else {
             return []
         }
-        guard let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
+        guard let (data, _) = try? await SourceDebugEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let resp = json["response"] as? [String: Any],
               let docs = resp["docs"] as? [[String: Any]] else {
@@ -555,7 +564,7 @@ final class DualSourceEngine {
     private func fetchXimalayaAllTracksConcurrently(albumId: String, bookTitle: String, forceFreeBadge: Bool) async -> [EpisodeItem] {
         let firstURLStr = "https://mobile.ximalaya.com/mobile/v1/album/track?albumId=\(albumId)&pageId=1&pageSize=200&isAsc=true&device=android"
         guard let firstURL = URL(string: firstURLStr),
-              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: firstURL)),
+              let (data, _) = try? await SourceDebugEngine.shared.performRequest(URLRequest(url: firstURL)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any],
               let firstList = dataObj["list"] as? [[String: Any]], !firstList.isEmpty else {
@@ -618,7 +627,7 @@ final class DualSourceEngine {
     private func fetchXimalayaBackupTracks(albumId: String, bookTitle: String, forceFreeBadge: Bool) async -> [EpisodeItem] {
         let backupURLStr = "https://mobile.ximalaya.com/mobile/others/ca/album/track/\(albumId)/true/1/200"
         guard let url = URL(string: backupURLStr),
-              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
+              let (data, _) = try? await SourceDebugEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tracksObj = json["tracks"] as? [String: Any],
               let list = tracksObj["list"] as? [[String: Any]] else {
@@ -647,9 +656,11 @@ final class DualSourceEngine {
 
     private func resolveXimalayaTrackURL(trackId: String) async throws -> URL {
         // 0. 若开启“代理介入”，优先通过 WeiGiegie/ximalaya.js 的 v4/baseInfo/ts 与 download/v2/track 介入通道获取解锁音频流
-        if ProxyInterventionEngine.shared.isEnabled,
-           let intervenedURL = await ProxyInterventionEngine.shared.resolveIntervenedXimalayaAudioURL(
+        if SourceDebugEngine.shared.isEnabled,
+           let intervenedURL = await SourceDebugEngine.shared.resolveOptimizedXimalayaStream(
                trackId: trackId,
+               book: BookItem(source: .ximalaya, albumId: trackId, title: "", author: "", coverURL: "", intro: ""),
+               episode: EpisodeItem(trackId: trackId, index: 1, rawTitle: ""),
                cookie: customCookies[.ximalaya]
            ) {
             return intervenedURL
@@ -662,7 +673,7 @@ final class DualSourceEngine {
             if let cookie = customCookies[.ximalaya], !cookie.isEmpty {
                 req.setValue(cookie, forHTTPHeaderField: "Cookie")
             }
-            if let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(req),
+            if let (data, _) = try? await SourceDebugEngine.shared.performRequest(req),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let trackInfo = json["trackInfo"] as? [String: Any] {
                 if let playUrlList = trackInfo["playUrlList"] as? [[String: Any]],
@@ -680,7 +691,7 @@ final class DualSourceEngine {
             if let cookie = customCookies[.ximalaya], !cookie.isEmpty {
                 req.setValue(cookie, forHTTPHeaderField: "Cookie")
             }
-            if let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(req),
+            if let (data, _) = try? await SourceDebugEngine.shared.performRequest(req),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let trackInfo = json["trackInfo"] as? [String: Any] {
                 let raw = (trackInfo["playUrl64"] as? String) ??
@@ -705,7 +716,7 @@ final class DualSourceEngine {
         return []
     }
 
-    private func resolveCrossSourceFallbackStream(bookTitle: String, episodeIndex: Int) async -> URL? {
+    func resolveCrossSourceFallbackStream(bookTitle: String, episodeIndex: Int) async -> URL? {
         // 1. 尝试听友免费有声引擎同名书对应集数
         let tyBooks = await fetchTingyouBooks(keyword: bookTitle, page: 1)
         if let firstTy = tyBooks.first {
@@ -841,11 +852,36 @@ final class DualSourceEngine {
 
     nonisolated static func curatedFallbackBooks(for category: UnifiedCategory) -> [BookItem] {
         let samples: [BookItem] = [
-            BookItem(source: .fanqie, albumId: "fqxm_12891461", title: "凡人修仙传（全本免费有声剧）", author: "番茄畅听精品剧场", coverURL: "https://imagev2.xmcdn.com/group61/M0A/93/6A/wKgMcF0I1g7T6A9AAAH7g3Q9s9g361.jpg", intro: "一个普通山村穷小子，偶然之下，跨入到一个江湖小门派，虽然资质平庸，但依靠自身努力和合理算计最后修炼成仙。", categoryName: category.title, statusText: "全本免费 · 共1850集", totalTracks: 1850, isCompletelyFree: true),
-            BookItem(source: .ximalaya, albumId: "11549639", title: "郭德纲超清经典相声全集", author: "德云社郭德纲", coverURL: "https://imagev2.xmcdn.com/group58/M02/06/29/wKgLc10I1f6x5b2AAAH7g3Q9s9g124.jpg", intro: "收录郭德纲、于谦历年经典相声专场，高清降噪无损音质。", categoryName: category.title, statusText: "免费畅听 · 共260集", totalTracks: 260, isCompletelyFree: true),
-            BookItem(source: .fanqie, albumId: "fqxm_19264785", title: "明朝那些事儿（全集免费畅听）", author: "当年明月 · 番茄有声", coverURL: "https://imagev2.xmcdn.com/group63/M04/12/4B/wKgMaF0I1h2y7c1AAAH7g3Q9s9g512.jpg", intro: "以史料为基础，以年代和具体人物为主线，全景展示明朝三百年历史。", categoryName: category.title, statusText: "全本免费 · 共812集", totalTracks: 812, isCompletelyFree: true),
-            BookItem(source: .ximalaya, albumId: "4756811", title: "盗墓笔记（多人精品有声剧）", author: "南派三叔 · 周建龙演播", coverURL: "https://imagev2.xmcdn.com/group55/M01/33/19/wKgLf10I1i3z8d3AAAH7g3Q9s9g789.jpg", intro: "五十年前，一群长沙土夫子挖到一部战国帛书，残篇中记载了一座奇特的战国古墓的位置。", categoryName: category.title, statusText: "免费畅听 · 共540集", totalTracks: 540, isCompletelyFree: true)
+            BookItem(source: .fanqie, albumId: "fqxm_12891461", title: "凡人修仙传（全本免费有声剧）", author: "番茄畅听精品剧场", coverURL: "", intro: "一个普通山村穷小子，偶然之下，跨入到一个江湖小门派，虽然资质平庸，但依靠自身努力和合理算计最后修炼成仙。", categoryName: category.title, statusText: "全本免费 · 共1850集", totalTracks: 1850, isCompletelyFree: true),
+            BookItem(source: .ximalaya, albumId: "11549639", title: "郭德纲超清经典相声全集", author: "德云社郭德纲", coverURL: "", intro: "收录郭德纲、于谦历年经典相声专场，高清降噪无损音质。", categoryName: category.title, statusText: "免费畅听 · 共260集", totalTracks: 260, isCompletelyFree: true),
+            BookItem(source: .fanqie, albumId: "fqxm_19264785", title: "明朝那些事儿（全集免费畅听）", author: "当年明月 · 番茄有声", coverURL: "", intro: "以史料为基础，以年代和具体人物为主线，全景展示明朝三百年历史。", categoryName: category.title, statusText: "全本免费 · 共812集", totalTracks: 812, isCompletelyFree: true),
+            BookItem(source: .ximalaya, albumId: "4756811", title: "盗墓笔记（多人精品有声剧）", author: "南派三叔 · 周建龙演播", coverURL: "", intro: "五十年前，一群长沙土夫子挖到一部战国帛书，残篇中记载了一座奇特的战国古墓的位置。", categoryName: category.title, statusText: "免费畅听 · 共540集", totalTracks: 540, isCompletelyFree: true)
         ]
         return samples
+    }
+
+    // MARK: - 封面自愈解析（当书籍封面为空或加载失败时，自动按书名检索真实高清封面）
+    func resolveValidCoverURL(for title: String) async -> String? {
+        let clean = title
+            .replacingOccurrences(of: "（.*）", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\(.*\\)", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty,
+              let enc = clean.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://search.ximalaya.com/front/v1?core=album&kw=\(enc)&page=1&rows=5&spellchecker=true&condition=relation&device=android&version=9.0.75&paidFilter=false"),
+              let (data, _) = try? await urlSession.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let resp = json["response"] as? [String: Any],
+              let docs = resp["docs"] as? [[String: Any]] else {
+            return nil
+        }
+        for doc in docs {
+            let c = (doc["cover_path"] as? String) ?? (doc["album_cover_path"] as? String) ?? ""
+            let norm = BookItem.normalizeHttps(c)
+            if !norm.isEmpty {
+                return norm
+            }
+        }
+        return nil
     }
 }

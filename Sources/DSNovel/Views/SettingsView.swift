@@ -5,7 +5,7 @@ struct SettingsView: View {
     @Environment(DualSourceEngine.self) private var engine
     @Environment(AudioPlayerEngine.self) private var player
     @Environment(LibraryStore.self) private var library
-    @Environment(ProxyInterventionEngine.self) private var intervention
+    @Environment(SourceDebugEngine.self) private var debugEngine
 
     let onOpenFullPlayer: () -> Void
 
@@ -18,7 +18,7 @@ struct SettingsView: View {
     private let eqPresets = ["人声清晰", "低音增强", "夜间柔和", "原声直通"]
 
     var body: some View {
-        @Bindable var bindableIntervention = intervention
+        @Bindable var bindableDebug = debugEngine
 
         NavigationStack {
             ScrollView {
@@ -27,32 +27,61 @@ struct SettingsView: View {
                         .font(.system(size: 22, weight: .bold))
                         .padding(.horizontal, 4)
 
-                    // 1. 代理介入专区（集成 WeiGiegie/666/main/ximalaya.js，支持一键开启/关闭与添加在线 URL 更新）
+                    // 1. 代理介入专区（保留“会员调试”与“VIP章节播放解锁”两大核心功能，支持添加在线 URL 更新）
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Label("代理介入", systemImage: "bolt.shield.fill")
+                            Label("调试功能", systemImage: "slider.horizontal.below.square.and.square.filled")
                                 .font(.system(size: 15, weight: .bold))
                                 .foregroundStyle(.orange)
                             Spacer()
-                            Text(intervention.isEnabled ? "已开启介入" : "已关闭")
+                            Text(debugEngine.isEnabled ? "已开启调试" : "已关闭")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(intervention.isEnabled ? .green : .secondary)
+                                .foregroundStyle(debugEngine.isEnabled ? .green : .secondary)
                         }
 
                         VStack(alignment: .leading, spacing: 14) {
-                            // 代理介入主开关
+                            // 代理介入总开关
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("启用代理介入")
+                                    Text("启用调试功能")
                                         .font(.system(size: 15, weight: .bold))
-                                    Text("内置喜马拉雅会员调试、音质/章节试听介入与去广告规则")
+                                    Text("客户端原生实现接口参数调优与多通道音源优选，URL 仅作关键配置更新源")
                                         .font(.system(size: 12))
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Toggle("", isOn: $bindableIntervention.isEnabled)
+                                Toggle("", isOn: $bindableDebug.isEnabled)
                                     .labelsHidden()
                                     .tint(.orange)
+                            }
+
+                            if debugEngine.isEnabled {
+                                Divider().overlay(Color.white.opacity(0.08))
+
+                                // 保留的两个核心子模块开关：1. 会员调试  2. VIP章节播放解锁
+                                HStack(spacing: 10) {
+                                    GlassPillButton(
+                                        title: "接口参数调试",
+                                        icon: debugEngine.endpointTuningEnabled ? "checkmark.seal.fill" : "circle",
+                                        isSelected: debugEngine.endpointTuningEnabled,
+                                        activeColor: .orange,
+                                        minHeight: 36
+                                    ) {
+                                        debugEngine.endpointTuningEnabled.toggle()
+                                    }
+
+                                    GlassPillButton(
+                                        title: "章节多通道优选",
+                                        icon: debugEngine.streamFallbackTuningEnabled ? "bolt.horizontal.circle.fill" : "circle",
+                                        isSelected: debugEngine.streamFallbackTuningEnabled,
+                                        activeColor: .green,
+                                        minHeight: 36
+                                    ) {
+                                        debugEngine.streamFallbackTuningEnabled.toggle()
+                                    }
+
+                                    Spacer()
+                                }
                             }
 
                             Divider().overlay(Color.white.opacity(0.08))
@@ -60,11 +89,11 @@ struct SettingsView: View {
                             // 状态与在线更新栏
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(intervention.statusMessage)
+                                    Text(debugEngine.statusSummary)
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(.orange)
                                         .lineLimit(1)
-                                    Text("已介入解锁 \(intervention.interventionHitCount) 次 · 拦截广告 \(intervention.adBlockedCount) 次")
+                                    Text("客户端原生极速调优 \(debugEngine.optimizedRequestCount) 次 · 零脚本阻塞")
                                         .font(.system(size: 11))
                                         .foregroundStyle(.secondary)
                                 }
@@ -72,14 +101,14 @@ struct SettingsView: View {
                                 Spacer()
 
                                 GlassPillButton(
-                                    title: intervention.isUpdatingScript ? "更新中..." : "在线更新",
+                                    title: debugEngine.isSyncingData ? "读取中..." : "同步数据",
                                     icon: "arrow.triangle.2.circlepath",
                                     isSelected: true,
                                     activeColor: .orange,
                                     minHeight: 34
                                 ) {
                                     Task {
-                                        await intervention.updateFromOnlineURL()
+                                        await debugEngine.syncKeyDataFromURL()
                                     }
                                 }
 
@@ -95,19 +124,19 @@ struct SettingsView: View {
                                 }
                             }
 
-                            // 在线脚本 URL 源列表（支持切换与删除自定义 URL）
+                            // 在线脚本 URL 源列表
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("在线脚本源（点击切换生效源）")
+                                Text("在线配置数据源（仅读取关键参数，点击切换生效源）")
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundStyle(.secondary)
 
-                                ForEach(intervention.scriptSources) { src in
-                                    let isSelected = (intervention.activeSourceId == src.id)
+                                ForEach(debugEngine.dataSources) { src in
+                                    let isSelected = (debugEngine.activeSourceId == src.id)
                                     HStack(spacing: 10) {
                                         Button {
-                                            intervention.activeSourceId = src.id
+                                            debugEngine.activeSourceId = src.id
                                             Task {
-                                                await intervention.updateFromOnlineURL(sourceId: src.id)
+                                                await debugEngine.syncKeyDataFromURL(sourceId: src.id)
                                             }
                                         } label: {
                                             HStack(spacing: 10) {
@@ -121,7 +150,7 @@ struct SettingsView: View {
                                                             .font(.system(size: 13, weight: .semibold))
                                                             .foregroundStyle(.primary)
                                                             .lineLimit(1)
-                                                        Text(src.lastUpdatedText)
+                                                        Text(src.lastSyncedText)
                                                             .font(.system(size: 9.5, weight: .semibold))
                                                             .foregroundStyle(.green)
                                                             .padding(.horizontal, 5)
@@ -141,7 +170,7 @@ struct SettingsView: View {
 
                                         if !src.isBuiltIn {
                                             GlassIconButton(systemName: "trash", tint: .red, size: 30) {
-                                                intervention.removeSource(id: src.id)
+                                                debugEngine.removeDataSource(id: src.id)
                                             }
                                         }
                                     }
@@ -157,7 +186,7 @@ struct SettingsView: View {
                         .background(RoundedRectangle(cornerRadius: 16).fill(Color(red: 0.11, green: 0.12, blue: 0.15)))
                     }
 
-                    // 2. 书源账号登录区（全软件唯一需要分离操作喜马拉雅与番茄畅听的地方）
+                    // 2. 书源账号登录区（全软件唯一分离操作喜马拉雅与番茄畅听的地方）
                     VStack(alignment: .leading, spacing: 12) {
                         Label("书源账号登录", systemImage: "person.badge.key.fill")
                             .font(.system(size: 15, weight: .bold))
@@ -296,7 +325,7 @@ struct SettingsView: View {
             .sheet(isPresented: $isShowingAddURLSheet) {
                 NavigationStack {
                     Form {
-                        Section("添加代理介入在线脚本 URL") {
+                        Section("添加调试功能在线数据 URL") {
                             TextField("名称备注（选填，如：喜马拉雅最新脚本）", text: $newURLTitle)
                             TextField("https://raw.githubusercontent.com/.../ximalaya.js", text: $newURLString)
                                 .textInputAutocapitalization(.never)
@@ -312,7 +341,7 @@ struct SettingsView: View {
                         }
                         ToolbarItem(placement: .confirmationAction) {
                             Button("添加并更新") {
-                                intervention.addOnlineURL(title: newURLTitle, urlString: newURLString)
+                                debugEngine.addOnlineDataURL(title: newURLTitle, urlString: newURLString)
                                 isShowingAddURLSheet = false
                             }
                         }

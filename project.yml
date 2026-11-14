@@ -28,7 +28,7 @@ targets:
     sources:
       - path: Sources/DSNovel
         excludes:
-          - "Resources/Info.plist"
+          - "Resources/**"
     resources:
       - path: Sources/DSNovel/Resources/Assets.xcassets
       - path: Sources/DSNovel/Resources/Plugins
@@ -38,8 +38,8 @@ targets:
         CFBundleName: DSNovel
         CFBundleDisplayName: DSNovel
         CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
-        CFBundleVersion: "91"
-        CFBundleShortVersionString: "9.1.0"
+        CFBundleVersion: "110"
+        CFBundleShortVersionString: "11.0.0"
         UILaunchScreen:
           UIColorName: ""
         UISupportedInterfaceOrientations:

@@ -1,117 +1,129 @@
 import Foundation
 import Observation
 
+/// DSNovel v10.0 书架与收听历史存储
+/// 核心准则：
+/// 1. `shelfBooks`（我的书籍）：严格仅展示用户主动点击“加入书架”的书籍，不会因单纯播放而自动塞入书架，且不预置失效硬编码假封面书籍。
+/// 2. `recentHistory`（最近收听）：纯收听历史记录，只要播放过即自动记录最新收听章节、播放秒数与收听时间。
+/// 3. 若某本书已在 `shelfBooks` 中，播放时也会同步更新其在书架中的最新收听章节与时间记录。
 @Observable
 @MainActor
 final class LibraryStore {
     static let shared = LibraryStore()
 
-    var bookshelf: [BookshelfEntry] = []
-    var bookmarks: [AudioBookmark] = []
+    var shelfBooks: [BookshelfEntry] = []
+    var recentHistory: [BookshelfEntry] = []
     var searchHistory: [String] = ["凡人修仙传", "剑来", "盗墓笔记", "明朝那些事儿", "三体", "郭德纲相声"]
 
-    private let shelfKey = "dsnovel_v7_bookshelf"
-    private let bookmarkKey = "dsnovel_v7_bookmarks"
-    private let historyKey = "dsnovel_v7_search_history"
+    private let shelfKey = "dsnovel_v10_shelf_books"
+    private let recentKey = "dsnovel_v10_recent_history"
+    private let historyKey = "dsnovel_v10_search_history"
 
     private init() {
         loadAll()
-        if bookshelf.isEmpty {
-            seedStarterShelf()
-        }
     }
 
-    var favoriteEntries: [BookshelfEntry] {
-        bookshelf.filter { $0.isFavorite }
-    }
-
-    var recentEntries: [BookshelfEntry] {
-        bookshelf.sorted { $0.updatedAt > $1.updatedAt }
-    }
-
-    var mostRecentEntry: BookshelfEntry? {
-        recentEntries.first
-    }
-
+    /// 判断是否已主动加入“我的书架”
     func isInBookshelf(_ bookId: String) -> Bool {
-        bookshelf.contains { $0.book.id == bookId && $0.isFavorite }
+        shelfBooks.contains { $0.book.id == bookId }
     }
 
+    /// 获取某本书的收听进度记录（优先查最近收听，其次查书架）
     func entry(for bookId: String) -> BookshelfEntry? {
-        bookshelf.first { $0.book.id == bookId }
+        recentHistory.first(where: { $0.book.id == bookId }) ??
+        shelfBooks.first(where: { $0.book.id == bookId })
     }
 
-    func toggleBookshelf(_ book: BookItem) {
-        if let idx = bookshelf.firstIndex(where: { $0.book.id == book.id }) {
-            bookshelf[idx].isFavorite.toggle()
-            bookshelf[idx].updatedAt = Date()
-            if !bookshelf[idx].isFavorite && bookshelf[idx].lastPlaybackTime <= 0 {
-                bookshelf.remove(at: idx)
-            }
+    /// 主动加入或移出“我的书籍（书架）”
+    func toggleBookshelf(_ book: BookItem, currentEpisodeIndex: Int? = nil, currentEpisodeTitle: String? = nil, currentTime: Double? = nil) {
+        if let idx = shelfBooks.firstIndex(where: { $0.book.id == book.id }) {
+            shelfBooks.remove(at: idx)
         } else {
+            let existingRecord = recentHistory.first(where: { $0.book.id == book.id })
+            let epIdx = currentEpisodeIndex ?? existingRecord?.lastEpisodeIndex ?? 0
+            let epTitle = currentEpisodeTitle ?? existingRecord?.lastEpisodeTitle ?? "第1集"
+            let playTime = currentTime ?? existingRecord?.lastPlaybackTime ?? 0
             let entry = BookshelfEntry(
                 book: book,
-                isFavorite: true,
-                lastEpisodeIndex: 0,
-                lastEpisodeTitle: "第1集",
-                lastPlaybackTime: 0,
+                lastEpisodeIndex: epIdx,
+                lastEpisodeTitle: epTitle,
+                lastPlaybackTime: playTime,
                 updatedAt: Date()
             )
-            bookshelf.insert(entry, at: 0)
+            shelfBooks.insert(entry, at: 0)
         }
         saveShelf()
     }
 
+    /// 从“我的书籍（书架）”中删除指定书籍
     func removeFromBookshelf(_ bookId: String) {
-        bookshelf.removeAll { $0.book.id == bookId }
+        shelfBooks.removeAll { $0.book.id == bookId }
         saveShelf()
     }
 
+    /// 清空“我的书籍（书架）”
+    func clearBookshelf() {
+        shelfBooks.removeAll()
+        saveShelf()
+    }
+
+    /// 从“最近收听”记录中删除单条记录
+    func removeFromRecentHistory(_ bookId: String) {
+        recentHistory.removeAll { $0.book.id == bookId }
+        saveRecent()
+    }
+
+    /// 清空全部“最近收听”记录
+    func clearRecentHistory() {
+        recentHistory.removeAll()
+        saveRecent()
+    }
+
+    /// 播放时更新进度：自动写入 `recentHistory`（最近收听记录），若该书已在 `shelfBooks` 中则同步更新其最新章节与时间戳
     func updateProgress(book: BookItem, episodeIndex: Int, episodeTitle: String, time: Double) {
-        if let idx = bookshelf.firstIndex(where: { $0.book.id == book.id }) {
-            var updated = bookshelf[idx]
-            updated.lastEpisodeIndex = episodeIndex
-            updated.lastEpisodeTitle = episodeTitle
-            updated.lastPlaybackTime = time
-            updated.updatedAt = Date()
-            bookshelf.remove(at: idx)
-            bookshelf.insert(updated, at: 0)
-        } else {
-            let entry = BookshelfEntry(
-                book: book,
-                isFavorite: true,
-                lastEpisodeIndex: episodeIndex,
-                lastEpisodeTitle: episodeTitle,
-                lastPlaybackTime: time,
-                updatedAt: Date()
-            )
-            bookshelf.insert(entry, at: 0)
-        }
-        saveShelf()
-    }
-
-    func addBookmark(book: BookItem, episodeIndex: Int, episodeTitle: String, timestamp: Double) {
-        let bm = AudioBookmark(
-            id: UUID().uuidString,
-            bookId: book.id,
-            bookTitle: book.title,
-            episodeIndex: episodeIndex,
-            episodeTitle: episodeTitle,
-            timestamp: timestamp,
-            note: "\(episodeTitle) · 书签标记",
-            createdAt: Date()
+        let now = Date()
+        let updatedEntry = BookshelfEntry(
+            book: book,
+            lastEpisodeIndex: episodeIndex,
+            lastEpisodeTitle: episodeTitle,
+            lastPlaybackTime: time,
+            updatedAt: now
         )
-        bookmarks.insert(bm, at: 0)
-        saveBookmarks()
+
+        // 1. 更新最近收听记录
+        recentHistory.removeAll { $0.book.id == book.id }
+        recentHistory.insert(updatedEntry, at: 0)
+        if recentHistory.count > 50 {
+            recentHistory = Array(recentHistory.prefix(50))
+        }
+        saveRecent()
+
+        // 2. 若用户已将该书加入书架，则同步更新书架中的最新收听章节与时间记录
+        if let shelfIdx = shelfBooks.firstIndex(where: { $0.book.id == book.id }) {
+            shelfBooks[shelfIdx].book = book
+            shelfBooks[shelfIdx].lastEpisodeIndex = episodeIndex
+            shelfBooks[shelfIdx].lastEpisodeTitle = episodeTitle
+            shelfBooks[shelfIdx].lastPlaybackTime = time
+            shelfBooks[shelfIdx].updatedAt = now
+            saveShelf()
+        }
     }
 
-    func bookmarks(for bookId: String) -> [AudioBookmark] {
-        bookmarks.filter { $0.bookId == bookId }
-    }
+    /// 当封面自愈修复了书籍的真实 coverURL 时，同步更新书架与历史记录中的封面
+    func updateBookCover(bookId: String, newCoverURL: String) {
+        var shelfChanged = false
+        for i in shelfBooks.indices where shelfBooks[i].book.id == bookId {
+            shelfBooks[i].book.coverURL = newCoverURL
+            shelfChanged = true
+        }
+        if shelfChanged { saveShelf() }
 
-    func removeBookmark(_ id: String) {
-        bookmarks.removeAll { $0.id == id }
-        saveBookmarks()
+        var recentChanged = false
+        for i in recentHistory.indices where recentHistory[i].book.id == bookId {
+            recentHistory[i].book.coverURL = newCoverURL
+            recentChanged = true
+        }
+        if recentChanged { saveRecent() }
     }
 
     func recordSearch(_ keyword: String) {
@@ -130,34 +142,26 @@ final class LibraryStore {
         UserDefaults.standard.removeObject(forKey: historyKey)
     }
 
-    func seedStarterShelf() {
-        let samples = DualSourceEngine.curatedFallbackBooks(for: UnifiedCategory.all[0])
-        self.bookshelf = samples.map {
-            BookshelfEntry(book: $0, isFavorite: true, lastEpisodeIndex: 0, lastEpisodeTitle: "第1集", lastPlaybackTime: 0, updatedAt: Date())
-        }
-        saveShelf()
-    }
-
     private func saveShelf() {
-        if let data = try? JSONEncoder().encode(bookshelf) {
+        if let data = try? JSONEncoder().encode(shelfBooks) {
             UserDefaults.standard.set(data, forKey: shelfKey)
         }
     }
 
-    private func saveBookmarks() {
-        if let data = try? JSONEncoder().encode(bookmarks) {
-            UserDefaults.standard.set(data, forKey: bookmarkKey)
+    private func saveRecent() {
+        if let data = try? JSONEncoder().encode(recentHistory) {
+            UserDefaults.standard.set(data, forKey: recentKey)
         }
     }
 
     private func loadAll() {
         if let data = UserDefaults.standard.data(forKey: shelfKey),
            let decoded = try? JSONDecoder().decode([BookshelfEntry].self, from: data) {
-            self.bookshelf = decoded
+            self.shelfBooks = decoded
         }
-        if let data = UserDefaults.standard.data(forKey: bookmarkKey),
-           let decoded = try? JSONDecoder().decode([AudioBookmark].self, from: data) {
-            self.bookmarks = decoded
+        if let data = UserDefaults.standard.data(forKey: recentKey),
+           let decoded = try? JSONDecoder().decode([BookshelfEntry].self, from: data) {
+            self.recentHistory = decoded
         }
         if let hist = UserDefaults.standard.stringArray(forKey: historyKey), !hist.isEmpty {
             self.searchHistory = hist

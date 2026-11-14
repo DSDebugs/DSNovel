@@ -1,8 +1,8 @@
 import SwiftUI
 
-enum ShelfDisplayMode: String, CaseIterable, Identifiable {
-    case favorites = "我的书架"
-    case recent = "最近收听"
+enum ShelfSegmentMode: String, CaseIterable, Identifiable {
+    case myShelf = "我的书籍"
+    case recentRecord = "最近收听"
 
     var id: String { rawValue }
 }
@@ -13,18 +13,11 @@ struct BookshelfView: View {
 
     let onSwitchTab: (MainTab) -> Void
     let onOpenFullPlayer: () -> Void
-    let onOpenPlayerChapters: () -> Void
 
-    @State private var displayMode: ShelfDisplayMode = .favorites
-    @State private var isGridMode: Bool = true
+    @State private var segment: ShelfSegmentMode = .myShelf
+    @State private var isGridMode: Bool = false
+    @State private var isManageMode: Bool = false
     @State private var selectedBookForDetail: BookItem? = nil
-
-    private var activeEntries: [BookshelfEntry] {
-        switch displayMode {
-        case .favorites: return library.favoriteEntries
-        case .recent: return library.recentEntries
-        }
-    }
 
     private let gridColumns = [
         GridItem(.flexible(), spacing: 14),
@@ -35,27 +28,47 @@ struct BookshelfView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // 单层极简液态玻璃顶栏（无冗余书源区分按钮，直达核心视图切换）
+                // 顶部液态玻璃控制栏：严格分离“我的书籍（仅主动加入书架）”与“最近收听（历史记录）”
                 GlassEffectContainer(spacing: 10) {
                     HStack(spacing: 10) {
-                        ForEach(ShelfDisplayMode.allCases) { mode in
+                        ForEach(ShelfSegmentMode.allCases) { mode in
+                            let count = (mode == .myShelf) ? library.shelfBooks.count : library.recentHistory.count
                             GlassPillButton(
-                                title: mode.rawValue,
-                                icon: mode == .favorites ? "books.vertical.fill" : "clock.fill",
-                                isSelected: displayMode == mode,
+                                title: "\(mode.rawValue) (\(count))",
+                                icon: mode == .myShelf ? "books.vertical.fill" : "clock.arrow.circlepath",
+                                isSelected: segment == mode,
                                 activeColor: .orange,
                                 minHeight: 36
                             ) {
                                 withAnimation(.snappy) {
-                                    displayMode = mode
+                                    segment = mode
                                 }
                             }
                         }
 
                         Spacer()
 
-                        GlassIconButton(systemName: "magnifyingglass", size: 36) {
-                            onSwitchTab(.search)
+                        if segment == .myShelf && !library.shelfBooks.isEmpty {
+                            GlassPillButton(
+                                title: isManageMode ? "完成" : "管理",
+                                icon: isManageMode ? "checkmark" : "trash",
+                                isSelected: isManageMode,
+                                activeColor: .red,
+                                minHeight: 34
+                            ) {
+                                withAnimation(.snappy) {
+                                    isManageMode.toggle()
+                                }
+                            }
+                        } else if segment == .recentRecord && !library.recentHistory.isEmpty {
+                            GlassPillButton(
+                                title: "清空记录",
+                                icon: "trash",
+                                isSelected: false,
+                                minHeight: 34
+                            ) {
+                                library.clearRecentHistory()
+                            }
                         }
 
                         GlassIconButton(systemName: isGridMode ? "list.bullet" : "square.grid.3x3.fill", size: 36) {
@@ -71,60 +84,17 @@ struct BookshelfView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
 
-                // 书架主体滚动区（保持 100% 纯净无模糊）
+                // 主体内容区（纯净滚动区）
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        // 顶部“继续收听”英雄衔接卡片（打开 App 一键续播上次进度）
-                        if let recent = library.mostRecentEntry {
-                            continueListeningCard(entry: recent)
-                                .padding(.horizontal, 16)
-                        }
-
-                        if activeEntries.isEmpty {
-                            emptyShelfCard
-                                .padding(.top, 28)
-                                .padding(.horizontal, 16)
-                        } else if isGridMode {
-                            LazyVGrid(columns: gridColumns, spacing: 18) {
-                                ForEach(activeEntries) { entry in
-                                    StandardBookGridCard(
-                                        book: entry.book,
-                                        progressBadge: "第\(entry.lastEpisodeIndex + 1)集",
-                                        onOpenDetail: {
-                                            selectedBookForDetail = entry.book
-                                        },
-                                        onQuickPlay: {
-                                            Task {
-                                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
-                                                onOpenFullPlayer()
-                                            }
-                                        }
-                                    )
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                        } else {
-                            LazyVStack(spacing: 12) {
-                                ForEach(activeEntries) { entry in
-                                    CleanBookRow(
-                                        book: entry.book,
-                                        subtitleOverride: "听到：\(entry.lastEpisodeTitle) · \(entry.formattedProgressTime)",
-                                        onOpenDetail: {
-                                            selectedBookForDetail = entry.book
-                                        },
-                                        onQuickPlay: {
-                                            Task {
-                                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
-                                                onOpenFullPlayer()
-                                            }
-                                        }
-                                    )
-                                }
-                            }
-                            .padding(.horizontal, 16)
+                    VStack(alignment: .leading, spacing: 14) {
+                        switch segment {
+                        case .myShelf:
+                            myShelfSection
+                        case .recentRecord:
+                            recentRecordSection
                         }
                     }
-                    .padding(.top, 12)
+                    .padding(.top, 14)
                     .padding(.bottom, 125)
                 }
             }
@@ -136,93 +106,148 @@ struct BookshelfView: View {
         }
     }
 
-    private func continueListeningCard(entry: BookshelfEntry) -> some View {
-        HStack(spacing: 14) {
-            Button {
-                selectedBookForDetail = entry.book
-            } label: {
-                HStack(spacing: 12) {
-                    BookCoverView(
-                        urlString: entry.book.coverURL,
-                        title: entry.book.title,
-                        source: entry.book.source,
-                        width: 64,
-                        height: 86,
-                        cornerRadius: 10
-                    )
-
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "waveform")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.orange)
-                            Text("上次收听 · 一键续播")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.orange)
+    // MARK: - 1. 我的书籍（仅展示主动加入书架的藏书，含最新收听章节与时间记录及删除功能）
+    @ViewBuilder
+    private var myShelfSection: some View {
+        if library.shelfBooks.isEmpty {
+            emptyStateCard(
+                icon: "books.vertical.circle.fill",
+                title: "我的书架暂无书籍",
+                subtitle: "只有你在书籍详情页或播放页面点击“加入书架”的书籍才会在此展示；收听历史可在上方“最近收听”查看。"
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 30)
+        } else if isGridMode {
+            LazyVGrid(columns: gridColumns, spacing: 18) {
+                ForEach(library.shelfBooks) { entry in
+                    StandardBookGridCard(
+                        book: entry.book,
+                        progressBadge: "第\(entry.lastEpisodeIndex + 1)集",
+                        recordText: "\(entry.lastEpisodeTitle)\n\(entry.formattedDateRecord)",
+                        onDelete: {
+                            library.removeFromBookshelf(entry.book.id)
+                        },
+                        onOpenDetail: {
+                            selectedBookForDetail = entry.book
+                        },
+                        onQuickPlay: {
+                            Task {
+                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
+                                onOpenFullPlayer()
+                            }
                         }
-
-                        Text(entry.book.title)
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-
-                        Text("\(entry.lastEpisodeTitle) · \(entry.formattedProgressTime)")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(ResponsivePressButtonStyle())
-
-            GlassPillButton(
-                title: "续播",
-                icon: "play.fill",
-                isSelected: true,
-                activeColor: .orange,
-                minHeight: 38
-            ) {
-                Task {
-                    await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
-                    onOpenFullPlayer()
+                    )
                 }
             }
+            .padding(.horizontal, 16)
+        } else {
+            LazyVStack(spacing: 12) {
+                ForEach(library.shelfBooks) { entry in
+                    CleanBookRow(
+                        book: entry.book,
+                        subtitleOverride: "最新收听：\(entry.lastEpisodeTitle)（进度 \(entry.formattedProgressTime)）",
+                        timeRecordOverride: "记录时间：\(entry.formattedDateRecord)",
+                        onDelete: {
+                            library.removeFromBookshelf(entry.book.id)
+                        },
+                        onOpenDetail: {
+                            selectedBookForDetail = entry.book
+                        },
+                        onQuickPlay: {
+                            Task {
+                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
+                                onOpenFullPlayer()
+                            }
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, 16)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(red: 0.12, green: 0.13, blue: 0.17))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(Color.orange.opacity(0.28), lineWidth: 0.9)
-                )
-        )
     }
 
-    private var emptyShelfCard: some View {
+    // MARK: - 2. 最近收听（纯历史记录，与我的书籍严格分离）
+    @ViewBuilder
+    private var recentRecordSection: some View {
+        if library.recentHistory.isEmpty {
+            emptyStateCard(
+                icon: "clock.badge.checkmark.fill",
+                title: "暂无最近收听记录",
+                subtitle: "你在书城播放过的任何有声书都会在此自动记录最新收听章节与时间，方便随时回溯续听。"
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 30)
+        } else if isGridMode {
+            LazyVGrid(columns: gridColumns, spacing: 18) {
+                ForEach(library.recentHistory) { entry in
+                    StandardBookGridCard(
+                        book: entry.book,
+                        progressBadge: "第\(entry.lastEpisodeIndex + 1)集",
+                        recordText: "\(entry.lastEpisodeTitle)\n\(entry.formattedDateRecord)",
+                        onDelete: {
+                            library.removeFromRecentHistory(entry.book.id)
+                        },
+                        onOpenDetail: {
+                            selectedBookForDetail = entry.book
+                        },
+                        onQuickPlay: {
+                            Task {
+                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
+                                onOpenFullPlayer()
+                            }
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, 16)
+        } else {
+            LazyVStack(spacing: 12) {
+                ForEach(library.recentHistory) { entry in
+                    CleanBookRow(
+                        book: entry.book,
+                        subtitleOverride: "听到章节：\(entry.lastEpisodeTitle)（进度 \(entry.formattedProgressTime)）",
+                        timeRecordOverride: "收听时间：\(entry.formattedDateRecord)",
+                        onDelete: {
+                            library.removeFromRecentHistory(entry.book.id)
+                        },
+                        onOpenDetail: {
+                            selectedBookForDetail = entry.book
+                        },
+                        onQuickPlay: {
+                            Task {
+                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
+                                onOpenFullPlayer()
+                            }
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private func emptyStateCard(icon: String, title: String, subtitle: String) -> some View {
         VStack(spacing: 16) {
-            Image(systemName: "headphones.circle.fill")
-                .font(.system(size: 52))
+            Image(systemName: icon)
+                .font(.system(size: 50))
                 .foregroundStyle(.orange)
 
-            Text("书架暂无藏书")
+            Text(title)
                 .font(.system(size: 17, weight: .bold))
 
-            Text("去书城或搜索页探索全网有声小说，封面上方自动标注来源，全集目录秒级加载")
+            Text(subtitle)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            HStack(spacing: 12) {
-                GlassPillButton(title: "逛逛书城", icon: "sparkles.rectangle.stack.fill", isSelected: true, activeColor: .orange, minHeight: 40) {
-                    onSwitchTab(.discover)
-                }
-
-                GlassPillButton(title: "导入精选热书", icon: "plus.circle.fill", isSelected: false, minHeight: 40) {
-                    library.seedStarterShelf()
-                }
+            GlassPillButton(
+                title: "前往书城探索",
+                icon: "sparkles.rectangle.stack.fill",
+                isSelected: true,
+                activeColor: .orange,
+                minHeight: 40
+            ) {
+                onSwitchTab(.discover)
             }
         }
         .padding(24)

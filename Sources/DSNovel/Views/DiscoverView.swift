@@ -3,14 +3,22 @@ import SwiftUI
 struct DiscoverView: View {
     @Environment(DualSourceEngine.self) private var engine
     @Environment(AudioPlayerEngine.self) private var player
+    @Environment(LibraryStore.self) private var library
 
-    let onSwitchToSearch: () -> Void
     let onOpenFullPlayer: () -> Void
 
+    @State private var searchQuery: String = ""
+    @State private var isSearchActive: Bool = false
     @State private var selectedBookForDetail: BookItem? = nil
-    @State private var isCategoryGridExpanded: Bool = false
 
-    private let gridColumns = [
+    private let hotKeywords = [
+        "凡人修仙传", "剑来", "庆余年", "盗墓笔记",
+        "雪中悍刀行", "诡秘之主", "大奉打更人", "遮天",
+        "三体", "明朝那些事儿", "郭德纲相声", "单田芳评书"
+    ]
+
+    private let categoryGridColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 6)
+    private let bookGridColumns = [
         GridItem(.flexible(), spacing: 14),
         GridItem(.flexible(), spacing: 14),
         GridItem(.flexible(), spacing: 14)
@@ -19,131 +27,117 @@ struct DiscoverView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // 单层纯净液态玻璃分类导航栏（无需手动切源，后台自动融合喜马拉雅+番茄畅听）
-                GlassEffectContainer(spacing: 8) {
+                // 书城顶部一体化液态玻璃控制舱（上方搜索栏 + 下方 2行×6列 全景分类矩阵）
+                GlassEffectContainer(spacing: 10) {
                     VStack(spacing: 10) {
+                        // 第一层：集成式全网搜索栏
                         HStack(spacing: 8) {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(UnifiedCategory.all) { category in
-                                        GlassPillButton(
-                                            title: category.title,
-                                            icon: category.icon,
-                                            isSelected: engine.activeCategory.id == category.id,
-                                            activeColor: .orange,
-                                            minHeight: 36
-                                        ) {
-                                            isCategoryGridExpanded = false
-                                            Task {
-                                                await engine.loadDiscover(category: category)
-                                            }
+                            HStack(spacing: 8) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.orange)
+
+                                TextField("搜书名、主角、主播（回车或点右侧搜索）", text: $searchQuery)
+                                    .font(.system(size: 14))
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .submitLabel(.search)
+                                    .onSubmit {
+                                        triggerSearch(searchQuery)
+                                    }
+
+                                if !searchQuery.isEmpty || isSearchActive {
+                                    Button {
+                                        exitSearchMode()
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 16))
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 32, height: 32)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(ResponsivePressButtonStyle())
+                                }
+                            }
+                            .padding(.leading, 12)
+                            .padding(.trailing, 4)
+                            .frame(height: 38)
+                            .background(Capsule().fill(Color.white.opacity(0.09)))
+
+                            if isSearchActive && searchQuery.isEmpty {
+                                GlassPillButton(title: "返回书城", isSelected: false, minHeight: 38) {
+                                    exitSearchMode()
+                                }
+                            } else {
+                                GlassPillButton(
+                                    title: "搜索",
+                                    icon: "sparkle.magnifyingglass",
+                                    isSelected: true,
+                                    activeColor: .orange,
+                                    minHeight: 38
+                                ) {
+                                    if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        withAnimation(.snappy) {
+                                            isSearchActive.toggle()
                                         }
+                                    } else {
+                                        triggerSearch(searchQuery)
                                     }
                                 }
-                                .padding(.vertical, 2)
-                            }
-
-                            // 展开全部分类四列面板按钮
-                            GlassIconButton(
-                                systemName: isCategoryGridExpanded ? "chevron.up" : "square.grid.2x2.fill",
-                                tint: isCategoryGridExpanded ? .orange : .primary,
-                                size: 36
-                            ) {
-                                withAnimation(.snappy) {
-                                    isCategoryGridExpanded.toggle()
-                                }
-                            }
-
-                            // 快捷跳转全网搜索按钮
-                            GlassIconButton(systemName: "magnifyingglass", size: 36) {
-                                onSwitchToSearch()
                             }
                         }
 
-                        if isCategoryGridExpanded {
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+                        // 第二层：当未处于搜索结果页时，直接展示美观整齐的 2行×6列 全景分类矩阵（无需左右滑动找分类）
+                        if !isSearchActive {
+                            LazyVGrid(columns: categoryGridColumns, spacing: 7) {
                                 ForEach(UnifiedCategory.all) { category in
-                                    GlassPillButton(
-                                        title: category.title,
-                                        isSelected: engine.activeCategory.id == category.id,
-                                        activeColor: .orange,
-                                        minHeight: 34
-                                    ) {
-                                        withAnimation(.snappy) {
-                                            isCategoryGridExpanded = false
-                                        }
+                                    let isSelected = (engine.activeCategory.id == category.id)
+                                    Button {
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                         Task {
                                             await engine.loadDiscover(category: category)
                                         }
+                                    } label: {
+                                        Text(category.shortTitle)
+                                            .font(.system(size: 12.5, weight: isSelected ? .bold : .medium))
+                                            .foregroundStyle(isSelected ? Color.white : Color.primary.opacity(0.88))
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 30)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                                    .fill(isSelected ? AnyShapeStyle(Color.orange.gradient) : AnyShapeStyle(Color.white.opacity(0.07)))
+                                            )
+                                            .contentShape(Rectangle())
                                     }
+                                    .buttonStyle(ResponsivePressButtonStyle())
                                 }
                             }
-                            .padding(.top, 2)
                         }
                     }
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
+                    .padding(.vertical, 10)
                     .glassEffect(.regular, in: .rect(cornerRadius: 18))
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
 
-                // 书城主体内容滚动区（保持 100% 纯净无模糊，120Hz 顺滑滚动）
+                // 主体内容滚动区（保持 100% 纯净无模糊）
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        // 顶部热播推荐横滑卡片（封面顶部自带书源角标）
-                        if !engine.discoverBooks.isEmpty {
-                            featuredCarouselSection
-                        }
-
-                        // 当前频道标题与快捷刷新
-                        HStack {
-                            Label(engine.activeCategory.title, systemImage: engine.activeCategory.icon)
-                                .font(.system(size: 17, weight: .bold))
-                                .foregroundStyle(.primary)
-
-                            Spacer()
-
-                            GlassPillButton(title: "换一批", icon: "arrow.clockwise", isSelected: false, minHeight: 30) {
-                                Task {
-                                    await engine.loadDiscover(forceRefresh: true)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-
-                        if engine.isDiscoverLoading && engine.discoverBooks.isEmpty {
-                            HStack {
-                                Spacer()
-                                ProgressView("正在同步精选有声书库...")
-                                    .padding(.vertical, 44)
-                                Spacer()
-                            }
-                        } else {
-                            LazyVGrid(columns: gridColumns, spacing: 18) {
-                                ForEach(engine.discoverBooks) { book in
-                                    StandardBookGridCard(
-                                        book: book,
-                                        onOpenDetail: {
-                                            selectedBookForDetail = book
-                                        },
-                                        onQuickPlay: {
-                                            Task {
-                                                await player.quickPlay(book: book)
-                                                onOpenFullPlayer()
-                                            }
-                                        }
-                                    )
-                                }
-                            }
+                    if isSearchActive {
+                        searchContentArea
                             .padding(.horizontal, 16)
-                        }
+                            .padding(.top, 14)
+                            .padding(.bottom, 125)
+                    } else {
+                        bookstoreContentArea
+                            .padding(.top, 12)
+                            .padding(.bottom, 125)
                     }
-                    .padding(.top, 12)
-                    .padding(.bottom, 125)
                 }
                 .refreshable {
-                    await engine.loadDiscover(forceRefresh: true)
+                    if !isSearchActive {
+                        await engine.loadDiscover(forceRefresh: true)
+                    }
                 }
             }
             .background(Color(red: 0.06, green: 0.07, blue: 0.09).ignoresSafeArea())
@@ -159,10 +153,151 @@ struct DiscoverView: View {
         }
     }
 
+    // MARK: - 书城精选浏览区
+    private var bookstoreContentArea: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if !engine.discoverBooks.isEmpty {
+                featuredCarouselSection
+            }
+
+            HStack {
+                Label(engine.activeCategory.title, systemImage: engine.activeCategory.icon)
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                GlassPillButton(title: "换一批", icon: "arrow.clockwise", isSelected: false, minHeight: 30) {
+                    Task {
+                        await engine.loadDiscover(forceRefresh: true)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+
+            if engine.isDiscoverLoading && engine.discoverBooks.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView("正在同步精选有声书库...")
+                        .padding(.vertical, 44)
+                    Spacer()
+                }
+            } else {
+                LazyVGrid(columns: bookGridColumns, spacing: 18) {
+                    ForEach(engine.discoverBooks) { book in
+                        StandardBookGridCard(
+                            book: book,
+                            onOpenDetail: {
+                                selectedBookForDetail = book
+                            },
+                            onQuickPlay: {
+                                Task {
+                                    await player.quickPlay(book: book)
+                                    onOpenFullPlayer()
+                                }
+                            }
+                        )
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    // MARK: - 内嵌搜索结果与热搜面板
+    private var searchContentArea: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if engine.isSearching {
+                HStack {
+                    Spacer()
+                    ProgressView("正在全网检索并聚合可用章节...")
+                        .padding(.vertical, 48)
+                    Spacer()
+                }
+            } else if !engine.searchResults.isEmpty {
+                HStack {
+                    Text("找到 \(engine.searchResults.count) 部匹配有声书")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    GlassPillButton(title: "返回书城分类", icon: "chevron.left", isSelected: false, minHeight: 30) {
+                        exitSearchMode()
+                    }
+                }
+
+                LazyVStack(spacing: 12) {
+                    ForEach(engine.searchResults) { book in
+                        CleanBookRow(
+                            book: book,
+                            onOpenDetail: {
+                                selectedBookForDetail = book
+                            },
+                            onQuickPlay: {
+                                Task {
+                                    await player.quickPlay(book: book)
+                                    onOpenFullPlayer()
+                                }
+                            }
+                        )
+                    }
+                }
+            } else {
+                if let err = engine.searchError {
+                    Text(err)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.orange)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Label("全网热搜有声书（点击即搜）", systemImage: "flame.fill")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        GlassPillButton(title: "返回书城", isSelected: false, minHeight: 28) {
+                            exitSearchMode()
+                        }
+                    }
+
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
+                        ForEach(hotKeywords, id: \.self) { word in
+                            GlassPillButton(title: word, isSelected: false, minHeight: 34) {
+                                searchQuery = word
+                                triggerSearch(word)
+                            }
+                        }
+                    }
+                }
+
+                if !library.searchHistory.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label("搜索历史", systemImage: "clock.arrow.circlepath")
+                                .font(.system(size: 15, weight: .bold))
+                            Spacer()
+                            GlassPillButton(title: "清空历史", icon: "trash", isSelected: false, minHeight: 28) {
+                                library.clearSearchHistory()
+                            }
+                        }
+
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 10)], spacing: 10) {
+                            ForEach(library.searchHistory, id: \.self) { word in
+                                GlassPillButton(title: word, isSelected: false, minHeight: 34) {
+                                    searchQuery = word
+                                    triggerSearch(word)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var featuredCarouselSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("全网热播精选")
+                Text("今日必听热播榜")
                     .font(.system(size: 15, weight: .bold))
                 Spacer()
                 Text("封面上方标注来源 · 点击即听")
@@ -180,6 +315,7 @@ struct DiscoverView: View {
                             } label: {
                                 HStack(spacing: 12) {
                                     BookCoverView(
+                                        bookId: book.id,
                                         urlString: book.coverURL,
                                         title: book.title,
                                         source: book.source,
@@ -234,6 +370,24 @@ struct DiscoverView: View {
                 }
                 .padding(.horizontal, 16)
             }
+        }
+    }
+
+    private func triggerSearch(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        isSearchActive = true
+        guard !trimmed.isEmpty else { return }
+        library.recordSearch(trimmed)
+        Task {
+            await engine.performSearch(keyword: trimmed)
+        }
+    }
+
+    private func exitSearchMode() {
+        searchQuery = ""
+        engine.clearSearchResults()
+        withAnimation(.snappy) {
+            isSearchActive = false
         }
     }
 }

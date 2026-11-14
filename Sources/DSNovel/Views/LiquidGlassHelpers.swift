@@ -74,8 +74,7 @@ extension View {
     }
 }
 
-
-// MARK: - 100% 首次点击响应按钮样式（带轻触缩放与触觉反馈）
+// MARK: - 100% 首次点击响应按钮样式
 struct ResponsivePressButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -85,7 +84,6 @@ struct ResponsivePressButtonStyle: ButtonStyle {
     }
 }
 
-/// 胶囊操作按钮（显式绑定 `.contentShape(Capsule())`，杜绝热区丢失）
 struct GlassPillButton: View {
     let title: String
     var icon: String? = nil
@@ -128,7 +126,6 @@ struct GlassPillButton: View {
     }
 }
 
-/// 44x44pt 标准热区图标按钮
 struct GlassIconButton: View {
     let systemName: String
     var tint: Color = .primary
@@ -153,8 +150,24 @@ struct GlassIconButton: View {
     }
 }
 
-// MARK: - 书籍封面组件（上方醒目来源标签：番茄畅听 / 喜马拉雅）
+// MARK: - 内存级封面缓存与带防盗链请求头加载器（彻底解决书架封面加载失败问题）
+@MainActor
+final class CoverImageMemoryCache {
+    static let shared = CoverImageMemoryCache()
+    private let cache = NSCache<NSString, UIImage>()
+
+    func image(for key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func store(_ image: UIImage, for key: String) {
+        cache.setObject(image, forKey: key as NSString)
+    }
+}
+
+// MARK: - 书籍封面组件（上方醒目来源标签 + 自动防盗链加载与按书名封面自愈）
 struct BookCoverView: View {
+    var bookId: String? = nil
     let urlString: String
     let title: String
     let source: CoreSourceID
@@ -162,6 +175,9 @@ struct BookCoverView: View {
     var width: CGFloat = 104
     var height: CGFloat = 140
     var cornerRadius: CGFloat = 12
+
+    @State private var loadedImage: UIImage? = nil
+    @State private var isFetching: Bool = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -177,24 +193,17 @@ struct BookCoverView: View {
                     )
                 )
 
-            if let url = URL(string: urlString), !urlString.isEmpty {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: width, height: height)
-                            .clipped()
-                    default:
-                        fallbackPlaceholder
-                    }
-                }
+            if let loadedImage {
+                Image(uiImage: loadedImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: width, height: height)
+                    .clipped()
             } else {
                 fallbackPlaceholder
             }
 
-            // 顶部渐变暗角衬托上方来源标签
+            // 顶部暗角衬托来源角标
             LinearGradient(
                 colors: [Color.black.opacity(0.55), Color.clear],
                 startPoint: .top,
@@ -237,6 +246,56 @@ struct BookCoverView: View {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.11), lineWidth: 0.8)
         )
+        .task(id: urlString + "_" + title) {
+            await fetchCoverWithSelfHealing()
+        }
+    }
+
+    private func fetchCoverWithSelfHealing() async {
+        let cacheKey = "\(title)_\(urlString)"
+        if let cached = CoverImageMemoryCache.shared.image(for: cacheKey) {
+            self.loadedImage = cached
+            return
+        }
+        guard !isFetching else { return }
+        isFetching = true
+        defer { isFetching = false }
+
+        // 1. 尝试带 User-Agent / Referer 加载原始封面 URL
+        if let img = await downloadUIImage(from: urlString) {
+            CoverImageMemoryCache.shared.store(img, for: cacheKey)
+            self.loadedImage = img
+            return
+        }
+
+        // 2. 若原始封面 URL 失效（如历史遗留失效链接），自动按书名检索真实有效封面并自愈更新
+        if let repairedURL = await DualSourceEngine.shared.resolveValidCoverURL(for: title),
+           let img = await downloadUIImage(from: repairedURL) {
+            CoverImageMemoryCache.shared.store(img, for: cacheKey)
+            self.loadedImage = img
+            if let bookId {
+                LibraryStore.shared.updateBookCover(bookId: bookId, newCoverURL: repairedURL)
+            }
+        }
+    }
+
+    private func downloadUIImage(from rawURL: String) async -> UIImage? {
+        let norm = BookItem.normalizeHttps(rawURL)
+        guard !norm.isEmpty, let url = URL(string: norm) else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 8
+        req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
+        if norm.contains("xmcdn") || norm.contains("ximalaya") {
+            req.setValue("https://www.ximalaya.com/", forHTTPHeaderField: "Referer")
+        } else if norm.contains("tingyou") || norm.contains("toulaopao") {
+            req.setValue("https://tingyou.fm/", forHTTPHeaderField: "Referer")
+        }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let img = UIImage(data: data) else {
+            return nil
+        }
+        return img
     }
 
     private var fallbackPlaceholder: some View {
@@ -255,18 +314,21 @@ struct BookCoverView: View {
     }
 }
 
-// MARK: - 标准 3 列等高书籍卡片（点击卡片进详情，点击右下角播放键直接秒播）
+// MARK: - 标准 3 列等高书籍卡片（支持可选显示收听时间记录与删除按钮）
 struct StandardBookGridCard: View {
     let book: BookItem
     var progressBadge: String? = nil
+    var recordText: String? = nil
+    var onDelete: (() -> Void)? = nil
     let onOpenDetail: () -> Void
     let onQuickPlay: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomTrailing) {
                 Button(action: onOpenDetail) {
                     BookCoverView(
+                        bookId: book.id,
                         urlString: book.coverURL,
                         title: book.title,
                         source: book.source,
@@ -279,36 +341,59 @@ struct StandardBookGridCard: View {
                 }
                 .buttonStyle(ResponsivePressButtonStyle())
 
-                Button {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    onQuickPlay()
-                } label: {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(book.source.brandColor))
-                        .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
-                        .padding(6)
-                        .contentShape(Circle())
+                HStack(spacing: 6) {
+                    if let onDelete {
+                        Button {
+                            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                            onDelete()
+                        } label: {
+                            Image(systemName: "trash.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 26, height: 26)
+                                .background(Circle().fill(Color.red.opacity(0.88)))
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(ResponsivePressButtonStyle())
+                    }
+
+                    Button {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        onQuickPlay()
+                    } label: {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(book.source.brandColor))
+                            .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(ResponsivePressButtonStyle())
                 }
-                .buttonStyle(ResponsivePressButtonStyle())
+                .padding(6)
             }
 
             Button(action: onOpenDetail) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(book.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(height: 34, alignment: .topLeading)
-
-                    Text(book.author)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .frame(height: 15, alignment: .leading)
+
+                    if let recordText, !recordText.isEmpty {
+                        Text(recordText)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                            .frame(height: 28, alignment: .topLeading)
+                    } else {
+                        Text(book.author)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(height: 15, alignment: .leading)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -319,10 +404,12 @@ struct StandardBookGridCard: View {
     }
 }
 
-// MARK: - 列表区书籍卡片行（封面上方直接标注来源，左侧进详情，右侧直接秒播）
+// MARK: - 列表区书籍卡片行（支持展示最新收听章节时间记录与独立删除按钮）
 struct CleanBookRow: View {
     let book: BookItem
     var subtitleOverride: String? = nil
+    var timeRecordOverride: String? = nil
+    var onDelete: (() -> Void)? = nil
     let onOpenDetail: () -> Void
     let onQuickPlay: () -> Void
 
@@ -331,6 +418,7 @@ struct CleanBookRow: View {
             Button(action: onOpenDetail) {
                 HStack(spacing: 12) {
                     BookCoverView(
+                        bookId: book.id,
                         urlString: book.coverURL,
                         title: book.title,
                         source: book.source,
@@ -352,12 +440,13 @@ struct CleanBookRow: View {
 
                         Text(subtitleOverride ?? book.intro)
                             .font(.system(size: 12))
-                            .foregroundStyle(.secondary.opacity(0.85))
+                            .foregroundStyle(.secondary.opacity(0.88))
                             .lineLimit(2)
 
-                        Text(book.statusText)
+                        Text(timeRecordOverride ?? book.statusText)
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.orange.opacity(0.92))
+                            .foregroundStyle(.orange.opacity(0.95))
+                            .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -365,22 +454,43 @@ struct CleanBookRow: View {
             }
             .buttonStyle(ResponsivePressButtonStyle())
 
-            Button {
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                onQuickPlay()
-            } label: {
-                VStack(spacing: 3) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 30))
-                        .foregroundStyle(book.source.brandColor)
-                    Text("收听")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    onQuickPlay()
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(book.source.brandColor)
+                        Text("收听")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 44, height: 54)
+                    .contentShape(Rectangle())
                 }
-                .frame(width: 48, height: 56)
-                .contentShape(Rectangle())
+                .buttonStyle(ResponsivePressButtonStyle())
+
+                if let onDelete {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                        onDelete()
+                    } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: "trash.circle.fill")
+                                .font(.system(size: 26))
+                                .foregroundStyle(.red.opacity(0.88))
+                            Text("删除")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(width: 42, height: 54)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(ResponsivePressButtonStyle())
+                }
             }
-            .buttonStyle(ResponsivePressButtonStyle())
         }
         .padding(12)
         .background(

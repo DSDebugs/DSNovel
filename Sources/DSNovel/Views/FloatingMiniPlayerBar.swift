@@ -17,6 +17,7 @@ struct FloatingMiniPlayerBar: View {
                     } label: {
                         HStack(spacing: 10) {
                             BookCoverView(
+                                bookId: book.id,
                                 urlString: book.coverURL,
                                 title: book.title,
                                 source: book.source,
