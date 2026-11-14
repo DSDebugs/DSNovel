@@ -10,3 +10,21 @@
    - **书架**：顶部内置“上次收听 · 一键续播”英雄卡片，并支持“我的书架 / 最近收听”切换与宫格/列表视图切换。
    - **书城**：单层 12 大精选频道导航 + 一键展开 4 列全部分类面板 + 今日热播横滑 + 3 列等高封面宫格。
    - **详情与播放器无缝衔接**：进入详情一次性并发加载全本章节并自动定位至上次收听所在的百集区间；底部悬浮迷你播放栏可一键展开全屏封面或直接打开章节目录。
+
+## 打包说明（GitHub Actions）
+
+- 工作流 `.github/workflows/ios27-build.yml` 在 `xcode-27` 托管运行器（macOS 27 / Xcode 27 / iOS 27 SDK）上构建，产出**未签名** `DSNovel-iOS27-v7.0-unsigned.ipa`，作为 Actions artifact 保留 7 天。
+- 未签名 IPA 不能直接装到真机，需用自有 Apple 开发者证书 + 描述文件重签（AltStore / Sideloadly / Xcode）。
+- 本仓库为私有仓库，CI 仅用于构建本仓库自身的软件项目。
+
+### GitHub Actions 合规约束（按官方条款收敛，不做规避）
+
+依据 GitHub《Terms for Additional Products and Features》与 Acceptable Use Policy：托管运行器只能用于「与该仓库关联软件项目的生产、测试、部署或发布」，禁止挖矿、未授权访问、把 Actions 包装成对外服务、CDN/无服务器用途、与项目无关的负载。本工作流据此做了如下限制：
+
+1. 只用官方 Action（`actions/checkout`、`actions/upload-artifact`），不引入第三方 Action、不 `curl` 下载外部二进制、不做外部接口轮询或抓取。
+2. 不设 `schedule` / cron、不监听 fork、不做 matrix 并发扇出、不用自托管运行器。
+3. 单一 job，`concurrency` 串行且取消排队任务，`timeout-minutes: 30`，`permissions: contents: read`。
+4. 私有仓库的 macOS 按 10 倍系数扣减免费分钟数，故只在 `main` 且源码/工程文件变更时触发，其余时间走手动 `workflow_dispatch`。
+5. 不存储任何 Apple 证书或密钥；不对外提供签名/分发服务。
+
+账号侧建议：开启 2FA、验证邮箱、令牌使用最小权限的 fine-grained PAT 并设置有效期、控制 API 调用频率、避免短时间批量建仓/高频推送。这些是**合规**做法；伪装提交来源、多账号轮换、混淆工作流等规避平台风控的做法不在本仓库范围内。
