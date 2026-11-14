@@ -147,7 +147,7 @@ struct BookItem: Identifiable, Codable, Hashable, Sendable {
 
     static func cleanBookTitle(_ raw: String) -> String {
         raw.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&quot;", with: """)
+            .replacingOccurrences(of: "&quot;", with: "\u{22}")
             .replacingOccurrences(of: "&amp;", with: "&")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
