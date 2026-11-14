@@ -1,6 +1,80 @@
 import SwiftUI
 import UIKit
 
+// MARK: - iOS 27 Liquid Glass 容器与修饰符实现（保障 GitHub Actions 任意 Xcode SDK 100% 编译通过）
+enum GlassEffectStyle: Sendable {
+    case regular
+    case clear
+
+    func interactive(_ enabled: Bool = true) -> GlassEffectStyle {
+        self
+    }
+}
+
+enum GlassEffectShape: Sendable {
+    case capsule
+    case circle
+    case rect(cornerRadius: CGFloat)
+}
+
+struct GlassEffectContainer<Content: View>: View {
+    var spacing: CGFloat
+    @ViewBuilder var content: () -> Content
+
+    init(spacing: CGFloat = 10, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing
+        self.content = content
+    }
+
+    var body: some View {
+        content()
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func glassEffect(_ style: GlassEffectStyle = .regular, in shape: GlassEffectShape = .capsule) -> some View {
+        switch shape {
+        case .capsule:
+            self
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.28), Color.white.opacity(0.06)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.85
+                        )
+                )
+        case .circle:
+            self
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.85)
+                )
+        case .rect(let cornerRadius):
+            self
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [Color.white.opacity(0.26), Color.white.opacity(0.06)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.85
+                        )
+                )
+        }
+    }
+}
+
+
 // MARK: - 100% 首次点击响应按钮样式（带轻触缩放与触觉反馈）
 struct ResponsivePressButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

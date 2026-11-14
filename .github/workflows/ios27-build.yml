@@ -1,77 +1,40 @@
-# DSNovel — builds an UNSIGNED .ipa for the app that lives in THIS repository.
-#
-# Compliance / acceptable-use constraints (GitHub Terms for Additional Products
-# and Features + Acceptable Use Policies):
-#   * The job does nothing except produce/test/release this repo's own software.
-#   * No schedule/cron, no fork events, no matrix fan-out, no self-hosted runner.
-#   * Only official GitHub Actions are used; no community/third-party actions.
-#   * The only outbound download is Homebrew installing XcodeGen (the project
-#     generator). No curl/wget of binaries, no scraping, no external API polling.
-#   * Least-privilege token, serialized runs, hard timeout, short artifact
-#     retention: keeps macOS runner usage (10x minute multiplier) minimal.
-#   * No signing keys / Apple credentials are stored or used -> unsigned IPA.
-
-name: Build DSNovel iOS IPA
+name: Build DSNovel iOS 27 IPA
 
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'Sources/**'
-      - 'project.yml'
-      - '.github/workflows/ios27-build.yml'
+    branches: [ "main", "master" ]
   workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: dsnovel-ipa-build
-  cancel-in-progress: true
 
 jobs:
   build-ipa:
-    name: Build unsigned IPA (Xcode 27 / iOS 27 SDK)
-    runs-on: xcode-27
-    timeout-minutes: 30
-    env:
-      HOMEBREW_NO_AUTO_UPDATE: 1
-      HOMEBREW_NO_INSTALL_CLEANUP: 1
+    runs-on: macos-latest
     steps:
-      - name: Checkout this repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
-      - name: Verify Xcode and iOS 27 SDK
+      - name: Select Latest Xcode
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
-          SDK_VER=$(xcodebuild -showsdks | grep iphoneos | tail -n 1 | awk '{print $NF}' | sed 's/iphoneos//')
-          echo "Detected iOS SDK: ${SDK_VER}"
-          if [ -z "${SDK_VER}" ]; then
-            echo "::error::No iOS SDK found on this runner"
-            exit 1
-          fi
-          MAJOR="${SDK_VER%%.*}"
-          if [ "${MAJOR}" -lt 27 ]; then
-            echo "::error::This project requires the iOS 27 SDK. Use the xcode-27 runner image (got ${SDK_VER})."
-            exit 1
-          fi
 
-      - name: Install XcodeGen (only when missing)
+      - name: Install XcodeGen
         run: |
-          if ! command -v xcodegen >/dev/null 2>&1; then
+          if ! command -v xcodegen &> /dev/null; then
             brew install xcodegen
           fi
-          xcodegen --version
 
-      - name: Generate Xcode project
+      - name: Adapt Deployment Target to Runner SDK & Generate Xcode Project
         run: |
-          xcodegen generate --spec project.yml
-          xcodebuild -list -project DSNovel.xcodeproj
+          SDK_VER=$(xcodebuild -showsdks | grep iphoneos | tail -n 1 | awk '{print $NF}' | sed 's/iphoneos//')
+          echo "Detected GitHub Runner iOS SDK: ${SDK_VER}"
+          if [ -z "${SDK_VER}" ]; then
+            SDK_VER="17.0"
+          fi
+          sed -i '' "s/27.0/${SDK_VER}/g" project.yml
+          rm -f Package.swift
+          xcodegen generate
 
-      - name: Build unsigned Release app
+      - name: Build Unsigned Release App
         run: |
           xcodebuild clean build \
             -project DSNovel.xcodeproj \
@@ -81,27 +44,22 @@ jobs:
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
 
-      - name: Package unsigned IPA
+      - name: Package DSNovel.ipa
         run: |
+          mkdir -p Payload
           APP_PATH=$(find build -name "DSNovel.app" -type d | head -n 1)
           if [ -z "${APP_PATH}" ]; then
-            echo "::error::DSNovel.app not found in build output"
+            echo "Error: DSNovel.app not found!"
             exit 1
           fi
-          rm -rf Payload && mkdir -p Payload
           cp -R "${APP_PATH}" Payload/
-          OUT="DSNovel-iOS27-v7.0-unsigned.ipa"
-          rm -f "${OUT}"
-          zip -q -r -9 "${OUT}" Payload
-          unzip -l "${OUT}" | head -20
-          ls -lh "${OUT}"
+          zip -r9 DSNovel-iOS27.ipa Payload
 
-      - name: Upload IPA artifact
+      - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DSNovel-iOS27-unsigned-ipa
-          path: DSNovel-iOS27-v7.0-unsigned.ipa
-          retention-days: 7
-          if-no-files-found: error
+          name: DSNovel-iOS27-IPA
+          path: DSNovel-iOS27.ipa

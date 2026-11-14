@@ -2,13 +2,6 @@ import Foundation
 import CommonCrypto
 import Observation
 
-/// JSONSerialization yields [[String: Any]]; Any is not Sendable in Swift 6.
-/// Wrap it in an immutable box to cross the task-group boundary. Data is
-/// consumed only inside this MainActor-isolated engine.
-private struct JSONPageBox: @unchecked Sendable {
-    let rows: [[String: Any]]
-}
-
 /// DSNovel v6.0 双核固定书源引擎（番茄畅听 + 喜马拉雅）
 /// 核心升级：
 /// 1. 彻底清除酷我听书 (`kuwo.cn`)，番茄畅听采用 100% 免费有声网关（听友免费有声引擎 `tingyou.fm` + 云图正版有声直链引擎 `open-service.yuntuys.com` + 喜马拉雅纯免费完本库 `paidFilter=true` + 番茄官方元数据 `api.fanqiesdk.com`），绝无任何“请下载酷我音乐”语音提示或收费锁。
@@ -272,7 +265,7 @@ final class DualSourceEngine {
                 req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.httpBody = try? JSONSerialization.data(withJSONObject: postBody)
             }
-            if let (data, resp) = try? await QuantumultXEngine.shared.performRequest(req, for: req.url?.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+            if let (data, resp) = try? await ProxyInterventionEngine.shared.performRequest(req),
                let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                obj["error"] == nil {
@@ -309,7 +302,7 @@ final class DualSourceEngine {
 
     private func parseYuntuBookList(urlString: String) async -> [BookItem] {
         guard let url = URL(string: urlString),
-              let (data, _) = try? await QuantumultXEngine.shared.performRequest(URLRequest(url: url), for: url.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any],
               let list = dataObj["list"] as? [[String: Any]] else {
@@ -344,7 +337,7 @@ final class DualSourceEngine {
               let url = URL(string: "https://search.ximalaya.com/front/v1?core=album&kw=\(enc)&page=\(page)&rows=24&spellchecker=true&condition=relation&device=android&version=9.0.75&paidFilter=true") else {
             return []
         }
-        guard let (data, _) = try? await QuantumultXEngine.shared.performRequest(URLRequest(url: url), for: url.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+        guard let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let resp = json["response"] as? [String: Any],
               let docs = resp["docs"] as? [[String: Any]] else {
@@ -413,7 +406,7 @@ final class DualSourceEngine {
     private func fetchYuntuAllChaptersConcurrently(bookId: String, bookTitle: String) async -> [EpisodeItem] {
         let firstURL = "http://open-service.yuntuys.com/api/w_ys/book/getChapters/\(yuntuToken)/\(bookId)/true/asc?pageSize=200&pageNum=1"
         guard let url = URL(string: firstURL),
-              let (data, _) = try? await QuantumultXEngine.shared.performRequest(URLRequest(url: url), for: url.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any],
               let pq = dataObj["pageQuery"] as? [String: Any],
@@ -427,24 +420,25 @@ final class DualSourceEngine {
         if totalPage > 1 {
             let token = yuntuToken
             let session = urlSession
-            await withTaskGroup(of: (Int, JSONPageBox).self) { group in
+            await withTaskGroup(of: (Int, Data?).self) { group in
                 for page in 2...totalPage {
                     group.addTask {
                         let pageURLStr = "http://open-service.yuntuys.com/api/w_ys/book/getChapters/\(token)/\(bookId)/true/asc?pageSize=200&pageNum=\(page)"
                         guard let pURL = URL(string: pageURLStr),
-                              let (pData, _) = try? await session.data(from: pURL),
-                              let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
-                              let pDataObj = pJson["data"] as? [String: Any],
-                              let pQuery = pDataObj["pageQuery"] as? [String: Any],
-                              let pList = pQuery["list"] as? [[String: Any]] else {
-                            return (page, JSONPageBox(rows: []))
+                              let (pData, _) = try? await session.data(from: pURL) else {
+                            return (page, nil)
                         }
-                        return (page, JSONPageBox(rows: pList))
+                        return (page, pData)
                     }
                 }
-                for await (page, box) in group {
-                    if !box.rows.isEmpty {
-                        allPages[page] = box.rows
+                for await (page, maybeData) in group {
+                    if let pData = maybeData,
+                       let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
+                       let pDataObj = pJson["data"] as? [String: Any],
+                       let pQuery = pDataObj["pageQuery"] as? [String: Any],
+                       let pList = pQuery["list"] as? [[String: Any]],
+                       !pList.isEmpty {
+                        allPages[page] = pList
                     }
                 }
             }
@@ -482,7 +476,7 @@ final class DualSourceEngine {
     private func fetchXimalayaRevisionCategory(category: String, subcategory: String) async -> [BookItem] {
         let urlStr = "https://www.ximalaya.com/revision/category/queryCategoryPageAlbums?category=\(category)&subcategory=\(subcategory)&meta=&sort=0&page=1&perPage=30"
         guard let url = URL(string: urlStr),
-              let (data, _) = try? await QuantumultXEngine.shared.performRequest(URLRequest(url: url), for: url.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any],
               let albums = dataObj["albums"] as? [[String: Any]] else {
@@ -517,7 +511,7 @@ final class DualSourceEngine {
               let url = URL(string: "https://search.ximalaya.com/front/v1?core=album&kw=\(enc)&page=\(page)&rows=25&spellchecker=true&condition=relation&device=android&version=9.0.75&paidFilter=false") else {
             return []
         }
-        guard let (data, _) = try? await QuantumultXEngine.shared.performRequest(URLRequest(url: url), for: url.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+        guard let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let resp = json["response"] as? [String: Any],
               let docs = resp["docs"] as? [[String: Any]] else {
@@ -561,7 +555,7 @@ final class DualSourceEngine {
     private func fetchXimalayaAllTracksConcurrently(albumId: String, bookTitle: String, forceFreeBadge: Bool) async -> [EpisodeItem] {
         let firstURLStr = "https://mobile.ximalaya.com/mobile/v1/album/track?albumId=\(albumId)&pageId=1&pageSize=200&isAsc=true&device=android"
         guard let firstURL = URL(string: firstURLStr),
-              let (data, _) = try? await urlSession.data(from: firstURL),
+              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: firstURL)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let dataObj = json["data"] as? [String: Any],
               let firstList = dataObj["list"] as? [[String: Any]], !firstList.isEmpty else {
@@ -573,23 +567,24 @@ final class DualSourceEngine {
 
         if maxPage > 1 {
             let session = urlSession
-            await withTaskGroup(of: (Int, JSONPageBox).self) { group in
+            await withTaskGroup(of: (Int, Data?).self) { group in
                 for p in 2...maxPage {
                     group.addTask {
                         let uStr = "https://mobile.ximalaya.com/mobile/v1/album/track?albumId=\(albumId)&pageId=\(p)&pageSize=200&isAsc=true&device=android"
                         guard let u = URL(string: uStr),
-                              let (pData, _) = try? await session.data(from: u),
-                              let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
-                              let pObj = pJson["data"] as? [String: Any],
-                              let pList = pObj["list"] as? [[String: Any]] else {
-                            return (p, JSONPageBox(rows: []))
+                              let (pData, _) = try? await session.data(from: u) else {
+                            return (p, nil)
                         }
-                        return (p, JSONPageBox(rows: pList))
+                        return (p, pData)
                     }
                 }
-                for await (p, box) in group {
-                    if !box.rows.isEmpty {
-                        pageMap[p] = box.rows
+                for await (p, maybeData) in group {
+                    if let pData = maybeData,
+                       let pJson = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
+                       let pObj = pJson["data"] as? [String: Any],
+                       let pList = pObj["list"] as? [[String: Any]],
+                       !pList.isEmpty {
+                        pageMap[p] = pList
                     }
                 }
             }
@@ -623,7 +618,7 @@ final class DualSourceEngine {
     private func fetchXimalayaBackupTracks(albumId: String, bookTitle: String, forceFreeBadge: Bool) async -> [EpisodeItem] {
         let backupURLStr = "https://mobile.ximalaya.com/mobile/others/ca/album/track/\(albumId)/true/1/200"
         guard let url = URL(string: backupURLStr),
-              let (data, _) = try? await QuantumultXEngine.shared.performRequest(URLRequest(url: url), for: url.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+              let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(URLRequest(url: url)),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tracksObj = json["tracks"] as? [String: Any],
               let list = tracksObj["list"] as? [[String: Any]] else {
@@ -651,6 +646,14 @@ final class DualSourceEngine {
     }
 
     private func resolveXimalayaTrackURL(trackId: String) async throws -> URL {
+        // 0. 若开启“代理介入”，优先通过 WeiGiegie/ximalaya.js 的 v4/baseInfo/ts 与 download/v2/track 介入通道获取解锁音频流
+        if ProxyInterventionEngine.shared.isEnabled,
+           let intervenedURL = await ProxyInterventionEngine.shared.resolveIntervenedXimalayaAudioURL(
+               trackId: trackId,
+               cookie: customCookies[.ximalaya]
+           ) {
+            return intervenedURL
+        }
         let ts = Int(Date().timeIntervalSince1970 * 1000)
         // 1. Web playpage V3 + AES-128-ECB 解密
         if let webURL = URL(string: "https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/\(ts)?device=web&trackId=\(trackId)&trackQualityLevel=1") {
@@ -659,7 +662,7 @@ final class DualSourceEngine {
             if let cookie = customCookies[.ximalaya], !cookie.isEmpty {
                 req.setValue(cookie, forHTTPHeaderField: "Cookie")
             }
-            if let (data, _) = try? await QuantumultXEngine.shared.performRequest(req, for: req.url?.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+            if let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(req),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let trackInfo = json["trackInfo"] as? [String: Any] {
                 if let playUrlList = trackInfo["playUrlList"] as? [[String: Any]],
@@ -677,7 +680,7 @@ final class DualSourceEngine {
             if let cookie = customCookies[.ximalaya], !cookie.isEmpty {
                 req.setValue(cookie, forHTTPHeaderField: "Cookie")
             }
-            if let (data, _) = try? await QuantumultXEngine.shared.performRequest(req, for: req.url?.host?.contains("ximalaya") == true ? .ximalaya : .fanqie),
+            if let (data, _) = try? await ProxyInterventionEngine.shared.performRequest(req),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let trackInfo = json["trackInfo"] as? [String: Any] {
                 let raw = (trackInfo["playUrl64"] as? String) ??
@@ -757,20 +760,24 @@ final class DualSourceEngine {
         var decryptedBuffer = [UInt8](repeating: 0, count: bufferSize)
         var numBytesDecrypted: size_t = 0
 
-        let status = cipherData.withUnsafeBytes { cipherPtr in
-            CCCrypt(
-                CCOperation(kCCDecrypt),
-                CCAlgorithm(kCCAlgorithmAES128),
-                CCOptions(kCCOptionPKCS7Padding | kCCOptionECBMode),
-                keyBytes,
-                kCCKeySizeAES128,
-                nil,
-                cipherPtr.baseAddress,
-                cipherData.count,
-                &decryptedBuffer,
-                bufferSize,
-                &numBytesDecrypted
-            )
+        let status = decryptedBuffer.withUnsafeMutableBytes { outPtr in
+            cipherData.withUnsafeBytes { cipherPtr in
+                keyBytes.withUnsafeBytes { keyPtr in
+                    CCCrypt(
+                        CCOperation(kCCDecrypt),
+                        CCAlgorithm(kCCAlgorithmAES128),
+                        CCOptions(kCCOptionPKCS7Padding | kCCOptionECBMode),
+                        keyPtr.baseAddress,
+                        kCCKeySizeAES128,
+                        nil,
+                        cipherPtr.baseAddress,
+                        cipherData.count,
+                        outPtr.baseAddress,
+                        bufferSize,
+                        &numBytesDecrypted
+                    )
+                }
+            }
         }
         guard status == kCCSuccess else { return nil }
         let outData = Data(bytes: decryptedBuffer, count: numBytesDecrypted)

@@ -27,47 +27,55 @@ struct RootWorkspaceView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             TabView(selection: $selectedTab) {
-                Tab(MainTab.bookshelf.rawValue, systemImage: MainTab.bookshelf.icon, value: MainTab.bookshelf) {
-                    BookshelfView(
-                        onSwitchTab: { tab in selectedTab = tab },
-                        onOpenFullPlayer: {
-                            openPlayerDirectlyToChapters = false
-                            isShowingFullPlayer = true
-                        },
-                        onOpenPlayerChapters: {
-                            openPlayerDirectlyToChapters = true
-                            isShowingFullPlayer = true
-                        }
-                    )
+                BookshelfView(
+                    onSwitchTab: { tab in selectedTab = tab },
+                    onOpenFullPlayer: {
+                        openPlayerDirectlyToChapters = false
+                        isShowingFullPlayer = true
+                    },
+                    onOpenPlayerChapters: {
+                        openPlayerDirectlyToChapters = true
+                        isShowingFullPlayer = true
+                    }
+                )
+                .tabItem {
+                    Label(MainTab.bookshelf.rawValue, systemImage: MainTab.bookshelf.icon)
                 }
+                .tag(MainTab.bookshelf)
 
-                Tab(MainTab.discover.rawValue, systemImage: MainTab.discover.icon, value: MainTab.discover) {
-                    DiscoverView(
-                        onSwitchToSearch: { selectedTab = .search },
-                        onOpenFullPlayer: {
-                            openPlayerDirectlyToChapters = false
-                            isShowingFullPlayer = true
-                        }
-                    )
+                DiscoverView(
+                    onSwitchToSearch: { selectedTab = .search },
+                    onOpenFullPlayer: {
+                        openPlayerDirectlyToChapters = false
+                        isShowingFullPlayer = true
+                    }
+                )
+                .tabItem {
+                    Label(MainTab.discover.rawValue, systemImage: MainTab.discover.icon)
                 }
+                .tag(MainTab.discover)
 
-                Tab(MainTab.search.rawValue, systemImage: MainTab.search.icon, value: MainTab.search) {
-                    AggregateSearchView(
-                        onOpenFullPlayer: {
-                            openPlayerDirectlyToChapters = false
-                            isShowingFullPlayer = true
-                        }
-                    )
+                AggregateSearchView(
+                    onOpenFullPlayer: {
+                        openPlayerDirectlyToChapters = false
+                        isShowingFullPlayer = true
+                    }
+                )
+                .tabItem {
+                    Label(MainTab.search.rawValue, systemImage: MainTab.search.icon)
                 }
+                .tag(MainTab.search)
 
-                Tab(MainTab.settings.rawValue, systemImage: MainTab.settings.icon, value: MainTab.settings) {
-                    SettingsView(
-                        onOpenFullPlayer: {
-                            openPlayerDirectlyToChapters = false
-                            isShowingFullPlayer = true
-                        }
-                    )
+                SettingsView(
+                    onOpenFullPlayer: {
+                        openPlayerDirectlyToChapters = false
+                        isShowingFullPlayer = true
+                    }
+                )
+                .tabItem {
+                    Label(MainTab.settings.rawValue, systemImage: MainTab.settings.icon)
                 }
+                .tag(MainTab.settings)
             }
             .tint(.orange)
 

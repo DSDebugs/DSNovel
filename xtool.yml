@@ -1,5 +1,0 @@
-version: 1
-bundleID: com.dsnovel.app
-product: DSNovel
-infoPath: DSNovel-Info.plist
-iconPath: Sources/DSNovel/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png
