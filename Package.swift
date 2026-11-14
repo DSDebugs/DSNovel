@@ -13,8 +13,15 @@ let package = Package(
         .target(
             name: "DSNovel",
             path: "Sources/DSNovel",
+            // Info.plist and the asset catalog are handled by xtool.yml
+            // (infoPath / iconPath), and by XcodeGen on the macOS path.
+            // Excluding them here avoids actool being invoked on Linux/WSL.
+            exclude: [
+                "Resources/Info.plist",
+                "Resources/Assets.xcassets"
+            ],
             resources: [
-                .process("Resources")
+                .copy("Resources/Plugins")
             ]
         )
     ]

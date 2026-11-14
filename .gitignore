@@ -7,9 +7,12 @@ Payload/
 *.ipa
 *.xcarchive
 
-# kxapp / SourceKit-LSP
+# kxapp / SourceKit-LSP / xtool
 buildServer.json
 .build/
+.bsp/
+squashfs-root/
+xtool-extract/
 
 # macOS / editor
 .DS_Store
