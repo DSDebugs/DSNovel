@@ -586,7 +586,7 @@ struct ImportQXConfigSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(QuantumultXEngine.self) private var qx
 
-    @State private var configText: String = """
+    @State private var configText: String = #"""
     [server_local]
     http=127.0.0.1:7890, tag=本地HTTP代理
     socks5=127.0.0.1:7891, tag=本地SOCKS5代理
@@ -594,7 +594,7 @@ struct ImportQXConfigSheet: View {
     [rewrite_local]
     ^https?:\/\/.*ximalaya\.com\/.*track.* url script-response-body xmly_vip_unlock.js
     ^https?:\/\/.*fanqiesdk\.com\/.* url script-response-body fanqie_free.js
-    """
+    """#
 
     var body: some View {
         NavigationStack {

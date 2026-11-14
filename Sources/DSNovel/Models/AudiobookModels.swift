@@ -147,7 +147,7 @@ struct BookItem: Identifiable, Codable, Hashable, Sendable {
 
     static func cleanBookTitle(_ raw: String) -> String {
         raw.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&quot;", with: """)
+            .replacingOccurrences(of: "&quot;", with: "\u{22}")
             .replacingOccurrences(of: "&amp;", with: "&")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -213,7 +213,7 @@ struct EpisodeItem: Identifiable, Codable, Hashable, Sendable {
             let full = String(s[match])
             let parts = full.split(maxSplits: 1, whereSeparator: { !$0.isNumber })
             if let firstNum = parts.first, let n = Int(firstNum) {
-                let rest = s.dropFirst(firstNum.count).trimmingCharacters(in: CharacterSet(charactersIn: " ._\-—:："))
+                let rest = s.dropFirst(firstNum.count).trimmingCharacters(in: CharacterSet(charactersIn: " ._-—:："))
                 if !rest.hasPrefix("第") {
                     return "第\(n)集 \(rest)"
                 }
