@@ -126,7 +126,6 @@ struct BookDetailView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 14) {
                     BookCoverView(
-                        bookId: book.id,
                         urlString: book.coverURL,
                         title: book.title,
                         source: book.source,

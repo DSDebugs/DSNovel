@@ -92,7 +92,10 @@ final class AudioPlayerEngine {
             LibraryStore.shared.updateProgress(book: book, episodeIndex: index, episodeTitle: episode.displayTitle, time: currentTime)
             updateNowPlayingInfo()
         } catch {
-            // 自动无感跨源容灾：若当前书源单集受阻，自动后台检索另一书源同名书籍并无缝续播
+            // 自动跨源容灾升级：多轮尝试 + 跨源同名匹配 + 跳过VIP集
+            var recovered = false
+
+            // 第一轮：直接切换到另一书源的同名书籍
             if let altBook = await DualSourceEngine.shared.findAlternateSourceBook(for: book) {
                 let altEpisodes = await DualSourceEngine.shared.fetchAllBookEpisodes(for: altBook)
                 let targetIdx = min(index, max(0, altEpisodes.count - 1))
@@ -102,17 +105,38 @@ final class AudioPlayerEngine {
                     self.episodes = altEpisodes
                     self.currentEpisodeIndex = targetIdx
                     playStream(url: altURL, headers: altHeaders, startAt: max(resumeTime, skipIntroSeconds))
-                    self.isLoadingStream = false
                     self.statusBanner = "已自动优选 \(altBook.source.coverTopTag) 播放"
                     LibraryStore.shared.updateProgress(book: altBook, episodeIndex: targetIdx, episodeTitle: altEpisodes[targetIdx].displayTitle, time: currentTime)
                     updateNowPlayingInfo()
-                    return
+                    recovered = true
                 }
             }
+
+            // 第二轮：跨源回退未果 → 在当前章节列表中向后跳过本集尝试下一集（VIP集自动跳到免费集）
+            if !recovered && episodes.count > index + 1 {
+                for offset in 1...min(5, episodes.count - index - 1) {
+                    let nextIdx = index + offset
+                    guard episodes.indices.contains(nextIdx) else { break }
+                    let nextEp = episodes[nextIdx]
+                    if nextEp.isFree,
+                       let (nextURL, nextHeaders) = try? await DualSourceEngine.shared.resolveStreamURL(for: nextEp, in: book) {
+                        self.currentEpisodeIndex = nextIdx
+                        playStream(url: nextURL, headers: nextHeaders, startAt: 0)
+                        self.statusBanner = "已自动跳过VIP集，续播第\(nextEp.index)集"
+                        LibraryStore.shared.updateProgress(book: book, episodeIndex: nextIdx, episodeTitle: nextEp.displayTitle, time: 0)
+                        updateNowPlayingInfo()
+                        recovered = true
+                        break
+                    }
+                }
+            }
+
+            if !recovered {
+                self.isPlaying = false
+                self.errorMessage = error.localizedDescription
+                self.statusBanner = "VIP章节已自动跳过全部免费通道均未匹配，可尝试登录账号或点击换源"
+            }
             self.isLoadingStream = false
-            self.isPlaying = false
-            self.errorMessage = error.localizedDescription
-            self.statusBanner = "当前章节需登录对应账号或切换其他版本"
         }
     }
 
@@ -278,21 +302,47 @@ final class AudioPlayerEngine {
         }
     }
 
-    // MARK: - 一键换源续播当前集
+    // MARK: - 一键换源续播当前集（增强：多候选匹配 + 自动跳过VIP集）
     func switchSourceForCurrentBook() async {
         guard let currentBook else { return }
         isLoadingStream = true
         statusBanner = "正在智能匹配备用免费书源..."
-        if let altBook = await DualSourceEngine.shared.findAlternateSourceBook(for: currentBook) {
+
+        let targetSource: CoreSourceID = (currentBook.source == .fanqie) ? .ximalaya : .fanqie
+        let cleanTitle = currentBook.title
+            .replacingOccurrences(of: "\u{ff08}.*\u{ff09}", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\(.*\\)", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 多候选搜索备选书源
+        var candidates: [BookItem] = []
+        switch targetSource {
+        case .fanqie:
+            candidates = await DualSourceEngine.shared.searchFanqieBooksMulti(keyword: cleanTitle)
+        case .ximalaya:
+            candidates = await DualSourceEngine.shared.searchXimalayaBooksMulti(keyword: cleanTitle)
+        }
+
+        for altBook in candidates.prefix(3) {
             let altEpisodes = await DualSourceEngine.shared.fetchAllBookEpisodes(for: altBook)
-            if !altEpisodes.isEmpty {
-                let targetIdx = min(currentEpisodeIndex, altEpisodes.count - 1)
-                await startPlayback(book: altBook, episodes: altEpisodes, index: targetIdx, resumeTime: currentTime)
+            guard !altEpisodes.isEmpty else { continue }
+            let targetIdx = min(currentEpisodeIndex, altEpisodes.count - 1)
+            if altEpisodes.indices.contains(targetIdx),
+               let (altURL, altHeaders) = try? await DualSourceEngine.shared.resolveStreamURL(for: altEpisodes[targetIdx], in: altBook) {
+                self.currentBook = altBook
+                self.episodes = altEpisodes
+                self.currentEpisodeIndex = targetIdx
+                playStream(url: altURL, headers: altHeaders, startAt: max(currentTime, skipIntroSeconds))
+                self.statusBanner = "已切换至 \(altBook.source.coverTopTag) 播放"
+                LibraryStore.shared.updateProgress(book: altBook, episodeIndex: targetIdx, episodeTitle: altEpisodes[targetIdx].displayTitle, time: currentTime)
+                updateNowPlayingInfo()
+                isLoadingStream = false
                 return
             }
         }
+
         isLoadingStream = false
-        statusBanner = "当前已是最佳可用书源"
+        statusBanner = "当前已是最佳可用书源，VIP章节可尝试登录对应账号"
     }
 
     private func cleanupPlayerObservers() {

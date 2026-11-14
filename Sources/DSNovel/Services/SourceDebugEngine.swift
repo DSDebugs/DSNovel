@@ -157,7 +157,7 @@ final class SourceDebugEngine {
     }
 
     private func parseLightweightMetadata(from text: String) {
-        // 1. 提取软件版本号（如 "软件版本：9.4.50"）
+        // 仅提取 VIP 解锁相关关键参数：软件版本号（用于 User-Agent 与客户端标识）
         if let verRange = text.range(of: #"软件版本[：:]\s*([0-9.]+)"#, options: .regularExpression) {
             let matched = String(text[verRange])
             let digits = matched.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted).joined()
@@ -166,18 +166,19 @@ final class SourceDebugEngine {
             }
         }
 
-        // 2. 提取 hostname 行中的有效域名节点（过滤纯 IP 与通配符，仅保留高可用域名）
-        if let hostLineRange = text.range(of: #"hostname\s*=\s*([^\n\r*]+)"#, options: .regularExpression) {
-            let line = String(text[hostLineRange])
-            let tokens = line.components(separatedBy: CharacterSet(charactersIn: "=, \t"))
-            let validDomains = tokens.filter { token in
-                token.contains(".ximalaya.com") || token.contains(".xmcdn.com") || token.contains(".himalaya.com")
-            }
-            if !validDomains.isEmpty {
-                let merged = Array(Set(extractedHosts + validDomains)).sorted()
-                self.extractedHosts = merged
-                self.syncedHostCount = merged.count
-            }
+        // 提取 [rewrite_local] 块中的核心 API 路径（仅 VIP 解锁相关，忽略 reject/reject-200 广告规则）
+        let vipAPIPatterns = [
+            "mobile-playpage/track/v4/baseInfo/ts",
+            "mobile/download/v2/track",
+            "v1/album/track/ts",
+            "mobile-playpage/playpage/track/qualityAndEffect"
+        ]
+        var foundCount = 0
+        for pattern in vipAPIPatterns {
+            if text.contains(pattern) { foundCount += 1 }
+        }
+        if foundCount > 0 {
+            self.syncedHostCount = foundCount
         }
     }
 
@@ -204,7 +205,7 @@ final class SourceDebugEngine {
         return (data, http)
     }
 
-    // MARK: - 客户端原生多通道音频流优选解析（极速并发尝试 v4 / v3 / 移动端直链与同集免费源回退）
+    // MARK: - 客户端原生多通道音频流优选解析（VIP 全端点覆盖 + 多设备/多质量等级 + 三线回退）
     func resolveOptimizedXimalayaStream(
         trackId: String,
         book: BookItem,
@@ -214,14 +215,23 @@ final class SourceDebugEngine {
         guard isEnabled else { return nil }
         let ts = Int(Date().timeIntervalSince1970 * 1000)
 
-        // 1. 优先尝试高音质播放页接口 (v4 & v3)
-        let candidateEndpoints = [
+        // ── 第一梯队：高音质 v4 + v3（多设备 + 多质量等级） ──
+        let tier1Endpoints: [String] = [
+            // v4 — iPhone 高音质
             "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/ts-\(ts)?device=iPhone&trackId=\(trackId)&trackQualityLevel=2",
+            // v4 — iPad
+            "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/ts-\(ts)?device=iPad&trackId=\(trackId)&trackQualityLevel=2",
+            // v4 — 最低音质（VIP 有时会放行低码率）
+            "https://mobile.ximalaya.com/mobile-playpage/track/v4/baseInfo/ts-\(ts)?device=iPhone&trackId=\(trackId)&trackQualityLevel=1",
+            // v3 web
             "https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/\(ts)?device=web&trackId=\(trackId)&trackQualityLevel=1",
+            // v3 web 低音质
+            "https://www.ximalaya.com/mobile-playpage/track/v3/baseInfo/\(ts)?device=web&trackId=\(trackId)&trackQualityLevel=2",
+            // v3 iPhone
             "https://mobile.ximalaya.com/mobile/playpage/track/v3/baseInfo/\(ts)?device=iPhone&trackId=\(trackId)"
         ]
 
-        for endpoint in candidateEndpoints {
+        for endpoint in tier1Endpoints {
             guard let url = URL(string: endpoint) else { continue }
             var req = URLRequest(url: url)
             req.timeoutInterval = 5
@@ -235,14 +245,53 @@ final class SourceDebugEngine {
             }
         }
 
-        // 2. 若开启多通道音源优选，自动回退匹配全网同名书籍对应集数的免费完整音频流
-        if streamFallbackTuningEnabled,
-           let fallbackURL = await DualSourceEngine.shared.resolveCrossSourceFallbackStream(
-               bookTitle: book.title,
-               episodeIndex: episode.index
-           ) {
+        // ── 第二梯队：mobile v1 旧版接口（有时 VIP 章节在此接口仍有免费流） ──
+        let tier2Endpoints: [String] = [
+            "https://mobile.ximalaya.com/mobile/v1/track/baseInfo?trackId=\(trackId)&device=iPhone",
+            "https://mobile.ximalaya.com/mobile/v1/track/baseInfo?trackId=\(trackId)&device=android",
+            "https://mobwsa.ximalaya.com/mobile/v1/track/baseInfo?trackId=\(trackId)&device=iPhone"
+        ]
+
+        for endpoint in tier2Endpoints {
+            guard let url = URL(string: endpoint) else { continue }
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 5
+            if let cookie, !cookie.isEmpty {
+                req.setValue(cookie, forHTTPHeaderField: "Cookie")
+            }
+            if let (data, _) = try? await performRequest(req),
+               let playURL = extractStreamURLFromV1JSON(data: data) {
+                optimizedRequestCount += 1
+                return playURL
+            }
+        }
+
+        // ── 第二点五梯队：download/v2/track 独立下载通道（VIP 章节常可通过下载接口获取直链）──
+        if let downloadURL = await resolveDownloadTrackURL(trackId: trackId, cookie: cookie) {
             optimizedRequestCount += 1
-            return fallbackURL
+            return downloadURL
+        }
+
+        // ── 第三梯队：若开启多通道音源优选，跨源回退（三线并发：听友 + 云图 + 喜马免费） ──
+        if streamFallbackTuningEnabled {
+            // 3a. 先走增强版跨源回退（多关键词 + 多源）
+            if let fallbackURL = await DualSourceEngine.shared.resolveCrossSourceFallbackStream(
+                bookTitle: book.title,
+                episodeIndex: episode.index
+            ) {
+                optimizedRequestCount += 1
+                return fallbackURL
+            }
+
+            // 3b. 尝试用作者名搜索同名免费书
+            if !book.author.isEmpty,
+               let fallbackURL2 = await DualSourceEngine.shared.resolveCrossSourceFallbackStream(
+                   bookTitle: "\(book.title) \(book.author)",
+                   episodeIndex: episode.index
+               ) {
+                optimizedRequestCount += 1
+                return fallbackURL2
+            }
         }
 
         return nil
@@ -253,6 +302,7 @@ final class SourceDebugEngine {
               let trackInfo = (json["trackInfo"] as? [String: Any]) ?? (json["data"] as? [String: Any]) else {
             return nil
         }
+        // 1. playUrlList（AES 加密 + 明文混合）
         if let playUrlList = trackInfo["playUrlList"] as? [[String: Any]] {
             for item in playUrlList {
                 if let enc = item["url"] as? String, !enc.isEmpty {
@@ -266,17 +316,177 @@ final class SourceDebugEngine {
                 }
             }
         }
+        // 2. playUrlList 嵌套在 data.trackInfo 中（某些 v3 响应结构）
+        if let innerTrackInfo = trackInfo["trackInfo"] as? [String: Any],
+           let playUrlList = innerTrackInfo["playUrlList"] as? [[String: Any]] {
+            for item in playUrlList {
+                if let enc = item["url"] as? String, !enc.isEmpty {
+                    if enc.hasPrefix("http"), let u = URL(string: BookItem.normalizeHttps(enc)) {
+                        return u
+                    }
+                    if let dec = DualSourceEngine.decryptXimalayaPlayURL(enc),
+                       let u = URL(string: BookItem.normalizeHttps(dec)) {
+                        return u
+                    }
+                }
+            }
+        }
+        // 3. 直接字段
         let directFields = [
             trackInfo["playUrl64"] as? String,
             trackInfo["playPathAacv164"] as? String,
             trackInfo["playPathHq"] as? String,
-            trackInfo["playUrl32"] as? String
+            trackInfo["playUrl32"] as? String,
+            trackInfo["playUrl24"] as? String,
+            trackInfo["playPathAacv224"] as? String,
+            trackInfo["playPathAacv164"] as? String
         ].compactMap { $0 }.filter { !$0.isEmpty }
 
         if let first = directFields.first, let u = URL(string: BookItem.normalizeHttps(first)) {
             return u
         }
         return nil
+    }
+
+    /// mobile v1 track/baseInfo 专用 JSON 解析（结构与 v3/v4 不同）
+    private func extractStreamURLFromV1JSON(data: Data) -> URL? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        // v1 响应格式：根级直接含 playUrl64 / playUrl32 / playPathAacv164 等
+        let directFields = [
+            json["playUrl64"] as? String,
+            json["playUrl32"] as? String,
+            json["playUrl24"] as? String,
+            json["playPathAacv164"] as? String,
+            json["playPathAacv224"] as? String,
+            json["playPathHq"] as? String,
+            json["playUrl"] as? String,
+            json["filePath"] as? String
+        ].compactMap { $0 }.filter { !$0.isEmpty }
+
+        if let first = directFields.first, let u = URL(string: BookItem.normalizeHttps(first)) {
+            return u
+        }
+        // v1 也可能嵌套在 data / trackInfo 中
+        let nested = (json["data"] as? [String: Any]) ?? (json["trackInfo"] as? [String: Any])
+        if let n = nested {
+            let nestedFields = [
+                n["playUrl64"] as? String,
+                n["playUrl32"] as? String,
+                n["playPathAacv164"] as? String,
+                n["playUrl"] as? String
+            ].compactMap { $0 }.filter { !$0.isEmpty }
+            if let first = nestedFields.first, let u = URL(string: BookItem.normalizeHttps(first)) {
+                return u
+            }
+        }
+        return nil
+    }
+
+    // MARK: - download/v2/track VIP 独立下载通道（QuantumultX 脚本核心端点之一）
+    private func resolveDownloadTrackURL(trackId: String, cookie: String?) async -> URL? {
+        guard isEnabled else { return nil }
+        let ts = Int(Date().timeIntervalSince1970 * 1000)
+        let endpoints = [
+            "https://mobile.ximalaya.com/mobile/download/v2/track?trackId=\(trackId)&ts=\(ts)",
+            "https://mobwsa.ximalaya.com/mobile/download/v2/track?trackId=\(trackId)"
+        ]
+        for ep in endpoints {
+            guard let url = URL(string: ep) else { continue }
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 6
+            if let cookie, !cookie.isEmpty { req.setValue(cookie, forHTTPHeaderField: "Cookie") }
+            guard let (data, _) = try? await performRequest(req),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            // 尝试多种 JSON 路径：data.downloadUrl / data.playUrl / downloadUrl / playUrl
+            let info = (json["data"] as? [String: Any]) ?? json
+            let candidates = [
+                info["downloadUrl"] as? String,
+                info["playUrl"] as? String,
+                info["playUrl64"] as? String,
+                info["playUrl32"] as? String,
+                info["playPathAacv164"] as? String,
+                info["filePath"] as? String,
+                info["url"] as? String
+            ].compactMap { $0 }.filter { !$0.isEmpty }
+            if let first = candidates.first, let u = URL(string: BookItem.normalizeHttps(first)) {
+                return u
+            }
+            // 也尝试 playUrlList 解密
+            if let playUrlList = info["playUrlList"] as? [[String: Any]] {
+                for item in playUrlList {
+                    if let enc = item["url"] as? String, !enc.isEmpty {
+                        if enc.hasPrefix("http"), let u = URL(string: BookItem.normalizeHttps(enc)) { return u }
+                        if let dec = DualSourceEngine.decryptXimalayaPlayURL(enc),
+                           let u = URL(string: BookItem.normalizeHttps(dec)) { return u }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - JSON 响应后处理（原生模拟 QuantumultX script-response-body：修正 VIP 标记）
+    /// 对喜马拉雅 API 返回的已解析 JSON 进行后处理：当调试开启时，自动将 VIP/付费标记修正为免费，
+    /// 使后续解析逻辑能正常提取播放 URL。此函数模拟 QuantumultX 脚本对响应体的修改行为。
+    func postProcessXimalayaJSON(_ json: inout [String: Any]) {
+        guard isEnabled else { return }
+        // 递归处理所有嵌套层级的 isPaid / isFree / vipStatus / needPay 标记
+        postProcessJSONDict(&json)
+    }
+
+    private func postProcessJSONDict(_ dict: inout [String: Any]) {
+        // 修正 VIP 标记字段（覆盖已知所有变体）
+        let paidKeys = ["isPaid", "is_paid", "isPay", "needPay", "need_pay", "isVip", "is_vip", "vipOnly", "paid"]
+        let freeKeys = ["isFree", "is_free", "free", "isPublic", "canPlay", "isFreeListen"]
+        let statusKeys = ["vipStatus", "vipType", "payType", "memberType"]
+
+        for key in paidKeys where dict[key] != nil {
+            if dict[key] is Bool || dict[key] is Int {
+                dict[key] = false
+            }
+        }
+        for key in freeKeys where dict[key] != nil {
+            if dict[key] is Bool || dict[key] is Int {
+                dict[key] = true
+            }
+        }
+        for key in statusKeys where dict[key] != nil {
+            if let num = dict[key] as? Int, num > 0 { dict[key] = 0 }
+            if let str = dict[key] as? String, !str.isEmpty { dict[key] = "free" }
+        }
+
+        // "priceTypes" / "priceTypeList" 数组归零
+        if var arr = dict["priceTypes"] as? [Int], !arr.isEmpty {
+            arr = arr.map { _ in 0 }
+            dict["priceTypes"] = arr
+        }
+        if var arr = dict["priceTypeList"] as? [[String: Any]], !arr.isEmpty {
+            arr = arr.map { item in
+                var m = item
+                m["price"] = 0; m["priceType"] = 0; m["isFree"] = true; m["isPaid"] = false
+                return m
+            }
+            dict["priceTypeList"] = arr
+        }
+
+        // 递归处理嵌套字典和数组（先收集键，避免遍历时修改字典）
+        let keys = Array(dict.keys)
+        for key in keys {
+            guard let value = dict[key] else { continue }
+            if var nestedDict = value as? [String: Any] {
+                postProcessJSONDict(&nestedDict)
+                dict[key] = nestedDict
+            } else if var nestedArray = value as? [[String: Any]] {
+                for i in nestedArray.indices {
+                    postProcessJSONDict(&nestedArray[i])
+                }
+                dict[key] = nestedArray
+            }
+        }
     }
 
     // MARK: - 持久化存储
