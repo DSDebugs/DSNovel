@@ -29,7 +29,7 @@ struct BookshelfView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 // 顶部液态玻璃控制栏：严格分离“我的书籍（仅主动加入书架）”与“最近收听（历史记录）”
-                GlassEffectContainer(spacing: 10) {
+                AppGlassContainer(spacing: 10) {
                     HStack(spacing: 10) {
                         ForEach(ShelfSegmentMode.allCases) { mode in
                             let count = (mode == .myShelf) ? library.shelfBooks.count : library.recentHistory.count
@@ -79,7 +79,7 @@ struct BookshelfView: View {
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                    .appGlassEffect(.regular, in: .rect(cornerRadius: 18))
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
@@ -132,7 +132,7 @@ struct BookshelfView: View {
                         },
                         onQuickPlay: {
                             Task {
-                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
+                                player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
                                 onOpenFullPlayer()
                             }
                         }
@@ -155,7 +155,7 @@ struct BookshelfView: View {
                         },
                         onQuickPlay: {
                             Task {
-                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
+                                player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
                                 onOpenFullPlayer()
                             }
                         }
@@ -192,7 +192,7 @@ struct BookshelfView: View {
                         },
                         onQuickPlay: {
                             Task {
-                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
+                                player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
                                 onOpenFullPlayer()
                             }
                         }
@@ -215,7 +215,7 @@ struct BookshelfView: View {
                         },
                         onQuickPlay: {
                             Task {
-                                await player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
+                                player.quickPlay(book: entry.book, startEpisodeIndex: entry.lastEpisodeIndex)
                                 onOpenFullPlayer()
                             }
                         }

@@ -1,4 +1,4 @@
-name: Build DSNovel iOS 27 IPA
+name: Build & Test DSNovel iOS IPA
 
 on:
   push:
@@ -23,16 +23,21 @@ jobs:
             brew install xcodegen
           fi
 
-      - name: Adapt Deployment Target to Runner SDK & Generate Xcode Project
+      - name: Generate Xcode Project
         run: |
-          SDK_VER=$(xcodebuild -showsdks | grep iphoneos | tail -n 1 | awk '{print $NF}' | sed 's/iphoneos//')
-          echo "Detected GitHub Runner iOS SDK: ${SDK_VER}"
-          if [ -z "${SDK_VER}" ]; then
-            SDK_VER="17.0"
-          fi
-          sed -i '' "s/27.0/${SDK_VER}/g" project.yml
-          rm -f Package.swift
           xcodegen generate
+
+      - name: Run Unit Tests (DSNovelTests)
+        run: |
+          DEST=$(xcrun simctl list devices available | grep -m 1 "iPhone" | sed -E 's/.*\(([0-9A-F-]+)\).*/\1/')
+          if [ -n "${DEST}" ]; then
+            xcodebuild test \
+              -project DSNovel.xcodeproj \
+              -scheme DSNovel \
+              -destination "id=${DEST}" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO
+          fi
 
       - name: Build Unsigned Release App
         run: |
@@ -44,8 +49,7 @@ jobs:
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Package DSNovel.ipa
         run: |
@@ -56,10 +60,10 @@ jobs:
             exit 1
           fi
           cp -R "${APP_PATH}" Payload/
-          zip -r9 DSNovel-iOS27.ipa Payload
+          zip -r9 DSNovel-iOS.ipa Payload
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DSNovel-iOS27-IPA
-          path: DSNovel-iOS27.ipa
+          name: DSNovel-iOS-IPA
+          path: DSNovel-iOS.ipa

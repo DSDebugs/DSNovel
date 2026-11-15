@@ -2,22 +2,22 @@ import SwiftUI
 import UIKit
 
 // MARK: - iOS 27 Liquid Glass 容器与修饰符实现（保障 GitHub Actions 任意 Xcode SDK 100% 编译通过）
-enum GlassEffectStyle: Sendable {
+enum AppGlassStyle: Sendable {
     case regular
     case clear
 
-    func interactive(_ enabled: Bool = true) -> GlassEffectStyle {
+    func interactive(_ enabled: Bool = true) -> AppGlassStyle {
         self
     }
 }
 
-enum GlassEffectShape: Sendable {
+enum AppGlassShape: Sendable {
     case capsule
     case circle
     case rect(cornerRadius: CGFloat)
 }
 
-struct GlassEffectContainer<Content: View>: View {
+struct AppGlassContainer<Content: View>: View {
     var spacing: CGFloat
     @ViewBuilder var content: () -> Content
 
@@ -33,7 +33,7 @@ struct GlassEffectContainer<Content: View>: View {
 
 extension View {
     @ViewBuilder
-    func glassEffect(_ style: GlassEffectStyle = .regular, in shape: GlassEffectShape = .capsule) -> some View {
+    func appGlassEffect(_ style: AppGlassStyle = .regular, in shape: AppGlassShape = .capsule) -> some View {
         switch shape {
         case .capsule:
             self
@@ -123,11 +123,13 @@ struct GlassPillButton: View {
             .contentShape(Capsule())
         }
         .buttonStyle(ResponsivePressButtonStyle())
+        .accessibilityLabel(accessibilityTitle)
     }
 }
 
 struct GlassIconButton: View {
     let systemName: String
+    var accessibilityTitle: String = "按钮"
     var tint: Color = .primary
     var size: CGFloat = 38
     let action: () -> Void
@@ -143,10 +145,11 @@ struct GlassIconButton: View {
                 .frame(width: size, height: size)
                 .background(Circle().fill(Color.white.opacity(0.09)))
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.8))
-                .frame(minWidth: 42, minHeight: 42)
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(ResponsivePressButtonStyle())
+        .accessibilityLabel(accessibilityTitle)
     }
 }
 
@@ -154,7 +157,11 @@ struct GlassIconButton: View {
 @MainActor
 final class CoverImageMemoryCache {
     static let shared = CoverImageMemoryCache()
-    private let cache = NSCache<NSString, UIImage>()
+    private let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 150
+        return c
+    }()
 
     func image(for key: String) -> UIImage? {
         cache.object(forKey: key as NSString)
@@ -261,6 +268,7 @@ struct BookCoverView: View {
         isFetching = true
         defer { isFetching = false }
 
+        self.loadedImage = nil
         // 1. 尝试带 User-Agent / Referer 加载原始封面 URL
         if let img = await downloadUIImage(from: urlString) {
             CoverImageMemoryCache.shared.store(img, for: cacheKey)
@@ -268,15 +276,6 @@ struct BookCoverView: View {
             return
         }
 
-        // 2. 若原始封面 URL 失效（如历史遗留失效链接），自动按书名检索真实有效封面并自愈更新
-        if let repairedURL = await DualSourceEngine.shared.resolveValidCoverURL(for: title),
-           let img = await downloadUIImage(from: repairedURL) {
-            CoverImageMemoryCache.shared.store(img, for: cacheKey)
-            self.loadedImage = img
-            if let bookId {
-                LibraryStore.shared.updateBookCover(bookId: bookId, newCoverURL: repairedURL)
-            }
-        }
     }
 
     private func downloadUIImage(from rawURL: String) async -> UIImage? {

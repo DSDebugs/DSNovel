@@ -28,7 +28,7 @@ struct DiscoverView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 // 书城顶部一体化液态玻璃控制舱（上方搜索栏 + 下方 2行×6列 全景分类矩阵）
-                GlassEffectContainer(spacing: 10) {
+                AppGlassContainer(spacing: 10) {
                     VStack(spacing: 10) {
                         // 第一层：集成式全网搜索栏
                         HStack(spacing: 8) {
@@ -116,7 +116,7 @@ struct DiscoverView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 18))
+                    .appGlassEffect(.regular, in: .rect(cornerRadius: 18))
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
@@ -175,7 +175,14 @@ struct DiscoverView: View {
             }
             .padding(.horizontal, 16)
 
-            if engine.isDiscoverLoading && engine.discoverBooks.isEmpty {
+            if let err = engine.discoverError, engine.discoverBooks.isEmpty {
+                VStack(spacing: 12) {
+                    Text(err).font(.system(size: 13)).foregroundStyle(.orange)
+                    GlassPillButton(title: "重试", icon: "arrow.clockwise", isSelected: true, activeColor: .orange, minHeight: 36) {
+                        Task { await engine.loadDiscover(forceRefresh: true) }
+                    }
+                }.frame(maxWidth: .infinity).padding(.vertical, 44)
+            } else if engine.isDiscoverLoading && engine.discoverBooks.isEmpty {
                 HStack {
                     Spacer()
                     ProgressView("正在同步精选有声书库...")
@@ -192,7 +199,7 @@ struct DiscoverView: View {
                             },
                             onQuickPlay: {
                                 Task {
-                                    await player.quickPlay(book: book)
+                                    player.quickPlay(book: book)
                                     onOpenFullPlayer()
                                 }
                             }
@@ -234,7 +241,7 @@ struct DiscoverView: View {
                             },
                             onQuickPlay: {
                                 Task {
-                                    await player.quickPlay(book: book)
+                                    player.quickPlay(book: book)
                                     onOpenFullPlayer()
                                 }
                             }
@@ -349,7 +356,7 @@ struct DiscoverView: View {
                             Button {
                                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                                 Task {
-                                    await player.quickPlay(book: book)
+                                    player.quickPlay(book: book)
                                     onOpenFullPlayer()
                                 }
                             } label: {

@@ -2,51 +2,66 @@ name: DSNovel
 options:
   bundleIdPrefix: com.dsnovel
   deploymentTarget:
-    iOS: "27.0"
+    iOS: "17.0"
   generateEmptyDirectories: true
 
 settings:
   base:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: minimal
-    IPHONEOS_DEPLOYMENT_TARGET: "27.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     PRODUCT_NAME: DSNovel
     PRODUCT_BUNDLE_IDENTIFIER: com.dsnovel.app
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     INFOPLIST_KEY_CFBundleDisplayName: DSNovel
+    MARKETING_VERSION: "12.0.0"
+    CURRENT_PROJECT_VERSION: "120"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     CODE_SIGNING_ALLOWED: NO
     CODE_SIGNING_REQUIRED: NO
-    CODE_SIGN_IDENTITY: ""
+    CODE_SIGNING_IDENTITY: ""
 
 targets:
   DSNovel:
     type: application
     platform: iOS
-    deploymentTarget: "27.0"
+    deploymentTarget: "17.0"
     sources:
       - path: Sources/DSNovel
         excludes:
-          - "Resources/Info.plist"
+          - "Resources/**"
     resources:
       - path: Sources/DSNovel/Resources/Assets.xcassets
-      - path: Sources/DSNovel/Resources/Plugins
+      - path: Sources/DSNovel/Resources/PrivacyInfo.xcprivacy
     info:
       path: Sources/DSNovel/Resources/Info.plist
       properties:
         CFBundleName: DSNovel
         CFBundleDisplayName: DSNovel
         CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
-        CFBundleVersion: "91"
-        CFBundleShortVersionString: "9.1.0"
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         UILaunchScreen:
           UIColorName: ""
+        UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIBackgroundModes:
           - audio
-        NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
+
+  DSNovelTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests/DSNovelTests
+    dependencies:
+      - target: DSNovel

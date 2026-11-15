@@ -9,6 +9,7 @@ struct BookDetailView: View {
     let onOpenFullPlayer: () -> Void
 
     @State private var episodes: [EpisodeItem] = []
+    @State private var isDirectoryIncomplete: Bool = false
     @State private var isLoadingEpisodes: Bool = true
     @State private var isAscending: Bool = true
     @State private var selectedPageSlice: Int = 0
@@ -63,7 +64,7 @@ struct BookDetailView: View {
                                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                                 let realIndex = max(0, ep.index - 1)
                                 Task {
-                                    await player.startPlayback(book: book, episodes: episodes, index: realIndex)
+                                    player.startPlayback(book: book, episodes: episodes, index: realIndex)
                                     onOpenFullPlayer()
                                 }
                             } label: {
@@ -122,10 +123,11 @@ struct BookDetailView: View {
     }
 
     private var bookHeroCard: some View {
-        GlassEffectContainer(spacing: 12) {
+        AppGlassContainer(spacing: 12) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 14) {
                     BookCoverView(
+                        bookId: book.id,
                         urlString: book.coverURL,
                         title: book.title,
                         source: book.source,
@@ -169,9 +171,9 @@ struct BookDetailView: View {
                         Task {
                             if !episodes.isEmpty {
                                 let idx = min(saved?.lastEpisodeIndex ?? 0, episodes.count - 1)
-                                await player.startPlayback(book: book, episodes: episodes, index: idx, resumeTime: saved?.lastPlaybackTime ?? 0)
+                                player.startPlayback(book: book, episodes: episodes, index: idx, resumeTime: saved?.lastPlaybackTime ?? 0)
                             } else {
-                                await player.quickPlay(book: book)
+                                player.quickPlay(book: book)
                             }
                             onOpenFullPlayer()
                         }
@@ -190,7 +192,7 @@ struct BookDetailView: View {
                 }
             }
             .padding(16)
-            .glassEffect(.regular, in: .rect(cornerRadius: 20))
+            .appGlassEffect(.regular, in: .rect(cornerRadius: 20))
         }
     }
 
@@ -245,8 +247,9 @@ struct BookDetailView: View {
 
     private func loadAllChapters(force: Bool) async {
         isLoadingEpisodes = true
-        let list = await engine.fetchAllBookEpisodes(for: book, forceRefresh: force)
-        episodes = list
+        let result = await engine.fetchAllBookEpisodes(for: book, forceRefresh: force)
+        episodes = result.episodes
+        isDirectoryIncomplete = !result.isComplete
         if let saved = library.entry(for: book.id), !list.isEmpty {
             selectedPageSlice = min(max(0, saved.lastEpisodeIndex / sliceSize), max(0, totalSlices - 1))
         }

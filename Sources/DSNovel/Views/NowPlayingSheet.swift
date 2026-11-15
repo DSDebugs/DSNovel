@@ -7,6 +7,63 @@ enum PlayerCenterStageMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// 独立进度条子视图：隔离每秒 2 次的 `currentTime` 更新，拖动时防止 seek 洪水与滑块回弹抖动 (M-07, M-08)
+private struct PlayerProgressSliderView: View {
+    @Environment(AudioPlayerEngine.self) private var player
+    @State private var isDragging: Bool = false
+    @State private var dragValue: Double = 0
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Slider(
+                value: Binding(
+                    get: { isDragging ? dragValue : player.currentTime },
+                    set: { newVal in
+                        dragValue = newVal
+                        if !isDragging {
+                            player.seek(to: newVal)
+                        }
+                    }
+                ),
+                in: 0...max(player.duration, 1),
+                onEditingChanged: { editing in
+                    isDragging = editing
+                    if editing {
+                        dragValue = player.currentTime
+                    } else {
+                        player.seek(to: dragValue)
+                    }
+                }
+            )
+            .tint(.orange)
+            .accessibilityLabel("播放进度条")
+
+            HStack {
+                Text(formatTime(isDragging ? dragValue : player.currentTime))
+                Spacer()
+                if let ep = player.currentEpisode {
+                    Text("第 \(ep.index) / \(max(1, player.episodes.count)) 集")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(formatTime(max(0, player.duration)))
+            }
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func formatTime(_ sec: Double) -> String {
+        guard sec.isFinite && sec > 0 else { return "00:00" }
+        let total = Int(sec)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%02d:%02d", m, s)
+    }
+}
+
 struct NowPlayingSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AudioPlayerEngine.self) private var player
@@ -24,9 +81,13 @@ struct NowPlayingSheet: View {
         max(1, Int(ceil(Double(player.episodes.count) / Double(sliceSize))))
     }
 
+    private var orderedEpisodes: [EpisodeItem] {
+        isAscending ? player.episodes : Array(player.episodes.reversed())
+    }
+
     private var currentSliceEpisodes: [EpisodeItem] {
-        guard !player.episodes.isEmpty else { return [] }
-        let ordered = isAscending ? player.episodes : player.episodes.reversed()
+        let ordered = orderedEpisodes
+        guard !ordered.isEmpty else { return [] }
         let start = min(selectedSlice * sliceSize, max(0, ordered.count - 1))
         let end = min(start + sliceSize, ordered.count)
         guard start < end else { return Array(ordered.prefix(sliceSize)) }
@@ -35,7 +96,6 @@ struct NowPlayingSheet: View {
 
     var body: some View {
         ZStack {
-            // 全屏沉浸式深色动态背景
             LinearGradient(
                 colors: [
                     (player.currentBook?.source.brandColor ?? .orange).opacity(0.32),
@@ -48,10 +108,8 @@ struct NowPlayingSheet: View {
             .ignoresSafeArea()
 
             VStack(spacing: 16) {
-                // 1. 顶部全屏导航栏（左侧收起 + 中央“封面/目录”切换 + 右侧一键“加入书架”）
                 topHeaderBar
 
-                // 2. 中央全屏主舞台（封面舞台 / 全量章节目录舞台）
                 Group {
                     switch centerMode {
                     case .artwork:
@@ -62,7 +120,6 @@ struct NowPlayingSheet: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // 3. 底部液态玻璃播放控制舱（进度条 + 五键主控 + 四键功能坞：倍速 / 定时 / 加入书架 / 章节目录）
                 bottomControlDock
             }
             .padding(.horizontal, 18)
@@ -75,10 +132,9 @@ struct NowPlayingSheet: View {
         }
     }
 
-    // MARK: - 顶部全屏控制栏
     private var topHeaderBar: some View {
         HStack(spacing: 10) {
-            GlassIconButton(systemName: "chevron.down", size: 40) {
+            GlassIconButton(systemName: "chevron.down", accessibilityTitle: "收起播放器", size: 40) {
                 dismiss()
             }
 
@@ -102,7 +158,6 @@ struct NowPlayingSheet: View {
 
             Spacer()
 
-            // 右上角直接加入/移出书架按钮
             if let book = player.currentBook {
                 let inShelf = library.isInBookshelf(book.id)
                 GlassPillButton(
@@ -123,7 +178,6 @@ struct NowPlayingSheet: View {
         }
     }
 
-    // MARK: - 舞台 1：全屏沉浸式封面舞台
     private var artworkStageView: some View {
         VStack(spacing: 22) {
             Spacer(minLength: 6)
@@ -135,8 +189,8 @@ struct NowPlayingSheet: View {
                     title: book.title,
                     source: book.source,
                     progressBadge: "第\(player.currentEpisodeIndex + 1)集",
-                    width: 236,
-                    height: 316,
+                    width: 230,
+                    height: 306,
                     cornerRadius: 24
                 )
                 .shadow(color: .black.opacity(0.6), radius: 22, y: 12)
@@ -149,15 +203,19 @@ struct NowPlayingSheet: View {
                         .lineLimit(2)
                         .padding(.horizontal, 8)
 
-                    Text("\(book.title) · \(book.author)")
+                    Text("\(book.title)\(book.author.isEmpty ? "" : " · \(book.author)")")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
 
                     HStack(spacing: 6) {
-                        Circle()
-                            .fill(player.isPlaying ? Color.green : Color.orange)
-                            .frame(width: 7, height: 7)
+                        if player.isLoadingStream {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Circle()
+                                .fill(player.isPlaying ? Color.green : Color.orange)
+                                .frame(width: 7, height: 7)
+                        }
                         Text(player.statusBanner)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.orange)
@@ -174,17 +232,19 @@ struct NowPlayingSheet: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 14)
                 }
+            } else {
+                ProgressView("正在准备播放...")
             }
 
             Spacer(minLength: 6)
         }
     }
 
-    // MARK: - 舞台 2：全屏章节目录舞台
     private var chaptersStageView: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let ordered = orderedEpisodes
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("全部章节（共 \(player.episodes.count) 集已就绪）")
+                Text("全部章节（共 \(player.episodes.count) 集）")
                     .font(.system(size: 15, weight: .bold))
                 Spacer()
                 GlassPillButton(title: isAscending ? "正序" : "倒序", icon: "arrow.up.arrow.down", isSelected: false, minHeight: 32) {
@@ -197,10 +257,12 @@ struct NowPlayingSheet: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(0..<totalSlices, id: \.self) { slice in
-                            let startNum = slice * sliceSize + 1
-                            let endNum = min((slice + 1) * sliceSize, player.episodes.count)
+                            let startIdx = slice * sliceSize
+                            let endIdx = min((slice + 1) * sliceSize - 1, max(0, ordered.count - 1))
+                            let firstNum = ordered.indices.contains(startIdx) ? ordered[startIdx].index : (startIdx + 1)
+                            let lastNum = ordered.indices.contains(endIdx) ? ordered[endIdx].index : (endIdx + 1)
                             GlassPillButton(
-                                title: "\(startNum)-\(endNum)集",
+                                title: "\(firstNum)-\(lastNum)集",
                                 isSelected: selectedSlice == slice,
                                 activeColor: .orange,
                                 minHeight: 32
@@ -212,89 +274,71 @@ struct NowPlayingSheet: View {
                 }
             }
 
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(currentSliceEpisodes) { ep in
-                        let isCurrent = (player.currentEpisode?.id == ep.id)
-                        Button {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            if let book = player.currentBook {
-                                Task {
-                                    await player.startPlayback(book: book, episodes: player.episodes, index: max(0, ep.index - 1))
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(currentSliceEpisodes) { ep in
+                            let isCurrent = (player.currentEpisode?.id == ep.id)
+                            Button {
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                if let book = player.currentBook,
+                                   let realIdx = player.episodes.firstIndex(where: { $0.id == ep.id }) {
+                                    player.startPlayback(book: book, episodes: player.episodes, index: realIdx)
                                 }
-                            }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Text("\(ep.index)")
-                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(isCurrent ? .orange : .secondary)
-                                    .frame(width: 36, alignment: .leading)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Text("\(ep.index)")
+                                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(isCurrent ? .orange : .secondary)
+                                        .frame(width: 36, alignment: .leading)
 
-                                Text(ep.displayTitle)
-                                    .font(.system(size: 14, weight: isCurrent ? .bold : .medium))
-                                    .foregroundStyle(isCurrent ? .orange : .white)
-                                    .lineLimit(1)
+                                    Text(ep.displayTitle)
+                                        .font(.system(size: 14, weight: isCurrent ? .bold : .medium))
+                                        .foregroundStyle(isCurrent ? .orange : .white)
+                                        .lineLimit(1)
 
-                                Spacer()
+                                    Spacer()
 
-                                if isCurrent {
-                                    Image(systemName: "waveform")
-                                        .foregroundStyle(.orange)
+                                    if isCurrent {
+                                        Image(systemName: "waveform")
+                                            .foregroundStyle(.orange)
+                                    }
                                 }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .frame(minHeight: 48)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(isCurrent ? Color.orange.opacity(0.22) : Color.white.opacity(0.07))
+                                )
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .frame(minHeight: 48)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(isCurrent ? Color.orange.opacity(0.22) : Color.white.opacity(0.07))
-                            )
-                            .contentShape(Rectangle())
+                            .id(ep.id)
+                            .buttonStyle(ResponsivePressButtonStyle())
                         }
-                        .buttonStyle(ResponsivePressButtonStyle())
+                    }
+                    .padding(.vertical, 4)
+                }
+                .onAppear {
+                    if let currentId = player.currentEpisode?.id {
+                        proxy.scrollTo(currentId, anchor: .center)
                     }
                 }
-                .padding(.vertical, 4)
             }
         }
     }
 
-    // MARK: - 底部液态玻璃播放控制舱（移除书签，改为一键“加入书架”）
     private var bottomControlDock: some View {
-        GlassEffectContainer(spacing: 14) {
+        AppGlassContainer(spacing: 14) {
             VStack(spacing: 16) {
-                // 进度条与时间
-                VStack(spacing: 4) {
-                    Slider(
-                        value: Binding(
-                            get: { player.currentTime },
-                            set: { player.seek(to: $0) }
-                        ),
-                        in: 0...max(player.duration, 1)
-                    )
-                    .tint(.orange)
+                PlayerProgressSliderView()
 
-                    HStack {
-                        Text(formatTime(player.currentTime))
-                        Spacer()
-                        if let ep = player.currentEpisode {
-                            Text("第 \(ep.index) / \(max(1, player.episodes.count)) 集")
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text(formatTime(max(0, player.duration)))
-                    }
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                }
-
-                // 五键主控区
                 HStack(spacing: 24) {
-                    GlassIconButton(systemName: "gobackward.15", size: 44) {
+                    GlassIconButton(systemName: "gobackward.15", accessibilityTitle: "快退15秒", size: 44) {
                         player.skip(by: -15)
                     }
 
-                    GlassIconButton(systemName: "backward.end.fill", size: 46) {
+                    GlassIconButton(systemName: "backward.end.fill", accessibilityTitle: "上一集", size: 46) {
                         player.playPreviousEpisode()
                     }
 
@@ -311,17 +355,17 @@ struct NowPlayingSheet: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(ResponsivePressButtonStyle())
+                    .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
 
-                    GlassIconButton(systemName: "forward.end.fill", size: 46) {
+                    GlassIconButton(systemName: "forward.end.fill", accessibilityTitle: "下一集", size: 46) {
                         player.playNextEpisode()
                     }
 
-                    GlassIconButton(systemName: "goforward.15", size: 44) {
+                    GlassIconButton(systemName: "goforward.15", accessibilityTitle: "快进15秒", size: 44) {
                         player.skip(by: 15)
                     }
                 }
 
-                // 底部四键功能坞（倍速 / 定时 / 加入书架 / 章节目录）
                 HStack(spacing: 10) {
                     GlassPillButton(
                         title: String(format: "%.2gx", player.playbackRate),
@@ -336,7 +380,7 @@ struct NowPlayingSheet: View {
                     GlassPillButton(
                         title: sleepTimerLabel,
                         icon: "moon.zzz.fill",
-                        isSelected: player.sleepTimerRemainingSeconds != nil,
+                        isSelected: player.sleepTimerPreset != .off,
                         activeColor: .indigo,
                         minHeight: 40
                     ) {
@@ -375,18 +419,14 @@ struct NowPlayingSheet: View {
                 }
             }
             .padding(18)
-            .glassEffect(.regular, in: .rect(cornerRadius: 26))
+            .appGlassEffect(.regular, in: .rect(cornerRadius: 26))
         }
     }
 
     private var sleepTimerLabel: String {
-        guard let rem = player.sleepTimerRemainingSeconds else { return "定时" }
-        return "\(max(1, rem / 60))分"
-    }
-
-    private func formatTime(_ sec: Double) -> String {
-        guard sec.isFinite && sec > 0 else { return "00:00" }
-        let total = Int(sec)
-        return String(format: "%02d:%02d", total / 60, total % 60)
+        if let rem = player.sleepTimerRemainingSeconds, player.sleepTimerPreset != .off, player.sleepTimerPreset != .endOfEpisode {
+            return "\(max(1, rem / 60))分"
+        }
+        return player.sleepTimerPreset.rawValue
     }
 }

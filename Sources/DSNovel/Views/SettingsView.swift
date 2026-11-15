@@ -5,21 +5,21 @@ struct SettingsView: View {
     @Environment(DualSourceEngine.self) private var engine
     @Environment(AudioPlayerEngine.self) private var player
     @Environment(LibraryStore.self) private var library
-    @Environment(SourceDebugEngine.self) private var debugEngine
+    @Environment(QXRewriteParserEngine.self) private var qxParser
+    @Environment(CompliantDataUpdateModule.self) private var dataUpdater
 
     let onOpenFullPlayer: () -> Void
 
     @State private var loginTargetSource: CoreSourceID? = nil
-    @State private var isShowingAddURLSheet: Bool = false
-    @State private var newURLTitle: String = ""
-    @State private var newURLString: String = ""
     @State private var cacheClearedBanner: Bool = false
-
-    private let eqPresets = ["人声清晰", "低音增强", "夜间柔和", "原声直通"]
+    @State private var isShowingAddDataSourceSheet: Bool = false
+    @State private var isShowingPasteRewriteSheet: Bool = false
+    @State private var newSourceTitle: String = ""
+    @State private var newSourceURL: String = ""
+    @State private var newSourceKind: CompliantFeedKind = .qxRewriteConf
+    @State private var pastedRewriteText: String = "[rewrite_local]\n"
 
     var body: some View {
-        @Bindable var bindableDebug = debugEngine
-
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -27,158 +27,109 @@ struct SettingsView: View {
                         .font(.system(size: 22, weight: .bold))
                         .padding(.horizontal, 4)
 
-                    // 1. 代理介入专区（保留“会员调试”与“VIP章节播放解锁”两大核心功能，支持添加在线 URL 更新）
+
+                    // 0. 合规数据更新模块与 Quantumult X 重写解析器（无预设地址，仅支持用户添加 HTTPS 数据源与标准 [rewrite_local] 规则）
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Label("调试功能", systemImage: "slider.horizontal.below.square.and.square.filled")
+                            Label("数据更新与 QX 重写解析器", systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard")
                                 .font(.system(size: 15, weight: .bold))
                                 .foregroundStyle(.orange)
                             Spacer()
-                            Text(debugEngine.isEnabled ? "已开启调试" : "已关闭")
+                            Text(qxParser.isEnabled ? "已启用 (\(qxParser.rules.filter { $0.isEnabled }.count)条)" : "未启用")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(debugEngine.isEnabled ? .green : .secondary)
+                                .foregroundStyle(qxParser.isEnabled ? .green : .secondary)
                         }
 
-                        VStack(alignment: .leading, spacing: 14) {
-                            // 代理介入总开关
+                        VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("启用调试功能")
-                                        .font(.system(size: 15, weight: .bold))
-                                    Text("客户端原生实现接口参数调优与多通道音源优选，URL 仅作关键配置更新源")
-                                        .font(.system(size: 12))
+                                    Text("启用 Quantumult X 重写解析模块")
+                                        .font(.system(size: 14, weight: .bold))
+                                    Text("支持 [rewrite_local] 请求头/响应体/脚本重写与本地 Mock 调试")
+                                        .font(.system(size: 11.5))
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Toggle("", isOn: $bindableDebug.isEnabled)
+                                Toggle("", isOn: Binding(get: { qxParser.isEnabled }, set: { qxParser.isEnabled = $0 }))
                                     .labelsHidden()
                                     .tint(.orange)
                             }
 
-                            if debugEngine.isEnabled {
-                                Divider().overlay(Color.white.opacity(0.08))
-
-                                // 保留的两个核心子模块开关：1. 会员调试  2. VIP章节播放解锁
-                                HStack(spacing: 10) {
-                                    GlassPillButton(
-                                        title: "接口参数调试",
-                                        icon: debugEngine.endpointTuningEnabled ? "checkmark.seal.fill" : "circle",
-                                        isSelected: debugEngine.endpointTuningEnabled,
-                                        activeColor: .orange,
-                                        minHeight: 36
-                                    ) {
-                                        debugEngine.endpointTuningEnabled.toggle()
-                                    }
-
-                                    GlassPillButton(
-                                        title: "章节多通道优选",
-                                        icon: debugEngine.streamFallbackTuningEnabled ? "bolt.horizontal.circle.fill" : "circle",
-                                        isSelected: debugEngine.streamFallbackTuningEnabled,
-                                        activeColor: .green,
-                                        minHeight: 36
-                                    ) {
-                                        debugEngine.streamFallbackTuningEnabled.toggle()
-                                    }
-
-                                    Spacer()
-                                }
-                            }
-
                             Divider().overlay(Color.white.opacity(0.08))
 
-                            // 状态与在线更新栏
-                            HStack(spacing: 10) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(debugEngine.statusSummary)
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundStyle(.orange)
-                                        .lineLimit(1)
-                                    Text("客户端原生极速调优 \(debugEngine.optimizedRequestCount) 次 · 零脚本阻塞")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.secondary)
-                                }
-
+                            HStack(spacing: 8) {
+                                Text(dataUpdater.statusMessage)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(.orange)
+                                    .lineLimit(2)
                                 Spacer()
-
-                                GlassPillButton(
-                                    title: debugEngine.isSyncingData ? "读取中..." : "同步数据",
-                                    icon: "arrow.triangle.2.circlepath",
-                                    isSelected: true,
-                                    activeColor: .orange,
-                                    minHeight: 34
-                                ) {
-                                    Task {
-                                        await debugEngine.syncKeyDataFromURL()
-                                    }
+                                GlassPillButton(title: "添加HTTPS源", icon: "plus.circle.fill", isSelected: true, activeColor: .orange, minHeight: 32) {
+                                    newSourceTitle = ""
+                                    newSourceURL = ""
+                                    isShowingAddDataSourceSheet = true
                                 }
-
-                                GlassPillButton(
-                                    title: "添加URL",
-                                    icon: "plus.circle.fill",
-                                    isSelected: false,
-                                    minHeight: 34
-                                ) {
-                                    newURLTitle = ""
-                                    newURLString = ""
-                                    isShowingAddURLSheet = true
+                                GlassPillButton(title: "导入规则", icon: "doc.text", isSelected: false, minHeight: 32) {
+                                    isShowingPasteRewriteSheet = true
                                 }
                             }
 
-                            // 在线脚本 URL 源列表
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("在线配置数据源（仅读取关键参数，点击切换生效源）")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-
-                                ForEach(debugEngine.dataSources) { src in
-                                    let isSelected = (debugEngine.activeSourceId == src.id)
+                            if !dataUpdater.sources.isEmpty {
+                                ForEach(dataUpdater.sources) { src in
                                     HStack(spacing: 10) {
-                                        Button {
-                                            debugEngine.activeSourceId = src.id
-                                            Task {
-                                                await debugEngine.syncKeyDataFromURL(sourceId: src.id)
-                                            }
-                                        } label: {
-                                            HStack(spacing: 10) {
-                                                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                                    .font(.system(size: 16, weight: .bold))
-                                                    .foregroundStyle(isSelected ? .orange : .secondary)
-
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    HStack(spacing: 6) {
-                                                        Text(src.title)
-                                                            .font(.system(size: 13, weight: .semibold))
-                                                            .foregroundStyle(.primary)
-                                                            .lineLimit(1)
-                                                        Text(src.lastSyncedText)
-                                                            .font(.system(size: 9.5, weight: .semibold))
-                                                            .foregroundStyle(.green)
-                                                            .padding(.horizontal, 5)
-                                                            .padding(.vertical, 1.5)
-                                                            .background(Capsule().fill(Color.green.opacity(0.14)))
-                                                    }
-                                                    Text(src.urlString)
-                                                        .font(.system(size: 10.5, design: .monospaced))
-                                                        .foregroundStyle(.secondary)
-                                                        .lineLimit(1)
-                                                }
-                                            }
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .contentShape(Rectangle())
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("\(src.title) · \(src.kind.rawValue)")
+                                                .font(.system(size: 12.5, weight: .semibold))
+                                            Text("\(src.lastUpdatedText) · \(src.urlString)")
+                                                .font(.system(size: 10.5, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
                                         }
-                                        .buttonStyle(ResponsivePressButtonStyle())
-
-                                        if !src.isBuiltIn {
-                                            GlassIconButton(systemName: "trash", tint: .red, size: 30) {
-                                                debugEngine.removeDataSource(id: src.id)
-                                            }
+                                        Spacer()
+                                        GlassPillButton(title: "同步", isSelected: false, minHeight: 28) {
+                                            Task { await dataUpdater.syncSource(id: src.id) }
+                                        }
+                                        GlassIconButton(systemName: "trash", accessibilityTitle: "删除数据源", tint: .red, size: 28) {
+                                            dataUpdater.removeSource(id: src.id)
                                         }
                                     }
                                     .padding(10)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .fill(isSelected ? Color.orange.opacity(0.12) : Color.white.opacity(0.04))
-                                    )
+                                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+                                }
+                            }
+
+                            if !qxParser.rules.isEmpty {
+                                Divider().overlay(Color.white.opacity(0.08))
+                                HStack {
+                                    Text("已解析重写规则 (\(qxParser.rules.count)) · 命中 \(qxParser.hitCount) 次")
+                                        .font(.system(size: 11.5, weight: .semibold))
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    GlassPillButton(title: "清空规则", isSelected: false, minHeight: 26) {
+                                        qxParser.clearAllRules()
+                                    }
+                                }
+
+                                ForEach(qxParser.rules) { rule in
+                                    HStack(spacing: 8) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(rule.action.displayLabel + " · " + rule.action.rawValue)
+                                                .font(.system(size: 11.5, weight: .bold))
+                                                .foregroundStyle(.orange)
+                                            Text(rule.urlPattern)
+                                                .font(.system(size: 10.5, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        GlassPillButton(title: rule.isEnabled ? "启用" : "停用", isSelected: rule.isEnabled, activeColor: .green, minHeight: 28) {
+                                            qxParser.toggleRule(id: rule.id)
+                                        }
+                                        GlassIconButton(systemName: "trash", accessibilityTitle: "删除规则", tint: .red, size: 28) {
+                                            qxParser.removeRule(id: rule.id)
+                                        }
+                                    }
+                                    .padding(8)
+                                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
                                 }
                             }
                         }
@@ -186,7 +137,7 @@ struct SettingsView: View {
                         .background(RoundedRectangle(cornerRadius: 16).fill(Color(red: 0.11, green: 0.12, blue: 0.15)))
                     }
 
-                    // 2. 书源账号登录区（全软件唯一分离操作喜马拉雅与番茄畅听的地方）
+                    // 1. 书源账号登录区（Keychain 安全存储 + 退出清理 WebKit 会话）
                     VStack(alignment: .leading, spacing: 12) {
                         Label("书源账号登录", systemImage: "person.badge.key.fill")
                             .font(.system(size: 15, weight: .bold))
@@ -204,7 +155,7 @@ struct SettingsView: View {
                                     HStack(spacing: 6) {
                                         Text("\(source.displayName)账号")
                                             .font(.system(size: 15, weight: .bold))
-                                        Text(engine.loginNicknames[source] != nil ? "已登录" : "未登录(免登可用)")
+                                        Text(engine.loginNicknames[source] != nil ? "已登录" : "未登录")
                                             .font(.system(size: 10, weight: .semibold))
                                             .foregroundStyle(engine.loginNicknames[source] != nil ? .green : .secondary)
                                             .padding(.horizontal, 6)
@@ -221,6 +172,7 @@ struct SettingsView: View {
                                 if engine.loginNicknames[source] != nil {
                                     GlassPillButton(title: "退出登录", isSelected: false, minHeight: 36) {
                                         engine.logout(source: source)
+                                        clearWebViewCookies(domain: source.cookieDomain)
                                     }
                                 } else {
                                     GlassPillButton(
@@ -239,28 +191,13 @@ struct SettingsView: View {
                         }
                     }
 
-                    // 3. 播放偏好与音效调节
+                    // 2. 播放偏好（支持持久化）
                     VStack(alignment: .leading, spacing: 12) {
-                        Label("播放偏好与音效调节", systemImage: "waveform.path.ecg")
+                        Label("播放偏好与跳过片头片尾", systemImage: "waveform.path.ecg")
                             .font(.system(size: 15, weight: .bold))
                             .foregroundStyle(.orange)
 
                         VStack(alignment: .leading, spacing: 14) {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(eqPresets, id: \.self) { preset in
-                                        GlassPillButton(
-                                            title: preset,
-                                            isSelected: player.activeEQPreset == preset,
-                                            activeColor: .orange,
-                                            minHeight: 34
-                                        ) {
-                                            player.activeEQPreset = preset
-                                        }
-                                    }
-                                }
-                            }
-
                             HStack {
                                 Text("自动跳过片头：\(Int(player.skipIntroSeconds)) 秒")
                                     .font(.system(size: 14))
@@ -289,7 +226,7 @@ struct SettingsView: View {
                         .background(RoundedRectangle(cornerRadius: 16).fill(Color(red: 0.11, green: 0.12, blue: 0.15)))
                     }
 
-                    // 4. 缓存管理
+                    // 3. 缓存管理
                     VStack(alignment: .leading, spacing: 12) {
                         Label("存储与缓存", systemImage: "internaldrive.fill")
                             .font(.system(size: 15, weight: .bold))
@@ -322,32 +259,77 @@ struct SettingsView: View {
             .sheet(item: $loginTargetSource) { source in
                 SourceWebLoginSheet(source: source)
             }
-            .sheet(isPresented: $isShowingAddURLSheet) {
+            .sheet(isPresented: $isShowingAddDataSourceSheet) {
                 NavigationStack {
                     Form {
-                        Section("添加调试功能在线数据 URL") {
-                            TextField("名称备注（选填，如：喜马拉雅最新脚本）", text: $newURLTitle)
-                            TextField("https://raw.githubusercontent.com/.../ximalaya.js", text: $newURLString)
+                        Section("添加合规 HTTPS 数据源") {
+                            TextField("名称备注（选填）", text: $newSourceTitle)
+                            TextField("https://example.com/feed.json", text: $newSourceURL)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .keyboardType(.URL)
+                            Picker("数据格式类型", selection: $newSourceKind) {
+                                ForEach(CompliantFeedKind.allCases) { k in
+                                    Text(k.rawValue).tag(k)
+                                }
+                            }
                         }
                     }
-                    .navigationTitle("添加在线更新 URL")
+                    .navigationTitle("添加 HTTPS 数据源")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
-                            Button("取消") { isShowingAddURLSheet = false }
+                            Button("取消") { isShowingAddDataSourceSheet = false }
                         }
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("添加并更新") {
-                                debugEngine.addOnlineDataURL(title: newURLTitle, urlString: newURLString)
-                                isShowingAddURLSheet = false
+                            Button("添加并同步") {
+                                let t = newSourceTitle
+                                let u = newSourceURL
+                                let k = newSourceKind
+                                isShowingAddDataSourceSheet = false
+                                Task { _ = await dataUpdater.addSource(title: t, urlString: u, kind: k) }
                             }
                         }
                     }
                 }
                 .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $isShowingPasteRewriteSheet) {
+                NavigationStack {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("粘贴 Quantumult X [rewrite_local] 规则文本：")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $pastedRewriteText)
+                            .font(.system(size: 12, design: .monospaced))
+                            .padding(8)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
+                    }
+                    .padding(16)
+                    .navigationTitle("导入 QX 重写规则")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("取消") { isShowingPasteRewriteSheet = false }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("解析导入") {
+                                let txt = pastedRewriteText
+                                isShowingPasteRewriteSheet = false
+                                Task { _ = await qxParser.importRules(from: txt) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func clearWebViewCookies(domain: String) {
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        store.getAllCookies { cookies in
+            for cookie in cookies where cookie.domain.lowercased().hasSuffix(domain.lowercased()) {
+                store.delete(cookie)
             }
         }
     }
@@ -404,8 +386,11 @@ struct CookieLoginWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-                let matched = cookies.filter { $0.domain.contains(self.domainFilter) }
-                let hasAuth = matched.contains { $0.name.contains("token") || $0.name.contains("session") || $0.name == "1&_token" }
+                let matched = cookies.filter {
+                    let d = $0.domain.lowercased()
+                    return d == self.domainFilter || d.hasSuffix("." + self.domainFilter)
+                }
+                let hasAuth = matched.contains { $0.name == "1&_token" || $0.name == "1&_device" }
                 if hasAuth {
                     let header = matched.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
                     Task { @MainActor in

@@ -8,7 +8,7 @@ struct FloatingMiniPlayerBar: View {
 
     var body: some View {
         if let book = player.currentBook {
-            GlassEffectContainer(spacing: 10) {
+            AppGlassContainer(spacing: 10) {
                 HStack(spacing: 10) {
                     // 左侧点击展开全屏播放器
                     Button {
@@ -17,6 +17,7 @@ struct FloatingMiniPlayerBar: View {
                     } label: {
                         HStack(spacing: 10) {
                             BookCoverView(
+                                bookId: book.id,
                                 urlString: book.coverURL,
                                 title: book.title,
                                 source: book.source,
@@ -61,7 +62,7 @@ struct FloatingMiniPlayerBar: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .glassEffect(.regular, in: .capsule)
+                .appGlassEffect(.regular, in: .capsule)
             }
             .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
         }
