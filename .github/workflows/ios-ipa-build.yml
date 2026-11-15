@@ -1,0 +1,143 @@
+# 合规边界：仅用于构建本仓库自身的 iOS 软件项目，不对外提供签名/打包服务，
+# 不作为分发渠道、CDN 或通用算力，不高频空跑或矩阵刷量。
+# macOS runner 按 10× 倍率扣分钟（私有仓库 Free 每月约合 200 分钟 macOS），
+# 故设 timeout-minutes / concurrency 取消重复运行、产物与日志限 7 天保留。
+# 若需签名分发，证书/描述文件/ASC Key 一律放仓库 Secrets，禁止入库。
+name: Build DSNovel Unsigned IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run unit tests (extra macOS minutes; off by default)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ipa:
+    name: Build & Package Unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      # 不硬编码 /Applications/Xcode.app —— hosted runner 上 Xcode 路径随镜像变化，
+      # 直接用 runner 默认 Xcode 即可；xcodegen 缺失时才按需安装。
+      - name: Environment Diagnostics
+        run: |
+          set -euo pipefail
+          echo "=== Xcode (runner default) ==="
+          xcodebuild -version
+          echo "=== iOS SDK ==="
+          xcrun --sdk iphoneos --show-sdk-version
+          echo "=== XcodeGen ==="
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode Project
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          test -d DSNovel.xcodeproj
+          echo "=== schemes ==="
+          xcodebuild -list -project DSNovel.xcodeproj
+
+      # 默认关闭：模拟器测试会额外消耗 10× macOS 分钟，且 DSNovelTests 曾触发
+      # "Multiple commands produce DSNovel.swiftmodule"。需要时在 Actions 手动勾选。
+      # 用 simctl JSON 解析取第一个可用 iPhone，避免依赖具体机型名。
+      - name: Unit Tests (opt-in, skipped by default)
+        if: ${{ inputs.run_tests == true }}
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          SIM_UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys;d=json.load(sys.stdin);print(next((x["udid"] for k,v in d["devices"].items() if "iOS" in k for x in v if x.get("isAvailable") and "iPhone" in x.get("name","")), ""))')"
+          if [ -z "$SIM_UDID" ]; then
+            echo "::warning::No available iPhone simulator; skipping tests."
+            exit 0
+          fi
+          xcodebuild test \
+            -project DSNovel.xcodeproj \
+            -scheme DSNovel \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/DerivedDataTest \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            2>&1 | tee build/xcodebuild-test.log
+
+      # pipefail + tee：日志实时输出并留存，xcodebuild 失败时步骤仍正确失败。
+      - name: Build Release App (unsigned)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild clean build \
+            -project DSNovel.xcodeproj \
+            -scheme DSNovel \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            2>&1 | tee build/xcodebuild.log
+
+      - name: Package Unsigned IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/DerivedData/Build/Products/Release-iphoneos -name 'DSNovel.app' -type d | head -n 1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::DSNovel.app not found under Release-iphoneos"
+            exit 1
+          fi
+          echo "APP_PATH=$APP_PATH"
+          echo "=== .app contents (verify bundled resources) ==="
+          ls -la "$APP_PATH"
+          for f in Info.plist Assets.car PkgInfo prelude.js PrivacyInfo.xcprivacy; do
+            if [ -e "$APP_PATH/$f" ]; then
+              echo "  [OK] $f"
+            else
+              echo "::warning::Missing bundled resource: $f"
+            fi
+          done
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/DSNovel.app
+          cd build/ipa
+          zip -qry ../../DSNovel-unsigned.ipa Payload
+          cd ../..
+          ls -lh DSNovel-unsigned.ipa
+
+      # 构建失败也上传日志，便于在不查看源码的前提下定位问题。
+      - name: Upload Build Log (troubleshooting)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: |
+            build/xcodebuild.log
+            build/xcodebuild-test.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSNovel-unsigned-${{ github.run_number }}
+          path: DSNovel-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
