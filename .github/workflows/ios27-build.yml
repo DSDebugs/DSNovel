@@ -4,6 +4,12 @@ on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run unit tests (extra macOS minutes; off by default)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-ipa:
@@ -28,6 +34,7 @@ jobs:
           xcodegen generate
 
       - name: Run Unit Tests (DSNovelTests)
+        if: ${{ inputs.run_tests == true }}
         run: |
           DEST=$(xcrun simctl list devices available | grep -m 1 "iPhone" | sed -E 's/.*\(([0-9A-F-]+)\).*/\1/')
           if [ -n "${DEST}" ]; then
