@@ -123,7 +123,7 @@ struct GlassPillButton: View {
             .contentShape(Capsule())
         }
         .buttonStyle(ResponsivePressButtonStyle())
-        .accessibilityLabel(accessibilityTitle)
+        .accessibilityLabel(title)
     }
 }
 

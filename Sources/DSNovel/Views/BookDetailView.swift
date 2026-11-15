@@ -250,7 +250,7 @@ struct BookDetailView: View {
         let result = await engine.fetchAllBookEpisodes(for: book, forceRefresh: force)
         episodes = result.episodes
         isDirectoryIncomplete = !result.isComplete
-        if let saved = library.entry(for: book.id), !list.isEmpty {
+        if let saved = library.entry(for: book.id), !episodes.isEmpty {
             selectedPageSlice = min(max(0, saved.lastEpisodeIndex / sliceSize), max(0, totalSlices - 1))
         }
         isLoadingEpisodes = false
