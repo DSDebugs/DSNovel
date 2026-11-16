@@ -37,6 +37,8 @@ struct DSNovelApp: App {
                     downloadManager.modelContext = context
                     downloadManager.recoverInterruptedItems()
                     _ = await CookieSync.pullFromWebView()
+                    // 首次启动：把随 App 打包的听书书源种子安装到插件目录（幂等，不覆盖用户数据）
+                    await BundledSourceSeeder.seedIfNeeded(modelContext: context)
                     await PluginRuntime.shared.reloadInstalledPackages()
                     autoResumeIfNeeded(context: context)
                 }

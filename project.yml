@@ -39,6 +39,8 @@ targets:
         buildPhase: resources
       - path: DSNovel/Resources/PrivacyInfo.xcprivacy
         buildPhase: resources
+      - path: DSNovel/Resources/BundledSources/ShunAudiobookPro-v5.6.zip
+        buildPhase: resources
     dependencies:
       - package: SwiftSoup
     info:

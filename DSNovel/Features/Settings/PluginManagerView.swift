@@ -422,13 +422,13 @@ struct PluginManagerView: View {
         .accessibilityLabel("整理书源")
     }
 
-    // MARK: 空状态（不内置任何书源）
+    // MARK: 空状态（内置听书书源被清空时的提示）
 
     private var emptyState: some View {
         ContentUnavailableView {
             Label("还没有书源", systemImage: "puzzlepiece.extension")
         } description: {
-            Text("应用不内置任何书源。请导入你自己的书源包（.zip）或 .js 脚本后开始使用。")
+            Text("应用已内置听书专享书源；若你清空了全部书源，重装应用即可自动恢复，也可导入自己的书源包（.zip）或 .js 脚本。")
         } actions: {
             VStack(spacing: 10) {
                 Button {
