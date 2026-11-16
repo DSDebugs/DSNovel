@@ -198,14 +198,14 @@ actor BuiltinParserRuntime {
         }
 
         let meta = try Self.decodeMeta(rawArray[0])
-        let payloadData = Data(scriptText.utf8)
-        let sha = BuiltinParserStore.sha256Hex(payloadData)
+        let data = Data(scriptText.utf8)
+        let sha = BuiltinParserStore.sha256Hex(data)
         let existing = BuiltinParserStore.loadParser(in: BuiltinParserStore.directory(for: meta.id))
         return BuiltinParserPreview(
             meta: meta,
             fileName: fileName,
             sha256: sha,
-            sizeBytes: payloadData.count,
+            sizeBytes: data.count,
             scriptText: scriptText,
             isUpdate: existing != nil,
             installedVersion: existing?.meta.version

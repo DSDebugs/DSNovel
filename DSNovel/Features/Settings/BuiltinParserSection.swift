@@ -1,14 +1,14 @@
 import SwiftUI
 import SwiftData
-import UniformTypeIdentifiers
 
 // MARK: - 内置解析分区（书源详情的「内置解析」功能区）
 //
 // 交互约束（按需求确定）：
-// - 无论是否导入脚本，本分区**不输出任何提示**：没有空态引导文案、没有徽标、没有 Toast、没有红点。
-//   未导入时只是一个中性空位（"解析脚本：未安装" + 一个导入入口控件）。
+// - 无论是否安装脚本，本分区**不输出任何提示**：没有空态引导文案、没有徽标、没有 Toast、没有红点。
+//   未安装时只是一个中性空位（"解析脚本：未安装" + 一个编辑入口控件）。
+// - 脚本通过「编辑脚本」面板粘贴脚本内容安装（不再使用文件选择器）。
 // - 全 App 唯一的内置解析提示出口是「VIP 章节报错」时的跳转按钮（见 PlayerViews / BookDetailView）。
-// - 只有「导入/更新失败」与「用户主动点自检失败」会出声（属错误反馈，不是提示）。
+// - 只有「解析/安装失败」与「用户主动点自检失败」会出声（属错误反馈，不是提示）。
 
 struct BuiltinParserSection: View {
     @Environment(\.modelContext) private var modelContext
@@ -17,7 +17,8 @@ struct BuiltinParserSection: View {
 
     let plugin: PluginRecord
 
-    @State private var showFileImporter = false
+    @State private var showScriptEditor = false
+    @State private var editorScriptText = ""
     @State private var isImporting = false
     @State private var pendingPreview: BuiltinParserPreview?
     @State private var errorAlertMessage: String?
@@ -48,21 +49,19 @@ struct BuiltinParserSection: View {
             if let record = activeRecord {
                 installedRows(record)
             } else {
-                // 中性空位：只有状态与导入入口，没有任何引导性文案
+                // 中性空位：只有状态与编辑入口，没有任何引导性文案
                 LabeledContent("解析脚本", value: BuiltinParserStrings.notInstalledValue)
-                importButton(title: "导入脚本（.js）")
+                importButton(title: "编辑脚本")
             }
 
             if !statusNote.isEmpty {
                 LabeledContent("最近自检", value: statusNote)
             }
         }
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: Self.parserContentTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            handleFileImport(result)
+        .sheet(isPresented: $showScriptEditor) {
+            BuiltinParserScriptEditorSheet(initialText: editorScriptText) { text in
+                analyzeAndPreview(scriptText: text)
+            }
         }
         .sheet(item: $pendingPreview) { preview in
             BuiltinParserPreviewSheet(preview: preview) {
@@ -136,7 +135,7 @@ struct BuiltinParserSection: View {
             Label("自检", systemImage: "stethoscope")
         }
 
-        importButton(title: "更新脚本（.js）")
+        importButton(title: "编辑脚本")
 
         Button {
             showLogSheet = true
@@ -201,68 +200,42 @@ struct BuiltinParserSection: View {
 
     private func importButton(title: String) -> some View {
         Button {
-            showFileImporter = true
+            // 更新场景预填当前脚本文本，方便在其基础上修改；未安装时为空
+            editorScriptText = installedParser.flatMap { BuiltinParserStore.scriptText(for: $0) } ?? ""
+            showScriptEditor = true
         } label: {
             if isImporting {
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("导入中…")
+                    Text("解析中…")
                 }
             } else {
-                Label(title, systemImage: "square.and.arrow.down")
+                Label(title, systemImage: "square.and.pencil")
             }
         }
         .disabled(isImporting)
     }
 
-    // MARK: 导入
+    // MARK: 解析粘贴的脚本文本
 
-    private static var parserContentTypes: [UTType] {
-        var types: [UTType] = [.javaScript, .plainText, .sourceCode, .json, .data]
-        if let js = UTType(filenameExtension: "js") { types.insert(js, at: 0) }
-        return types
-    }
-
-    private func handleFileImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .failure(let error):
-            errorAlertMessage = "读取失败：\(error.localizedDescription)"
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            isImporting = true
-            Task {
-                do {
-                    let (text, fileName) = try await Self.readImportedFile(url)
-                    let preview = try await BuiltinParserRuntime.shared.analyze(scriptText: text, fileName: fileName)
-                    isImporting = false
-                    pendingPreview = preview
-                } catch {
-                    isImporting = false
-                    errorAlertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                }
+    /// 对用户粘贴的脚本文本做干跑校验并进入安装预览；文件名由脚本自身元数据决定，这里给一个稳定的占位名
+    private func analyzeAndPreview(scriptText: String) {
+        let text = scriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            errorAlertMessage = "请先粘贴脚本内容"
+            return
+        }
+        isImporting = true
+        Task {
+            do {
+                let preview = try await BuiltinParserRuntime.shared.analyze(scriptText: text, fileName: "pasted-parser.js")
+                isImporting = false
+                pendingPreview = preview
+            } catch {
+                isImporting = false
+                errorAlertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         }
-    }
-
-    /// 后台线程 + 安全作用域 + 文件协调读取（与书源导入同一套做法）
-    private static func readImportedFile(_ url: URL) async throws -> (text: String, fileName: String) {
-        try await Task.detached(priority: .userInitiated) { () -> (String, String) in
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-
-            var coordinatorError: NSError?
-            var data: Data?
-            let coordinator = NSFileCoordinator()
-            coordinator.coordinate(readingItemAt: url, options: .withoutChanges, error: &coordinatorError) { target in
-                data = try? Data(contentsOf: target, options: .mappedIfSafe)
-            }
-            if let coordinatorError { throw coordinatorError }
-            guard let data else { throw BuiltinParserError.scriptInvalid("无法读取所选文件") }
-            guard let text = PluginRuntimeDecoding.decodeScriptText(data) else {
-                throw BuiltinParserError.scriptInvalid("无法解码脚本内容（支持 UTF-8 / UTF-16 / GB18030）")
-            }
-            return (text, url.lastPathComponent)
-        }.value
     }
 
     private func install(preview: BuiltinParserPreview) async {
@@ -361,6 +334,72 @@ struct BuiltinParserSection: View {
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f
     }()
+}
+
+// MARK: - 编辑脚本（用户粘贴脚本内容）
+
+struct BuiltinParserScriptEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String
+    let onCommit: (String) -> Void
+
+    init(initialText: String, onCommit: @escaping (String) -> Void) {
+        _text = State(initialValue: initialText)
+        self.onCommit = onCommit
+    }
+
+    private var trimmedText: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                Text("将解析脚本内容粘贴到下方，点击右上角「解析」进行校验并安装。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                TextEditor(text: $text)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1)
+                    )
+                    .accessibilityLabel("解析脚本内容")
+                    .accessibilityHint("在此粘贴 JavaScript 解析脚本内容")
+            }
+            .padding()
+            .navigationTitle("编辑解析脚本")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("清空") { text = "" }
+                        .disabled(text.isEmpty)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("解析") {
+                        let payload = trimmedText
+                        guard !payload.isEmpty else { return }
+                        dismiss()
+                        // 等编辑弹窗收起动画结束再触发校验/预览，避免新 sheet 被系统丢弃
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(350))
+                            onCommit(payload)
+                        }
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(trimmedText.isEmpty)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - 导入预览（写入前的确认弹窗，不是提示）

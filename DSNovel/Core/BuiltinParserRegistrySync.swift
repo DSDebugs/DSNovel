@@ -49,9 +49,8 @@ enum BuiltinParserRegistrySync {
 
     /// 安装后写入/更新单条记录
     static func upsert(context: ModelContext, parser: InstalledBuiltinParser) {
-        let targetID = parser.id
         let descriptor = FetchDescriptor<BuiltinParserRecord>(
-            predicate: #Predicate<BuiltinParserRecord> { $0.id == targetID }
+            predicate: #Predicate<BuiltinParserRecord> { $0.id == parser.id }
         )
         if let record = (try? context.fetch(descriptor))?.first {
             record.applyDiskState(parser)
