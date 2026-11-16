@@ -198,7 +198,8 @@ final class PackageContextPool: @unchecked Sendable {
 }
 
 /// 并发安全的单次恢复门栓：防止超时任务与 GCD JS 执行回调重复 resume Continuation
-private final class OnceContinuationGate<T: Sendable>: @unchecked Sendable {
+/// （命名为 PluginContinuationGate，避免与 BuiltinParserRuntime 中的同名门栓冲突）
+private final class PluginContinuationGate<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<T, Error>?
 
@@ -667,6 +668,15 @@ actor PluginRuntime {
                     sampleCount: 0,
                     checkedAt: .now
                 )
+            case .vipRequired, .builtinParserMissing, .builtinParserFailed:
+                return SourceHealthCheckResult(
+                    sourceID: sourceID,
+                    state: .unavailable,
+                    latencyMs: elapsedMs,
+                    message: Self.compactErrorMessage(pErr.localizedDescription),
+                    sampleCount: 0,
+                    checkedAt: .now
+                )
             }
         } catch {
             let elapsedMs = max(1, Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000))
@@ -1053,7 +1063,7 @@ actor PluginRuntime {
         let hasVerify = route.meta.hasSearchVerification
 
         return try await withCheckedThrowingContinuation { continuation in
-            let gate = OnceContinuationGate(continuation)
+            let gate = PluginContinuationGate(continuation)
 
             Self.jsExecutionQueue.async {
                 let ctx: JSContext
