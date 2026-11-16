@@ -9,6 +9,12 @@ struct ChapterSegmentRange: Identifiable, Equatable {
     let endIndex: Int // inclusive
 }
 
+struct IndexedChapterSegment: Identifiable, Equatable {
+    var id: String { "\(index)_\(segment.label)" }
+    let index: Int
+    let segment: ChapterSegmentRange
+}
+
 @MainActor
 @Observable
 final class BookDetailViewModel {
@@ -17,6 +23,7 @@ final class BookDetailViewModel {
     var chapters: [ChapterDTO] = []
     var statusText: String = ""
     var isLoading: Bool = false
+    var isLoadingRest: Bool = false
     var errorMessage: String?
     var isAscending: Bool = true
     var selectedSegmentIndex: Int = 0 // 0 表示当前第 1 段（1-50），-1 表示全部
@@ -49,39 +56,89 @@ final class BookDetailViewModel {
         Self.buildSegments(totalCount: chapters.count)
     }
 
+    var indexedSegments: [IndexedChapterSegment] {
+        segments.enumerated().map { IndexedChapterSegment(index: $0.offset, segment: $0.element) }
+    }
+
     var displayedChapters: [ChapterDTO] {
         guard !chapters.isEmpty else { return [] }
+        let currentSegments = segments
         let ordered = isAscending ? chapters : chapters.reversed()
-        if selectedSegmentIndex == -1 || segments.isEmpty {
+        if selectedSegmentIndex == -1 || currentSegments.isEmpty {
             return Array(ordered.prefix(200))
         }
-        let clamped = min(max(0, selectedSegmentIndex), segments.count - 1)
-        let seg = segments[clamped]
+        let clamped = min(max(0, selectedSegmentIndex), currentSegments.count - 1)
+        let seg = currentSegments[clamped]
+        guard seg.startIndex >= 0, seg.endIndex < chapters.count, seg.startIndex <= seg.endIndex else {
+            return Array(ordered.prefix(50))
+        }
         let slice = Array(chapters[seg.startIndex...seg.endIndex])
         return isAscending ? slice : slice.reversed()
     }
 
-    func loadBookDetails() async {
+    func loadBookDetails(forceRefresh: Bool = false) async {
+        let bookID = activeBook.id
+        let sourceID = activeBook.sourceID
+        let bookURL = activeBook.bookURL
+
         // 1. 先读 LZFSE 压缩缓存立即渲染（5.4 节步骤 1）
-        if let cached = ChapterCacheStore.loadChapters(for: activeBook.id), !cached.isEmpty {
+        if !forceRefresh, let cached = ChapterCacheStore.loadChapters(for: bookID), !cached.isEmpty {
             chapters = cached
         }
         isLoading = chapters.isEmpty
+        isLoadingRest = false
         errorMessage = nil
 
+        // 2. 若已有缓存章节且插件支持增量更新 updateEpisodes，优先尝试增量拉取
+        if !forceRefresh, !chapters.isEmpty {
+            if let updated = try? await PluginRuntime.shared.updateEpisodes(
+                sourceID: sourceID,
+                bookURL: bookURL,
+                knownChapters: chapters
+            ), !updated.chapters.isEmpty {
+                applyDetailInfo(updated)
+                chapters = updated.chapters
+                ChapterCacheStore.saveChapters(updated.chapters, for: bookID)
+                isLoading = false
+                return
+            }
+        }
+
+        // 3. 检查源是否声明了 multipleEpisodePages（McpGuide.md 第 6 节：先用 loadFullPages=false 快速取第一页，再用 true 全量加载）
+        let isMultiPage = await PluginRuntime.shared.supportsMultipleEpisodePages(sourceID: sourceID)
+
+        if isMultiPage && chapters.isEmpty {
+            do {
+                let firstPageDetail = try await PluginRuntime.shared.bookDetail(
+                    sourceID: sourceID,
+                    bookURL: bookURL,
+                    loadEpisodes: true,
+                    loadFullPages: false
+                )
+                applyDetailInfo(firstPageDetail)
+                if !firstPageDetail.chapters.isEmpty {
+                    chapters = firstPageDetail.chapters
+                    isLoading = false
+                    isLoadingRest = true
+                }
+            } catch {
+                // 首屏快速拉取失败时继续尝试全量拉取
+            }
+        }
+
         do {
-            let detail = try await PluginRuntime.shared.bookDetail(
-                sourceID: activeBook.sourceID,
-                bookURL: activeBook.bookURL
+            let fullDetail = try await PluginRuntime.shared.bookDetail(
+                sourceID: sourceID,
+                bookURL: bookURL,
+                loadEpisodes: true,
+                loadFullPages: true
             )
-            if !detail.title.isEmpty { activeBook.title = detail.title }
-            if !detail.author.isEmpty { activeBook.author = detail.author }
-            if !detail.coverURL.isEmpty { activeBook.cover = detail.coverURL }
-            if !detail.intro.isEmpty { activeBook.intro = detail.intro }
-            statusText = detail.status
-            if !detail.chapters.isEmpty {
-                chapters = detail.chapters
-                ChapterCacheStore.saveChapters(detail.chapters, for: activeBook.id)
+            applyDetailInfo(fullDetail)
+            if !fullDetail.chapters.isEmpty {
+                chapters = fullDetail.chapters
+                ChapterCacheStore.saveChapters(fullDetail.chapters, for: bookID)
+            } else if chapters.isEmpty {
+                errorMessage = "没有获取到章节"
             }
         } catch {
             if chapters.isEmpty {
@@ -89,6 +146,15 @@ final class BookDetailViewModel {
             }
         }
         isLoading = false
+        isLoadingRest = false
+    }
+
+    private func applyDetailInfo(_ detail: BookDetailDTO) {
+        if !detail.title.isEmpty { activeBook.title = detail.title }
+        if !detail.author.isEmpty { activeBook.author = detail.author }
+        if !detail.coverURL.isEmpty { activeBook.cover = detail.coverURL }
+        if !detail.intro.isEmpty { activeBook.intro = detail.intro }
+        if !detail.status.isEmpty { statusText = detail.status }
     }
 
     func switchSource(to newBook: BookRef, currentLastChapterIndex: Int?) async {
@@ -98,7 +164,8 @@ final class BookDetailViewModel {
         activeBook = newBook
         alternatives = updatedAlts
         chapters = []
-        await loadBookDetails()
+        selectedSegmentIndex = 0
+        await loadBookDetails(forceRefresh: true)
         ToastManager.shared.show("已切换至新听书源")
     }
 }
@@ -147,28 +214,28 @@ struct BookDetailView: View {
             .task(id: viewModel.activeBook.id) {
                 await viewModel.loadBookDetails()
             }
-        .sheet(isPresented: $showRangeDownloadSheet) {
-            rangeDownloadSheetView
-        }
-        .sheet(isPresented: $showBookmarksSheet) {
-            bookmarksSheetView
-        }
-        .sheet(isPresented: $showSwitchSourceSheet) {
-            switchSourceSheetView
-        }
-        .alert("添加书签备注", isPresented: Binding(
-            get: { bookmarkTargetChapter != nil },
-            set: { if !$0 { bookmarkTargetChapter = nil } }
-        )) {
-            TextField("可选备注", text: $bookmarkNoteText)
-            Button("取消", role: .cancel) {
-                bookmarkTargetChapter = nil
-                bookmarkNoteText = ""
+            .sheet(isPresented: $showRangeDownloadSheet) {
+                rangeDownloadSheetView
             }
-            Button("保存") {
-                saveChapterBookmark()
+            .sheet(isPresented: $showBookmarksSheet) {
+                bookmarksSheetView
             }
-        }
+            .sheet(isPresented: $showSwitchSourceSheet) {
+                switchSourceSheetView
+            }
+            .alert("添加书签备注", isPresented: Binding(
+                get: { bookmarkTargetChapter != nil },
+                set: { if !$0 { bookmarkTargetChapter = nil } }
+            )) {
+                TextField("可选备注", text: $bookmarkNoteText)
+                Button("取消", role: .cancel) {
+                    bookmarkTargetChapter = nil
+                    bookmarkNoteText = ""
+                }
+                Button("保存") {
+                    saveChapterBookmark()
+                }
+            }
     }
 
     private var detailListContent: some View {
@@ -203,7 +270,7 @@ struct BookDetailView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         Button("重试") {
-                            Task { await viewModel.loadBookDetails() }
+                            Task { await viewModel.loadBookDetails(forceRefresh: true) }
                         }
                         .buttonStyle(.borderedProminent)
                     }
@@ -337,6 +404,12 @@ struct BookDetailView: View {
 
             Menu {
                 Button {
+                    Task { await viewModel.loadBookDetails(forceRefresh: true) }
+                } label: {
+                    Label("刷新章节", systemImage: "arrow.clockwise")
+                }
+
+                Button {
                     showRangeDownloadSheet = true
                 } label: {
                     Label("区间下载", systemImage: "arrow.down.circle")
@@ -372,10 +445,19 @@ struct BookDetailView: View {
 
     private var chapterSectionHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 8) {
                 Text("共 \(viewModel.chapters.count) 章")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
+
+                if viewModel.isLoadingRest {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("正在加载其余章节…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 Spacer()
                 Button {
                     viewModel.isAscending.toggle()
@@ -388,7 +470,8 @@ struct BookDetailView: View {
                 }
             }
 
-            if viewModel.segments.count > 1 {
+            let indexedSegs = viewModel.indexedSegments
+            if indexedSegs.count > 1 {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         let allActive = viewModel.selectedSegmentIndex == -1
@@ -406,13 +489,12 @@ struct BookDetailView: View {
                         }
                         .buttonStyle(.plain)
 
-                        ForEach(viewModel.segments.indices, id: \.self) { idx in
-                            let seg = viewModel.segments[idx]
-                            let active = viewModel.selectedSegmentIndex == idx
+                        ForEach(indexedSegs) { entry in
+                            let active = viewModel.selectedSegmentIndex == entry.index
                             Button {
-                                viewModel.selectedSegmentIndex = idx
+                                viewModel.selectedSegmentIndex = entry.index
                             } label: {
-                                Text(seg.label)
+                                Text(entry.segment.label)
                                     .font(.caption2.weight(active ? .semibold : .regular))
                                     .foregroundStyle(active ? .white : .primary)
                                     .padding(.horizontal, 10)
@@ -509,9 +591,11 @@ struct BookDetailView: View {
                     }
                     ForEach(viewModel.segments) { seg in
                         Button("下载第 \(seg.label) 章") {
-                            let slice = Array(viewModel.chapters[seg.startIndex...seg.endIndex])
-                            DownloadManager.shared.enqueueChapters(slice, for: viewModel.activeBook, kind: "manual")
-                            ToastManager.shared.show("已将 \(seg.label) 章加入下载")
+                            if seg.startIndex >= 0, seg.endIndex < viewModel.chapters.count, seg.startIndex <= seg.endIndex {
+                                let slice = Array(viewModel.chapters[seg.startIndex...seg.endIndex])
+                                DownloadManager.shared.enqueueChapters(slice, for: viewModel.activeBook, kind: "manual")
+                                ToastManager.shared.show("已将 \(seg.label) 章加入下载")
+                            }
                             showRangeDownloadSheet = false
                         }
                     }

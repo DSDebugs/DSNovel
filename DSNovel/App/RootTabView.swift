@@ -1,12 +1,12 @@
 import SwiftUI
 import SwiftData
 
-/// 主导航容器（第 3 节）：固定四个底部标签（发现 · 书架 · 搜索 · 设置），含迷你播放条与全屏播放器过渡
+/// 主导航容器：固定四个底部标签（发现 · 搜索 · 书架 · 设置），含迷你播放条与全屏播放器过渡
 struct RootTabView: View {
     @State private var selectedTab: AppTab = .discover
     @State private var discoverPath: [Route] = []
-    @State private var shelfPath: [Route] = []
     @State private var searchPath: [Route] = []
+    @State private var shelfPath: [Route] = []
     @State private var settingsPath: [Route] = []
     @State private var isShowingFullPlayer = false
 
@@ -17,11 +17,14 @@ struct RootTabView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             TabView(selection: $selectedTab) {
+                // 1. 发现
                 NavigationStack(path: $discoverPath) {
                     DiscoverView(
                         onNavigateToImportPlugins: {
-                            selectedTab = .settings
-                            settingsPath = [.pluginManager]
+                            navigateToPluginManager()
+                        },
+                        onSwitchToSearch: {
+                            selectedTab = .search
                         },
                         onSelectBook: { bookRef in
                             discoverPath.append(.book(bookRef))
@@ -36,10 +39,33 @@ struct RootTabView: View {
                 }
                 .tag(AppTab.discover)
 
+                // 2. 搜索（不使用 role: .search，固定排在第二栏：发现 · 搜索 · 书架 · 设置）
+                NavigationStack(path: $searchPath) {
+                    SearchView(
+                        onSelectMergedItem: { merged in
+                            searchPath.append(.book(merged.primary, alternatives: merged.alternatives))
+                        },
+                        onNavigateToPluginManager: {
+                            navigateToPluginManager()
+                        }
+                    )
+                    .navigationDestination(for: Route.self) { route in
+                        destinationView(for: route)
+                    }
+                }
+                .tabItem {
+                    Label(AppTab.search.title, systemImage: AppTab.search.icon)
+                }
+                .tag(AppTab.search)
+
+                // 3. 书架
                 NavigationStack(path: $shelfPath) {
                     ShelfView(
                         onSwitchToDiscover: {
                             selectedTab = .discover
+                        },
+                        onSwitchToSearch: {
+                            selectedTab = .search
                         },
                         onSelectBook: { bookRef in
                             shelfPath.append(.book(bookRef))
@@ -57,20 +83,7 @@ struct RootTabView: View {
                 }
                 .tag(AppTab.shelf)
 
-                // 搜索标签不使用 role: .search，确保固定排在设置标签之前（第 3 节）
-                NavigationStack(path: $searchPath) {
-                    SearchView { merged in
-                        searchPath.append(.book(merged.primary, alternatives: merged.alternatives))
-                    }
-                    .navigationDestination(for: Route.self) { route in
-                        destinationView(for: route)
-                    }
-                }
-                .tabItem {
-                    Label(AppTab.search.title, systemImage: AppTab.search.icon)
-                }
-                .tag(AppTab.search)
-
+                // 4. 设置
                 NavigationStack(path: $settingsPath) {
                     SettingsView(path: $settingsPath)
                         .navigationDestination(for: Route.self) { route in
@@ -97,6 +110,11 @@ struct RootTabView: View {
         .fullScreenCover(isPresented: $isShowingFullPlayer) {
             PlayerFullScreenView()
         }
+    }
+
+    private func navigateToPluginManager() {
+        selectedTab = .settings
+        settingsPath = [.pluginManager]
     }
 
     @ViewBuilder

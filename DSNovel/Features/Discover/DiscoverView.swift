@@ -1,9 +1,22 @@
 import SwiftUI
 import SwiftData
 
+struct IndexedDiscoverSection: Identifiable, Equatable {
+    var id: String { "\(index)_\(section.title)" }
+    let index: Int
+    let section: DiscoverSectionDTO
+}
+
+struct IndexedDiscoverTab: Identifiable, Equatable {
+    var id: String { "\(index)_\(tab.id)" }
+    let index: Int
+    let tab: DiscoverTabDTO
+}
+
 @MainActor
 @Observable
 final class DiscoverViewModel {
+    var activeSourceID: String = ""
     var sections: [DiscoverSectionDTO] = []
     var selectedSectionIndex: Int = 0
     var selectedTabIndex: Int = 0
@@ -12,40 +25,107 @@ final class DiscoverViewModel {
     var currentPage: Int = 1
     var totalPage: Int = 1
     var isLoading: Bool = false
+    var isLoadingMore: Bool = false
     var currentError: PluginError?
     var inSourceSearchKeyword: String = ""
     var isInSourceSearching: Bool = false
 
     private var sessionCache: [String: (sections: [DiscoverSectionDTO], items: [BookRef], nextURL: String?)] = [:]
     private var loadTask: Task<Void, Never>?
+    private var loadMoreTask: Task<Void, Never>?
+    private var requestGeneration: UInt64 = 0
+
+    var indexedSections: [IndexedDiscoverSection] {
+        sections.enumerated().map { IndexedDiscoverSection(index: $0.offset, section: $0.element) }
+    }
 
     var activeSection: DiscoverSectionDTO? {
-        guard selectedSectionIndex < sections.count else { return nil }
+        guard sections.indices.contains(selectedSectionIndex) else { return nil }
         return sections[selectedSectionIndex]
     }
 
+    var indexedActiveTabs: [IndexedDiscoverTab] {
+        guard let sec = activeSection else { return [] }
+        return sec.tabs.enumerated().map { IndexedDiscoverTab(index: $0.offset, tab: $0.element) }
+    }
+
     var activeTab: DiscoverTabDTO? {
-        guard let sec = activeSection, selectedTabIndex < sec.tabs.count else { return nil }
+        guard let sec = activeSection, sec.tabs.indices.contains(selectedTabIndex) else { return nil }
         return sec.tabs[selectedTabIndex]
+    }
+
+    func switchSourceIfNeeded(to sourceID: String) {
+        if activeSourceID != sourceID {
+            loadTask?.cancel()
+            loadMoreTask?.cancel()
+            activeSourceID = sourceID
+            sections = []
+            items = []
+            selectedSectionIndex = 0
+            selectedTabIndex = 0
+            nextPageURL = nil
+            currentPage = 1
+            totalPage = 1
+            currentError = nil
+            isLoading = false
+            isLoadingMore = false
+        }
+        loadSource(sourceID: sourceID)
+    }
+
+    func selectSection(_ index: Int, sourceID: String) {
+        guard sections.indices.contains(index) else { return }
+        selectedSectionIndex = index
+        selectedTabIndex = 0
+        loadSource(sourceID: sourceID)
+    }
+
+    func selectTab(_ index: Int, sourceID: String) {
+        guard let sec = activeSection, sec.tabs.indices.contains(index) else { return }
+        selectedTabIndex = index
+        loadSource(sourceID: sourceID)
     }
 
     func loadSource(sourceID: String, forceRefresh: Bool = false) {
         loadTask?.cancel()
+        loadMoreTask?.cancel()
+        isLoadingMore = false
+
         guard !sourceID.isEmpty else {
             sections = []
             items = []
             currentError = nil
+            isLoading = false
             return
+        }
+
+        if activeSourceID != sourceID {
+            activeSourceID = sourceID
+            sections = []
+            items = []
+            selectedSectionIndex = 0
+            selectedTabIndex = 0
+            nextPageURL = nil
         }
 
         let cacheKey = "\(sourceID)_\(selectedSectionIndex)_\(selectedTabIndex)"
         if !forceRefresh, !isInSourceSearching, let cached = sessionCache[cacheKey] {
             sections = cached.sections
+            if !sections.indices.contains(selectedSectionIndex) {
+                selectedSectionIndex = 0
+            }
+            if let sec = activeSection, !sec.tabs.indices.contains(selectedTabIndex) {
+                selectedTabIndex = 0
+            }
             items = cached.items
             nextPageURL = cached.nextURL
             currentError = nil
+            isLoading = false
             return
         }
+
+        requestGeneration &+= 1
+        let currentGen = requestGeneration
 
         loadTask = Task {
             isLoading = true
@@ -57,7 +137,7 @@ final class DiscoverViewModel {
                         keyword: inSourceSearchKeyword.trimmingCharacters(in: .whitespaces),
                         page: 1
                     )
-                    if Task.isCancelled { return }
+                    guard !Task.isCancelled, currentGen == requestGeneration else { return }
                     items = pageDTO.books
                     currentPage = 1
                     totalPage = pageDTO.totalPage ?? 1
@@ -65,68 +145,87 @@ final class DiscoverViewModel {
                 } else {
                     if sections.isEmpty || forceRefresh {
                         let loadedSections = try await PluginRuntime.shared.discoverSections(sourceID: sourceID)
-                        if Task.isCancelled { return }
+                        guard !Task.isCancelled, currentGen == requestGeneration else { return }
                         sections = loadedSections
-                        selectedSectionIndex = min(selectedSectionIndex, max(0, sections.count - 1))
+                        if !sections.indices.contains(selectedSectionIndex) {
+                            selectedSectionIndex = 0
+                        }
                         selectedTabIndex = 0
                     }
                     if let tab = activeTab {
+                        let resolvedCacheKey = "\(sourceID)_\(selectedSectionIndex)_\(selectedTabIndex)"
                         let pageDTO = try await PluginRuntime.shared.discoverList(sourceID: sourceID, tabURL: tab.url)
-                        if Task.isCancelled { return }
+                        guard !Task.isCancelled, currentGen == requestGeneration else { return }
                         items = pageDTO.books
                         nextPageURL = pageDTO.nextPageURL
-                        sessionCache[cacheKey] = (sections, items, nextPageURL)
+                        sessionCache[resolvedCacheKey] = (sections, items, nextPageURL)
                     } else {
                         items = []
+                        nextPageURL = nil
                     }
                 }
             } catch let pErr as PluginError {
-                if !Task.isCancelled { currentError = pErr }
+                if !Task.isCancelled && currentGen == requestGeneration {
+                    currentError = pErr
+                }
             } catch {
-                if !Task.isCancelled { currentError = .network(error.localizedDescription) }
+                if !Task.isCancelled && currentGen == requestGeneration {
+                    currentError = .network(error.localizedDescription)
+                }
             }
-            if !Task.isCancelled {
+            if !Task.isCancelled && currentGen == requestGeneration {
                 isLoading = false
             }
         }
     }
 
     func loadNextPageIfNeeded(sourceID: String, currentItem: BookRef) {
-        guard !isLoading, items.count >= 6 else { return }
+        guard !isLoading, !isLoadingMore, items.count >= 6 else { return }
         let thresholdIndex = max(0, items.count - 6)
-        guard items[thresholdIndex].id == currentItem.id else { return }
+        guard items.indices.contains(thresholdIndex), items[thresholdIndex].id == currentItem.id else { return }
 
+        let currentGen = requestGeneration
         if isInSourceSearching {
             guard currentPage < totalPage else { return }
             let nextPage = currentPage + 1
-            Task {
-                isLoading = true
+            isLoadingMore = true
+            loadMoreTask = Task {
+                defer { isLoadingMore = false }
                 if let dto = try? await PluginRuntime.shared.search(
                     sourceID: sourceID,
                     keyword: inSourceSearchKeyword,
                     page: nextPage
-                ) {
+                ), !Task.isCancelled, currentGen == requestGeneration {
                     currentPage = nextPage
-                    items.append(contentsOf: dto.books)
+                    appendUniqueBooks(dto.books)
                 }
-                isLoading = false
             }
         } else if let nextURL = nextPageURL, !nextURL.isEmpty {
-            Task {
-                isLoading = true
-                if let dto = try? await PluginRuntime.shared.discoverList(sourceID: sourceID, tabURL: nextURL) {
+            isLoadingMore = true
+            loadMoreTask = Task {
+                defer { isLoadingMore = false }
+                if let dto = try? await PluginRuntime.shared.discoverList(sourceID: sourceID, tabURL: nextURL),
+                   !Task.isCancelled, currentGen == requestGeneration {
                     nextPageURL = dto.nextPageURL
-                    items.append(contentsOf: dto.books)
+                    appendUniqueBooks(dto.books)
                 }
-                isLoading = false
             }
+        }
+    }
+
+    private func appendUniqueBooks(_ incoming: [BookRef]) {
+        var existingIDs = Set(items.map(\.id))
+        for b in incoming where !existingIDs.contains(b.id) {
+            existingIDs.insert(b.id)
+            items.append(b)
         }
     }
 }
 
-/// 发现页（5.1 节）：源切换器 Menu、网格/列表切换、纯色横向分类胶囊、就地登录/验证弹层与无插件引导
+/// 发现页（5.1 节）：书源切换器 Menu（含延迟提示与书源管理快捷入口）、网格/列表切换、纯色横向分类胶囊、就地登录/验证弹层与无书源引导
 struct DiscoverView: View {
     let onNavigateToImportPlugins: () -> Void
+    let onSwitchToSearch: () -> Void
     let onSelectBook: (BookRef) -> Void
 
     @Query(sort: [SortDescriptor(\PluginRecord.order)]) private var plugins: [PluginRecord]
@@ -134,18 +233,26 @@ struct DiscoverView: View {
 
     init(
         onNavigateToImportPlugins: @escaping () -> Void,
+        onSwitchToSearch: @escaping () -> Void = {},
         onSelectBook: @escaping (BookRef) -> Void
     ) {
         self.onNavigateToImportPlugins = onNavigateToImportPlugins
+        self.onSwitchToSearch = onSwitchToSearch
         self.onSelectBook = onSelectBook
     }
+
     @State private var viewModel = DiscoverViewModel()
     @State private var settings = AppSettingsStore.shared
     @State private var authSession: WebAuthSessionRequest?
     @State private var showInSourceSearch = false
 
     private var enabledDiscoverPlugins: [PluginRecord] {
-        plugins.filter { $0.isEnabled && $0.discoverable }
+        plugins
+            .filter { $0.isEnabled && $0.discoverable }
+            .sorted { a, b in
+                if a.isPinned != b.isPinned { return a.isPinned && !b.isPinned }
+                return a.order < b.order
+            }
     }
 
     private var currentPlugin: PluginRecord? {
@@ -159,21 +266,26 @@ struct DiscoverView: View {
         Group {
             if plugins.isEmpty {
                 ContentUnavailableView {
-                    Label("尚未安装听书源", systemImage: "puzzlepiece.extension")
+                    Label("尚未安装书源", systemImage: "puzzlepiece.extension")
                 } description: {
-                    Text("导入听书源插件包（.zip 或在线地址）后即可浏览分类与收听有声内容")
+                    Text("导入书源插件包（.zip 或在线地址）后即可浏览分类与收听有声内容")
                 } actions: {
-                    Button("去设置导入听书源") {
+                    Button("前往书源管理导入") {
                         onNavigateToImportPlugins()
                     }
                     .buttonStyle(.borderedProminent)
                 }
             } else if enabledDiscoverPlugins.isEmpty {
-                ContentUnavailableView(
-                    "暂无可用发现源",
-                    systemImage: "eye.slash",
-                    description: Text("请在「设置 → 听书源」中启用至少一个支持分类浏览的插件")
-                )
+                ContentUnavailableView {
+                    Label("暂无可用发现书源", systemImage: "eye.slash")
+                } description: {
+                    Text("请在「设置 → 书源管理」中启用至少一个支持分类浏览的书源")
+                } actions: {
+                    Button("前往书源管理") {
+                        onNavigateToImportPlugins()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             } else {
                 contentBody
             }
@@ -221,8 +333,7 @@ struct DiscoverView: View {
                 if settings.currentDiscoverSourceID != plugin.id {
                     settings.currentDiscoverSourceID = plugin.id
                 }
-                viewModel.sections = []
-                viewModel.loadSource(sourceID: plugin.id)
+                viewModel.switchSourceIfNeeded(to: plugin.id)
             }
         }
     }
@@ -241,6 +352,14 @@ struct DiscoverView: View {
                             viewModel.isInSourceSearching = true
                             viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
                         }
+                    if !viewModel.inSourceSearchKeyword.isEmpty {
+                        Button("搜索") {
+                            viewModel.isInSourceSearching = true
+                            viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DSColor.primary)
+                    }
                 }
                 .padding(10)
                 .background(DSColor.cardSurface)
@@ -257,14 +376,21 @@ struct DiscoverView: View {
                 inlineErrorView(error: err, plugin: plugin)
             } else if viewModel.isLoading && viewModel.items.isEmpty {
                 Spacer()
-                ProgressView("正在加载内容…")
+                ProgressView("正在加载「\(currentPlugin?.name ?? "")」内容…")
                 Spacer()
             } else if viewModel.items.isEmpty {
-                ContentUnavailableView(
-                    "暂无内容",
-                    systemImage: "book.closed",
-                    description: Text("请尝试切换上方分类或下拉刷新")
-                )
+                ContentUnavailableView {
+                    Label("暂无内容", systemImage: "book.closed")
+                } description: {
+                    Text("请尝试切换上方分类、下拉刷新或点击顶部标题切换其他书源")
+                } actions: {
+                    if let plugin = currentPlugin {
+                        Button("刷新当前分类") {
+                            viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
             } else {
                 if settings.discoverLayout == .grid {
                     ScrollView {
@@ -315,16 +441,27 @@ struct DiscoverView: View {
         }
     }
 
+    private func menuTitle(for item: PluginRecord) -> String {
+        if item.lastLatencyMs > 0 && item.isHealthyOrSlow {
+            return "\(item.name) (\(item.lastLatencyMs)ms)"
+        }
+        if item.healthState == .unavailable {
+            return "\(item.name) (不可用)"
+        }
+        return item.name
+    }
+
     private func sourceSwitcherMenu(active: PluginRecord) -> some View {
         Menu {
             let pinned = enabledDiscoverPlugins.filter(\.isPinned)
             if !pinned.isEmpty {
-                Section("置顶听书源") {
+                Section("置顶书源") {
                     ForEach(pinned) { item in
                         Button {
                             settings.currentDiscoverSourceID = item.id
+                            viewModel.switchSourceIfNeeded(to: item.id)
                         } label: {
-                            Label(item.name, systemImage: item.id == active.id ? "checkmark" : "pin.fill")
+                            Label(menuTitle(for: item), systemImage: item.id == active.id ? "checkmark" : "pin.fill")
                         }
                     }
                 }
@@ -336,11 +473,12 @@ struct DiscoverView: View {
                         ForEach(inGroup) { item in
                             Button {
                                 settings.currentDiscoverSourceID = item.id
+                                viewModel.switchSourceIfNeeded(to: item.id)
                             } label: {
                                 if item.id == active.id {
-                                    Label(item.name, systemImage: "checkmark")
+                                    Label(menuTitle(for: item), systemImage: "checkmark")
                                 } else {
-                                    Text(item.name)
+                                    Text(menuTitle(for: item))
                                 }
                             }
                         }
@@ -349,49 +487,60 @@ struct DiscoverView: View {
             }
             let ungrouped = enabledDiscoverPlugins.filter { ($0.groupID == nil || $0.groupID == "") && !$0.isPinned }
             if !ungrouped.isEmpty {
-                Section("默认分组") {
+                Section("未分组") {
                     ForEach(ungrouped) { item in
                         Button {
                             settings.currentDiscoverSourceID = item.id
+                            viewModel.switchSourceIfNeeded(to: item.id)
                         } label: {
                             if item.id == active.id {
-                                Label(item.name, systemImage: "checkmark")
+                                Label(menuTitle(for: item), systemImage: "checkmark")
                             } else {
-                                Text(item.name)
+                                Text(menuTitle(for: item))
                             }
                         }
                     }
                 }
             }
+            Section {
+                Button {
+                    onNavigateToImportPlugins()
+                } label: {
+                    Label("书源管理与延迟检测…", systemImage: "bolt.horizontal.circle")
+                }
+            }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Text(active.name)
                     .font(.headline)
                     .foregroundStyle(.primary)
+                if active.lastLatencyMs > 0 && active.isHealthyOrSlow {
+                    Text("\(active.lastLatencyMs)ms")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                }
                 Image(systemName: "chevron.down")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
         }
-        .accessibilityLabel("切换听书源，当前为\(active.name)")
+        .accessibilityLabel("切换书源，当前为\(active.name)")
     }
 
     private var categoryCapsuleBar: some View {
         VStack(spacing: 8) {
-            if viewModel.sections.count > 1 {
+            let indexedSecs = viewModel.indexedSections
+            if indexedSecs.count > 1 {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(viewModel.sections.indices, id: \.self) { idx in
-                            let sec = viewModel.sections[idx]
-                            let selected = idx == viewModel.selectedSectionIndex
+                        ForEach(indexedSecs) { entry in
+                            let selected = entry.index == viewModel.selectedSectionIndex
                             Button {
-                                viewModel.selectedSectionIndex = idx
-                                viewModel.selectedTabIndex = 0
                                 if let id = currentPlugin?.id {
-                                    viewModel.loadSource(sourceID: id)
+                                    viewModel.selectSection(entry.index, sourceID: id)
                                 }
                             } label: {
-                                Text(sec.title)
+                                Text(entry.section.title)
                                     .font(.subheadline.weight(selected ? .semibold : .regular))
                                     .foregroundStyle(selected ? .white : .primary)
                                     .padding(.horizontal, 12)
@@ -408,19 +557,18 @@ struct DiscoverView: View {
                 }
             }
 
-            if let sec = viewModel.activeSection, !sec.tabs.isEmpty {
+            let indexedTabs = viewModel.indexedActiveTabs
+            if !indexedTabs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(sec.tabs.indices, id: \.self) { idx in
-                            let tab = sec.tabs[idx]
-                            let selected = idx == viewModel.selectedTabIndex
+                        ForEach(indexedTabs) { entry in
+                            let selected = entry.index == viewModel.selectedTabIndex
                             Button {
-                                viewModel.selectedTabIndex = idx
                                 if let id = currentPlugin?.id {
-                                    viewModel.loadSource(sourceID: id)
+                                    viewModel.selectTab(entry.index, sourceID: id)
                                 }
                             } label: {
-                                Text(tab.title)
+                                Text(entry.tab.title)
                                     .font(.caption.weight(selected ? .semibold : .regular))
                                     .foregroundStyle(selected ? .white : .primary)
                                     .padding(.horizontal, 12)
@@ -444,43 +592,50 @@ struct DiscoverView: View {
     @ViewBuilder
     private func inlineErrorView(error: PluginError, plugin: PluginRecord) -> some View {
         ContentUnavailableView {
-            Label("加载失败", systemImage: "exclamationmark.triangle")
+            Label("「\(plugin.name)」加载失败", systemImage: "exclamationmark.triangle")
         } description: {
             Text(error.localizedDescription)
         } actions: {
-            switch error {
-            case .needLogin(_, let loginURL):
-                Button("去登录") {
-                    authSession = WebAuthSessionRequest(
-                        sourceID: plugin.id,
-                        title: "登录 \(plugin.name)",
-                        initialURL: loginURL.isEmpty ? plugin.siteURL : loginURL,
-                        expectedCookieName: nil,
-                        onCompleted: {
-                            plugin.loggedIn = true
-                            viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
-                        }
-                    )
+            HStack(spacing: 12) {
+                switch error {
+                case .needLogin(_, let loginURL):
+                    Button("去登录") {
+                        authSession = WebAuthSessionRequest(
+                            sourceID: plugin.id,
+                            title: "登录 \(plugin.name)",
+                            initialURL: loginURL.isEmpty ? plugin.siteURL : loginURL,
+                            expectedCookieName: nil,
+                            onCompleted: {
+                                plugin.loggedIn = true
+                                viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
+                            }
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                case .needVerify(_, let verifyURL):
+                    Button("去验证") {
+                        authSession = WebAuthSessionRequest(
+                            sourceID: plugin.id,
+                            title: "安全验证 · \(plugin.name)",
+                            initialURL: verifyURL.isEmpty ? plugin.siteURL : verifyURL,
+                            expectedCookieName: nil,
+                            onCompleted: {
+                                viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
+                            }
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                default:
+                    Button("重试") {
+                        viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
-            case .needVerify(_, let verifyURL):
-                Button("去验证") {
-                    authSession = WebAuthSessionRequest(
-                        sourceID: plugin.id,
-                        title: "安全验证 · \(plugin.name)",
-                        initialURL: verifyURL.isEmpty ? plugin.siteURL : verifyURL,
-                        expectedCookieName: nil,
-                        onCompleted: {
-                            viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
-                        }
-                    )
+
+                Button("书源管理") {
+                    onNavigateToImportPlugins()
                 }
-                .buttonStyle(.borderedProminent)
-            default:
-                Button("重试") {
-                    viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
-                }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
             }
         }
     }

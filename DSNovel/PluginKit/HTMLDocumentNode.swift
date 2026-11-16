@@ -1,5 +1,8 @@
 import Foundation
 import JavaScriptCore
+#if canImport(SwiftSoup)
+import SwiftSoup
+#endif
 
 @objc protocol JsElementExports: JSExport {
     func exists() -> Bool
@@ -18,15 +21,31 @@ import JavaScriptCore
     @objc(byId:) func byId(_ id: String) -> JsElement
 }
 
-/// 零第三方依赖的轻量 HTML DOM 节点与 CSS 选择器引擎（100% 兼容 SSTS 插件的 doc.select / .first / .absUrl / .attr / .text 链式调用）
+/// HTML DOM 节点与 Jsoup CSS 选择器桥接（优先使用 SwiftSoup 完整 HTML5/CSS3 引擎，并提供容错栈式 HTML5 解析器回退）
 @objc final class JsElement: NSObject, JsElementExports {
+    #if canImport(SwiftSoup)
+    private let soupElement: SwiftSoup.Element?
+    #endif
+
     let tagName: String
     let attributes: [String: String]
-    let innerHTML: String
+    var innerHTML: String
     let baseURL: String
     weak var parentNode: JsElement?
     var childNodes: [JsElement] = []
     private let isNullElement: Bool
+
+    #if canImport(SwiftSoup)
+    init(soupElement: SwiftSoup.Element?, baseURL: String = "") {
+        self.soupElement = soupElement
+        self.tagName = ((try? soupElement?.tagName()) ?? "").lowercased()
+        self.attributes = [:]
+        self.innerHTML = ""
+        self.baseURL = baseURL
+        self.isNullElement = (soupElement == nil)
+        super.init()
+    }
+    #endif
 
     init(
         tagName: String = "",
@@ -35,6 +54,9 @@ import JavaScriptCore
         baseURL: String = "",
         isNullElement: Bool = false
     ) {
+        #if canImport(SwiftSoup)
+        self.soupElement = nil
+        #endif
         self.tagName = tagName.lowercased()
         self.attributes = attributes
         self.innerHTML = innerHTML
@@ -44,28 +66,56 @@ import JavaScriptCore
     }
 
     static func empty(baseURL: String = "") -> JsElement {
-        JsElement(isNullElement: true)
+        #if canImport(SwiftSoup)
+        return JsElement(soupElement: nil, baseURL: baseURL)
+        #else
+        return JsElement(baseURL: baseURL, isNullElement: true)
+        #endif
     }
 
     static func parse(html: String, baseURL: String = "") -> JsElement {
-        let root = JsElement(tagName: "document", attributes: [:], innerHTML: html, baseURL: baseURL)
-        root.childNodes = HTMLTokenizer.parseElements(from: html, baseURL: baseURL, parent: root)
-        return root
+        let cleanBase = (baseURL == "null" || baseURL == "undefined") ? "" : baseURL
+        #if canImport(SwiftSoup)
+        if let doc = try? SwiftSoup.parse(html, cleanBase) {
+            return JsElement(soupElement: doc, baseURL: cleanBase)
+        }
+        return JsElement(soupElement: nil, baseURL: cleanBase)
+        #else
+        return HTMLTokenizer.parseDocument(html: html, baseURL: cleanBase)
+        #endif
     }
 
     func exists() -> Bool {
-        !isNullElement
+        #if canImport(SwiftSoup)
+        if soupElement != nil { return true }
+        #endif
+        return !isNullElement
     }
 
     func tag() -> String {
-        tagName
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            return (try? el.tagName()) ?? ""
+        }
+        #endif
+        return tagName
     }
 
     func html() -> String {
-        innerHTML
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            return (try? el.html()) ?? ""
+        }
+        #endif
+        return innerHTML
     }
 
     func outerHtml() -> String {
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            return (try? el.outerHtml()) ?? ""
+        }
+        #endif
         guard !isNullElement else { return "" }
         if tagName == "document" { return innerHTML }
         let attrStr = attributes.map { "\($0.key)=\"\($0.value)\"" }.joined(separator: " ")
@@ -74,11 +124,21 @@ import JavaScriptCore
     }
 
     func text() -> String {
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            return (try? el.text()) ?? ""
+        }
+        #endif
         guard !isNullElement else { return "" }
         return HTMLTokenizer.stripTagsAndDecodeEntities(innerHTML)
     }
 
     func ownText() -> String {
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            return (try? el.ownText()) ?? ""
+        }
+        #endif
         guard !isNullElement else { return "" }
         var stripped = innerHTML
         for child in childNodes {
@@ -91,10 +151,21 @@ import JavaScriptCore
     }
 
     func attr(_ name: String) -> String {
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            let key = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if key.lowercased().hasPrefix("abs:") {
+                let targetAttr = String(key.dropFirst(4))
+                return absUrl(targetAttr)
+            }
+            return (try? el.attr(key)) ?? ""
+        }
+        #endif
         guard !isNullElement else { return "" }
-        let key = name.lowercased()
-        if key == "abs:href" { return absUrl("href") }
-        if key == "abs:src" { return absUrl("src") }
+        let key = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if key.hasPrefix("abs:") {
+            return absUrl(String(key.dropFirst(4)))
+        }
         for (k, v) in attributes where k.lowercased() == key {
             return HTMLTokenizer.decodeHTMLEntities(v)
         }
@@ -102,71 +173,163 @@ import JavaScriptCore
     }
 
     func absUrl(_ name: String) -> String {
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            if let resolved = try? el.absUrl(name), !resolved.isEmpty {
+                return resolved
+            }
+            let raw = ((try? el.attr(name)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return Self.resolveAbsoluteURL(raw: raw, baseURL: baseURL.isEmpty ? el.getBaseUri() : baseURL)
+        }
+        #endif
         let raw = attr(name).trimmingCharacters(in: .whitespacesAndNewlines)
+        return Self.resolveAbsoluteURL(raw: raw, baseURL: baseURL)
+    }
+
+    static func resolveAbsoluteURL(raw: String, baseURL: String) -> String {
         guard !raw.isEmpty else { return "" }
         if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
             return raw
         }
         if raw.hasPrefix("//") {
-            if let base = URL(string: baseURL), let scheme = base.scheme {
+            if let base = Self.makeSafeURL(baseURL), let scheme = base.scheme {
                 return "\(scheme):\(raw)"
             }
             return "https:\(raw)"
         }
-        if let base = URL(string: baseURL), let resolved = URL(string: raw, relativeTo: base)?.absoluteURL {
-            return resolved.absoluteString
+        if let base = Self.makeSafeURL(baseURL) {
+            if let resolved = URL(string: raw, relativeTo: base)?.absoluteURL {
+                return resolved.absoluteString
+            }
+            if let encodedRaw = raw.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
+               let resolved = URL(string: encodedRaw, relativeTo: base)?.absoluteURL {
+                return resolved.absoluteString
+            }
         }
         return raw
     }
 
+    private static func makeSafeURL(_ str: String) -> URL? {
+        let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "null", trimmed != "undefined" else { return nil }
+        if let u = URL(string: trimmed), u.scheme != nil {
+            return u
+        }
+        if let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed),
+           let u = URL(string: encoded), u.scheme != nil {
+            return u
+        }
+        return nil
+    }
+
     func hasClass(_ name: String) -> Bool {
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            return (try? el.hasClass(name)) ?? false
+        }
+        #endif
         let classes = attr("class").split(whereSeparator: { $0.isWhitespace }).map(String.init)
         return classes.contains(name)
     }
 
     func children() -> [JsElement] {
-        childNodes
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            return el.children().array().map { JsElement(soupElement: $0, baseURL: baseURL) }
+        }
+        #endif
+        return childNodes
     }
 
     func parent() -> JsElement {
-        parentNode ?? JsElement.empty(baseURL: baseURL)
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            return JsElement(soupElement: el.parent(), baseURL: baseURL)
+        }
+        #endif
+        return parentNode ?? JsElement.empty(baseURL: baseURL)
     }
 
     func byId(_ id: String) -> JsElement {
-        first("#\(id)")
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            // McpGuide.md 第 7 节：byId(id) 按 id 在整个文档里找（优先取 ownerDocument）
+            let root = el.ownerDocument() ?? el
+            if let found = try? root.getElementById(id) {
+                return JsElement(soupElement: found, baseURL: baseURL)
+            }
+            return JsElement(soupElement: nil, baseURL: baseURL)
+        }
+        #endif
+        var root: JsElement = self
+        while let p = root.parentNode {
+            root = p
+        }
+        return root.first("#\(id)")
     }
 
     func first(_ selector: String) -> JsElement {
-        select(selector).first ?? JsElement.empty(baseURL: baseURL)
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            let found = try? el.select(selector).first()
+            return JsElement(soupElement: found, baseURL: baseURL)
+        }
+        #endif
+        return select(selector).first ?? JsElement.empty(baseURL: baseURL)
     }
 
     func select(_ selector: String) -> [JsElement] {
+        #if canImport(SwiftSoup)
+        if let el = soupElement {
+            guard let elements = try? el.select(selector) else { return [] }
+            return elements.array().map { JsElement(soupElement: $0, baseURL: baseURL) }
+        }
+        #endif
         guard !isNullElement else { return [] }
-        let groups = selector.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let groups = Self.splitTopLevelSelectorGroups(selector)
         var combined: [JsElement] = []
         var seen = Set<ObjectIdentifier>()
 
         for group in groups where !group.isEmpty {
-            let tokens = group
-                .replacingOccurrences(of: ">", with: " > ")
-                .split(whereSeparator: { $0.isWhitespace })
-                .map(String.init)
+            let tokens = Self.tokenizeSelectorCombinators(group)
             var currentPool: [JsElement] = [self]
-            var directChildOnly = false
+            var combinator: String = " "
 
             for token in tokens {
-                if token == ">" {
-                    directChildOnly = true
+                if token == ">" || token == "+" || token == "~" {
+                    combinator = token
                     continue
                 }
                 var nextPool: [JsElement] = []
                 for node in currentPool {
-                    let candidates = directChildOnly ? node.childNodes : node.allDescendants()
+                    let candidates: [JsElement]
+                    switch combinator {
+                    case ">":
+                        candidates = node.childNodes
+                    case "+":
+                        if let p = node.parentNode,
+                           let idx = p.childNodes.firstIndex(where: { $0 === node }),
+                           idx + 1 < p.childNodes.count {
+                            candidates = [p.childNodes[idx + 1]]
+                        } else {
+                            candidates = []
+                        }
+                    case "~":
+                        if let p = node.parentNode,
+                           let idx = p.childNodes.firstIndex(where: { $0 === node }),
+                           idx + 1 < p.childNodes.count {
+                            candidates = Array(p.childNodes[(idx + 1)...])
+                        } else {
+                            candidates = []
+                        }
+                    default:
+                        candidates = node.allDescendants()
+                    }
                     let matched = Self.filter(candidates: candidates, bySimpleSelector: token)
                     nextPool.append(contentsOf: matched)
                 }
                 currentPool = nextPool
-                directChildOnly = false
+                combinator = " "
             }
 
             for el in currentPool {
@@ -192,16 +355,85 @@ import JavaScriptCore
         return result
     }
 
+    private static func splitTopLevelSelectorGroups(_ selector: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var parenDepth = 0
+        var bracketDepth = 0
+        for ch in selector {
+            if ch == "(" { parenDepth += 1 }
+            else if ch == ")" { parenDepth = max(0, parenDepth - 1) }
+            else if ch == "[" { bracketDepth += 1 }
+            else if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
+
+            if ch == "," && parenDepth == 0 && bracketDepth == 0 {
+                result.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
+                current = ""
+            } else {
+                current.append(ch)
+            }
+        }
+        let tail = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty { result.append(tail) }
+        return result
+    }
+
+    private static func tokenizeSelectorCombinators(_ group: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var parenDepth = 0
+        var bracketDepth = 0
+
+        for ch in group {
+            if ch == "(" { parenDepth += 1 }
+            else if ch == ")" { parenDepth = max(0, parenDepth - 1) }
+            else if ch == "[" { bracketDepth += 1 }
+            else if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
+
+            if parenDepth == 0 && bracketDepth == 0 && (ch == ">" || ch == "+" || ch == "~") {
+                let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { tokens.append(trimmed) }
+                tokens.append(String(ch))
+                current = ""
+            } else if parenDepth == 0 && bracketDepth == 0 && ch.isWhitespace {
+                let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    tokens.append(trimmed)
+                    current = ""
+                }
+            } else {
+                current.append(ch)
+            }
+        }
+        let tail = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty { tokens.append(tail) }
+        return tokens
+    }
+
     private static func filter(candidates: [JsElement], bySimpleSelector rawToken: String) -> [JsElement] {
         var token = rawToken
         var eqIndex: Int?
+        var gtIndex: Int?
+        var ltIndex: Int?
+
         if let eqRange = token.range(of: ":eq("), token.hasSuffix(")") {
             let numStr = token[eqRange.upperBound..<token.index(before: token.endIndex)]
-            eqIndex = Int(numStr)
+            eqIndex = Int(numStr.trimmingCharacters(in: .whitespaces))
             token = String(token[..<eqRange.lowerBound])
-        } else if token.hasSuffix(":first-child") || token.hasSuffix(":first") {
+        } else if let gtRange = token.range(of: ":gt("), token.hasSuffix(")") {
+            let numStr = token[gtRange.upperBound..<token.index(before: token.endIndex)]
+            gtIndex = Int(numStr.trimmingCharacters(in: .whitespaces))
+            token = String(token[..<gtRange.lowerBound])
+        } else if let ltRange = token.range(of: ":lt("), token.hasSuffix(")") {
+            let numStr = token[ltRange.upperBound..<token.index(before: token.endIndex)]
+            ltIndex = Int(numStr.trimmingCharacters(in: .whitespaces))
+            token = String(token[..<ltRange.lowerBound])
+        } else if token.hasSuffix(":first") && !token.hasSuffix(":first-child") {
             eqIndex = 0
-            token = token.replacingOccurrences(of: ":first-child", with: "").replacingOccurrences(of: ":first", with: "")
+            token = String(token.dropLast(6))
+        } else if token.hasSuffix(":last") && !token.hasSuffix(":last-child") {
+            eqIndex = -1
+            token = String(token.dropLast(5))
         }
 
         let matched = candidates.filter { matches(element: $0, simpleSelector: token) }
@@ -212,6 +444,14 @@ import JavaScriptCore
             }
             return []
         }
+        if let gt = gtIndex {
+            let start = max(0, gt + 1)
+            return start < matched.count ? Array(matched[start...]) : []
+        }
+        if let lt = ltIndex {
+            let end = min(matched.count, max(0, lt))
+            return Array(matched[..<end])
+        }
         return matched
     }
 
@@ -219,7 +459,34 @@ import JavaScriptCore
         if simpleSelector.isEmpty || simpleSelector == "*" { return true }
         var sel = simpleSelector
 
-        // 属性选择器 [attr=val] / [attr*=val] / [attr^=val] / [attr$=val] / [attr]
+        if sel.hasSuffix(":first-child") {
+            sel = String(sel.dropLast(12))
+            if let p = element.parentNode, p.childNodes.first !== element { return false }
+        }
+        if sel.hasSuffix(":last-child") {
+            sel = String(sel.dropLast(11))
+            if let p = element.parentNode, p.childNodes.last !== element { return false }
+        }
+        if let nthRange = sel.range(of: ":nth-child("), sel.hasSuffix(")") {
+            let numStr = sel[nthRange.upperBound..<sel.index(before: sel.endIndex)].trimmingCharacters(in: .whitespaces)
+            sel = String(sel[..<nthRange.lowerBound])
+            if let n = Int(numStr), let p = element.parentNode,
+               let idx = p.childNodes.firstIndex(where: { $0 === element }) {
+                if idx + 1 != n { return false }
+            }
+        }
+        if let notRange = sel.range(of: ":not("), sel.hasSuffix(")") {
+            let innerSel = String(sel[notRange.upperBound..<sel.index(before: sel.endIndex)])
+            sel = String(sel[..<notRange.lowerBound])
+            if matches(element: element, simpleSelector: innerSel) { return false }
+        }
+        if let containsRange = sel.range(of: ":contains("), sel.hasSuffix(")") {
+            let sub = String(sel[containsRange.upperBound..<sel.index(before: sel.endIndex)])
+                .trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+            sel = String(sel[..<containsRange.lowerBound])
+            if !element.text().contains(sub) { return false }
+        }
+
         while let openBracket = sel.firstIndex(of: "["),
               let closeBracket = sel[openBracket...].firstIndex(of: "]") {
             let inside = String(sel[sel.index(after: openBracket)..<closeBracket])
@@ -229,7 +496,6 @@ import JavaScriptCore
             }
         }
 
-        // ID 选择器 #id
         var requiredID: String?
         if let hashIdx = sel.firstIndex(of: "#") {
             let afterHash = sel[sel.index(after: hashIdx)...]
@@ -241,10 +507,9 @@ import JavaScriptCore
             return false
         }
 
-        // 类选择器 .class1.class2
         let parts = sel.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         let tagPart = parts.first ?? ""
-        if !tagPart.isEmpty && element.tagName != tagPart.lowercased() {
+        if !tagPart.isEmpty && tagPart != "*" && element.tagName != tagPart.lowercased() {
             return false
         }
         if parts.count > 1 {
@@ -259,7 +524,7 @@ import JavaScriptCore
 
     private static func matchAttribute(element: JsElement, expression: String) -> Bool {
         let clean = expression.trimmingCharacters(in: .whitespaces)
-        let operators = ["*=", "^=", "$=", "="]
+        let operators = ["*=", "^=", "$=", "!=", "~=", "="]
         for op in operators {
             if let range = clean.range(of: op) {
                 let key = clean[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
@@ -267,9 +532,11 @@ import JavaScriptCore
                 val = val.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
                 let actual = element.attr(key)
                 switch op {
-                case "*=": return actual.contains(val)
-                case "^=": return actual.hasPrefix(val)
-                case "$=": return actual.hasSuffix(val)
+                case "*=": return !val.isEmpty && actual.contains(val)
+                case "^=": return !val.isEmpty && actual.hasPrefix(val)
+                case "$=": return !val.isEmpty && actual.hasSuffix(val)
+                case "!=": return actual != val
+                case "~=": return actual.split(whereSeparator: { $0.isWhitespace }).map(String.init).contains(val)
                 default: return actual == val
                 }
             }
@@ -278,87 +545,115 @@ import JavaScriptCore
     }
 }
 
+/// 容错栈式 HTML5 解析器（自动忽略注释与脚本干扰，自动闭合未闭合的 li/p/dd/dt/td/tr 等标签）
 enum HTMLTokenizer {
     private static let voidTags: Set<String> = [
         "img", "input", "br", "hr", "meta", "link", "source", "area", "base", "col", "embed", "param", "track", "wbr"
     ]
 
-    static func parseElements(from html: String, baseURL: String, parent: JsElement, depth: Int = 0) -> [JsElement] {
-        guard depth < 18, !html.isEmpty else { return [] }
-        var elements: [JsElement] = []
-        let ns = html as NSString
-        let length = ns.length
-        var cursor = 0
+    private static let autoCloseSameTag: Set<String> = [
+        "li", "p", "dt", "dd", "option", "tr", "td", "th"
+    ]
 
-        let openTagRegex = try? NSRegularExpression(
-            pattern: "<([a-zA-Z][a-zA-Z0-9:-]*)([^>]*?)(/?)>",
-            options: [.dotMatchesLineSeparators]
+    static func parseDocument(html: String, baseURL: String) -> JsElement {
+        let root = JsElement(tagName: "document", attributes: [:], innerHTML: html, baseURL: baseURL)
+        guard !html.isEmpty else { return root }
+
+        var cleaned = html.replacingOccurrences(
+            of: "<!--[\\s\\S]*?-->",
+            with: "",
+            options: .regularExpression
         )
-        guard let regex = openTagRegex else { return [] }
+        cleaned = cleaned.replacingOccurrences(
+            of: "<!(?i:doctype)[^>]*>",
+            with: "",
+            options: .regularExpression
+        )
+        cleaned = cleaned.replacingOccurrences(
+            of: "<(script|style)\\b[^>]*>[\\s\\S]*?</\\1>",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
 
-        while cursor < length {
-            let searchRange = NSRange(location: cursor, length: length - cursor)
-            guard let match = regex.firstMatch(in: html, options: [], range: searchRange) else {
-                break
-            }
-            let tagName = ns.substring(with: match.range(at: 1)).lowercased()
-            let attrRaw = ns.substring(with: match.range(at: 2))
-            let selfClosingSlash = !ns.substring(with: match.range(at: 3)).isEmpty
-            let attrs = parseAttributes(attrRaw)
-            let afterOpenTag = match.range.location + match.range.length
+        let ns = cleaned as NSString
+        let totalLength = ns.length
+        guard let tagRegex = try? NSRegularExpression(
+            pattern: "<(/?)([a-zA-Z][a-zA-Z0-9:-]*)([^>]*?)(/?)>",
+            options: [.dotMatchesLineSeparators]
+        ) else {
+            return root
+        }
 
-            if selfClosingSlash || voidTags.contains(tagName) {
-                let el = JsElement(tagName: tagName, attributes: attrs, innerHTML: "", baseURL: baseURL)
-                el.parentNode = parent
-                elements.append(el)
-                cursor = afterOpenTag
-                continue
-            }
-
-            if let (inner, nextCursor) = findBalancedClosingTag(in: ns, tagName: tagName, startOffset: afterOpenTag) {
-                let el = JsElement(tagName: tagName, attributes: attrs, innerHTML: inner, baseURL: baseURL)
-                el.parentNode = parent
-                if tagName != "script" && tagName != "style" && inner.contains("<") {
-                    el.childNodes = parseElements(from: inner, baseURL: baseURL, parent: el, depth: depth + 1)
-                }
-                elements.append(el)
-                cursor = nextCursor
-            } else {
-                cursor = afterOpenTag
+        final class OpenEntry {
+            let element: JsElement
+            let innerStart: Int
+            init(element: JsElement, innerStart: Int) {
+                self.element = element
+                self.innerStart = innerStart
             }
         }
-        return elements
+
+        var stack: [OpenEntry] = [OpenEntry(element: root, innerStart: 0)]
+        let matches = tagRegex.matches(in: cleaned, options: [], range: NSRange(location: 0, length: totalLength))
+
+        for match in matches {
+            let isClosing = !ns.substring(with: match.range(at: 1)).isEmpty
+            let tagName = ns.substring(with: match.range(at: 2)).lowercased()
+            let attrRaw = ns.substring(with: match.range(at: 3))
+            let hasTrailingSlash = !ns.substring(with: match.range(at: 4)).isEmpty
+            let tagStart = match.range.location
+            let tagEnd = match.range.location + match.range.length
+
+            if isClosing {
+                if let matchIdx = stack.lastIndex(where: { $0.element.tagName == tagName && $0.element !== root }) {
+                    while stack.count > matchIdx {
+                        let popped = stack.removeLast()
+                        let len = max(0, tagStart - popped.innerStart)
+                        if popped.innerStart + len <= totalLength {
+                            popped.element.innerHTML = ns.substring(with: NSRange(location: popped.innerStart, length: len))
+                        }
+                    }
+                }
+            } else {
+                if autoCloseSameTag.contains(tagName),
+                   let top = stack.last,
+                   top.element.tagName == tagName {
+                    let popped = stack.removeLast()
+                    let len = max(0, tagStart - popped.innerStart)
+                    if popped.innerStart + len <= totalLength {
+                        popped.element.innerHTML = ns.substring(with: NSRange(location: popped.innerStart, length: len))
+                    }
+                }
+
+                let parentEl = stack.last?.element ?? root
+                let attrs = parseAttributes(attrRaw)
+                let el = JsElement(tagName: tagName, attributes: attrs, innerHTML: "", baseURL: baseURL)
+                el.parentNode = parentEl
+                parentEl.childNodes.append(el)
+
+                if !hasTrailingSlash && !voidTags.contains(tagName) {
+                    stack.append(OpenEntry(element: el, innerStart: tagEnd))
+                }
+            }
+        }
+
+        while stack.count > 1 {
+            let popped = stack.removeLast()
+            let len = max(0, totalLength - popped.innerStart)
+            if popped.innerStart + len <= totalLength {
+                popped.element.innerHTML = ns.substring(with: NSRange(location: popped.innerStart, length: len))
+            }
+        }
+
+        return root
     }
 
-    private static func findBalancedClosingTag(in ns: NSString, tagName: String, startOffset: Int) -> (String, Int)? {
-        let pattern = "<(/?)" + NSRegularExpression.escapedPattern(for: tagName) + "\\b[^>]*>"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return nil
+    static func parseElements(from html: String, baseURL: String, parent: JsElement, depth: Int = 0) -> [JsElement] {
+        let doc = parseDocument(html: html, baseURL: baseURL)
+        for ch in doc.childNodes {
+            ch.parentNode = parent
         }
-        var depth = 1
-        var searchPos = startOffset
-        let totalLen = ns.length
-
-        while searchPos < totalLen {
-            let r = NSRange(location: searchPos, length: totalLen - searchPos)
-            guard let m = regex.firstMatch(in: ns as String, options: [], range: r) else {
-                break
-            }
-            let isClose = !ns.substring(with: m.range(at: 1)).isEmpty
-            let fullTag = ns.substring(with: m.range)
-            if isClose {
-                depth -= 1
-                if depth == 0 {
-                    let innerRange = NSRange(location: startOffset, length: m.range.location - startOffset)
-                    let inner = ns.substring(with: innerRange)
-                    return (inner, m.range.location + m.range.length)
-                }
-            } else if !fullTag.hasSuffix("/>") {
-                depth += 1
-            }
-            searchPos = m.range.location + m.range.length
-        }
-        return nil
+        return doc.childNodes
     }
 
     private static func parseAttributes(_ raw: String) -> [String: String] {
@@ -404,12 +699,29 @@ enum HTMLTokenizer {
     static func decodeHTMLEntities(_ text: String) -> String {
         var s = text
         let entities: [(String, String)] = [
-            ("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+            ("&nbsp;", " "), ("&#160;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
             ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&ldquo;", "“"),
-            ("&rdquo;", "”"), ("&hellip;", "…"), ("&mdash;", "—")
+            ("&rdquo;", "”"), ("&hellip;", "…"), ("&mdash;", "—"), ("&middot;", "·")
         ]
         for (k, v) in entities where s.contains(k) {
             s = s.replacingOccurrences(of: k, with: v)
+        }
+        if s.contains("&#"),
+           let numRegex = try? NSRegularExpression(pattern: "&#(x?[0-9a-fA-F]+);") {
+            let ns = s as NSString
+            let matches = numRegex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
+            for m in matches {
+                let codeStr = ns.substring(with: m.range(at: 1))
+                let code: UInt32?
+                if codeStr.lowercased().hasPrefix("x") {
+                    code = UInt32(codeStr.dropFirst(), radix: 16)
+                } else {
+                    code = UInt32(codeStr, radix: 10)
+                }
+                if let c = code, let scalar = UnicodeScalar(c) {
+                    s = (s as NSString).replacingCharacters(in: m.range, with: String(scalar))
+                }
+            }
         }
         return s
     }

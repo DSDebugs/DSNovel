@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-// MARK: - SwiftData 持久化实体（严格对齐报告 4.1 节）
+// MARK: - SwiftData 持久化实体（严格对齐报告 4.1 节，并扩展书源可用性与延迟检测持久化字段）
 
 @Model
 final class Book {
@@ -185,6 +185,14 @@ final class PluginRecord {
     var loginURL: String
     var loggedIn: Bool
     var settingsJSON: String
+    /// 书源最近一次检测状态："untested" | "healthy" | "slow" | "needAuth" | "unavailable"
+    var lastCheckStatus: String = "untested"
+    /// 书源最近一次检测响应延迟（毫秒），未检测时为 -1
+    var lastLatencyMs: Int = -1
+    /// 书源最近一次检测结果说明
+    var lastCheckMessage: String = ""
+    /// 书源最近一次检测时间
+    var lastCheckedAt: Date? = nil
 
     init(
         id: String,
@@ -203,7 +211,11 @@ final class PluginRecord {
         requiresLogin: Bool = false,
         loginURL: String = "",
         loggedIn: Bool = false,
-        settingsJSON: String = "{}"
+        settingsJSON: String = "{}",
+        lastCheckStatus: String = "untested",
+        lastLatencyMs: Int = -1,
+        lastCheckMessage: String = "",
+        lastCheckedAt: Date? = nil
     ) {
         self.id = id
         self.packageID = packageID
@@ -222,6 +234,56 @@ final class PluginRecord {
         self.loginURL = loginURL
         self.loggedIn = loggedIn
         self.settingsJSON = settingsJSON
+        self.lastCheckStatus = lastCheckStatus
+        self.lastLatencyMs = lastLatencyMs
+        self.lastCheckMessage = lastCheckMessage
+        self.lastCheckedAt = lastCheckedAt
+    }
+
+    var healthState: SourceHealthState {
+        SourceHealthState(rawValue: lastCheckStatus) ?? .untested
+    }
+
+    var isHealthyOrSlow: Bool {
+        lastCheckStatus == SourceHealthState.healthy.rawValue || lastCheckStatus == SourceHealthState.slow.rawValue
+    }
+
+    var latencyBadgeText: String {
+        switch healthState {
+        case .untested:
+            return "检测"
+        case .healthy, .slow:
+            return lastLatencyMs > 0 ? "\(lastLatencyMs)ms" : "可用"
+        case .needAuth:
+            return "需验证"
+        case .unavailable:
+            return "不可用"
+        }
+    }
+
+    /// 用于并发搜索与智能排序的优先级分值（越小越优先）
+    var searchPriorityScore: Int {
+        var score = order
+        if isPinned { score -= 10000 }
+        switch healthState {
+        case .healthy:
+            score -= 5000
+            if lastLatencyMs > 0 {
+                score += min(lastLatencyMs / 10, 400)
+            }
+        case .slow:
+            score -= 1000
+            if lastLatencyMs > 0 {
+                score += min(lastLatencyMs / 10, 800)
+            }
+        case .untested:
+            break
+        case .needAuth:
+            score += 3000
+        case .unavailable:
+            score += 8000
+        }
+        return score
     }
 }
 
@@ -253,17 +315,18 @@ final class SearchHistory {
 
 // MARK: - 轻量值类型 DTO 与路由枚举
 
+/// 底部主导航标签：固定顺序为「发现 · 搜索 · 书架 · 设置」
 enum AppTab: Int, CaseIterable, Hashable {
     case discover = 0
-    case shelf = 1
-    case search = 2
+    case search = 1
+    case shelf = 2
     case settings = 3
 
     var title: String {
         switch self {
         case .discover: return "发现"
-        case .shelf: return "书架"
         case .search: return "搜索"
+        case .shelf: return "书架"
         case .settings: return "设置"
         }
     }
@@ -271,8 +334,8 @@ enum AppTab: Int, CaseIterable, Hashable {
     var icon: String {
         switch self {
         case .discover: return "safari"
-        case .shelf: return "books.vertical"
         case .search: return "magnifyingglass"
+        case .shelf: return "books.vertical"
         case .settings: return "gearshape"
         }
     }
@@ -283,6 +346,33 @@ enum Route: Hashable {
     case pluginManager
     case downloadManager
     case skipSettings
+}
+
+enum SourceHealthState: String, Codable, CaseIterable, Sendable {
+    case untested
+    case healthy
+    case slow
+    case needAuth
+    case unavailable
+
+    var displayTitle: String {
+        switch self {
+        case .untested: return "未检测"
+        case .healthy: return "正常"
+        case .slow: return "响应较慢"
+        case .needAuth: return "需登录/验证"
+        case .unavailable: return "不可用"
+        }
+    }
+}
+
+struct SourceHealthCheckResult: Hashable, Sendable {
+    let sourceID: String
+    let state: SourceHealthState
+    let latencyMs: Int
+    let message: String
+    let sampleCount: Int
+    let checkedAt: Date
 }
 
 struct BookRef: Identifiable, Hashable, Codable, Sendable {
@@ -317,7 +407,13 @@ struct BookRef: Identifiable, Hashable, Codable, Sendable {
 
     var normalizedKey: String {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let cleanAuthor = author.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanAuthor = author
+            .components(separatedBy: "·").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if cleanAuthor.isEmpty {
+            return cleanTitle
+        }
         return "\(cleanTitle)|\(cleanAuthor)"
     }
 }

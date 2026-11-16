@@ -4,6 +4,7 @@ import SwiftData
 /// 书架页（5.2 节）：顶部「继续收听」一键续听、分类胶囊条、播放状态实时同步、多选编辑底部唯一玻璃悬浮操作栏
 struct ShelfView: View {
     let onSwitchToDiscover: () -> Void
+    let onSwitchToSearch: () -> Void
     let onSelectBook: (BookRef) -> Void
     let onOpenDownloads: () -> Void
 
@@ -13,10 +14,12 @@ struct ShelfView: View {
 
     init(
         onSwitchToDiscover: @escaping () -> Void,
+        onSwitchToSearch: @escaping () -> Void = {},
         onSelectBook: @escaping (BookRef) -> Void,
         onOpenDownloads: @escaping () -> Void
     ) {
         self.onSwitchToDiscover = onSwitchToDiscover
+        self.onSwitchToSearch = onSwitchToSearch
         self.onSelectBook = onSelectBook
         self.onOpenDownloads = onOpenDownloads
     }
@@ -107,14 +110,21 @@ struct ShelfView: View {
     private var shelfPrimaryContent: some View {
         if books.isEmpty {
             ContentUnavailableView {
-                Label("书架还是空的，去发现页看看", systemImage: "books.vertical")
+                Label("书架还是空的", systemImage: "books.vertical")
             } description: {
-                Text("收藏喜欢的有声书后，会自动记住每一集的收听位置与倍速设置")
+                Text("在「发现」或「搜索」页收藏喜欢的有声书后，会自动记住每一集的收听位置与倍速设置")
             } actions: {
-                Button("去发现页") {
-                    onSwitchToDiscover()
+                HStack(spacing: 12) {
+                    Button("去发现页") {
+                        onSwitchToDiscover()
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("去搜索书籍") {
+                        onSwitchToSearch()
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.borderedProminent)
             }
         } else {
             VStack(spacing: 0) {
@@ -405,7 +415,7 @@ struct ShelfView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 if book.sourceUnavailable {
-                    Text("来源不可用 · 点击详情可换源")
+                    Text("书源不可用 · 点击详情可换源")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }

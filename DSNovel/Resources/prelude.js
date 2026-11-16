@@ -1,6 +1,7 @@
 // 宿主在加载插件脚本之前执行的公共引导脚本：registerSource、host 封装与路径取值辅助函数
 var __sources = [];
 
+/** 按路径读取，如 at(json, 'data.list.0.name')；数组下标可以为负数 */
 function at(obj, path) {
   if (obj === null || obj === undefined) return null;
   var parts = String(path).split('.');
@@ -22,6 +23,7 @@ function at(obj, path) {
   return obj === undefined ? null : obj;
 }
 
+/** 读取字符串（数字、布尔也会转成字符串），不存在返回空字符串 */
 function str(obj, path) {
   var v = (path === undefined || path === null) ? obj : at(obj, path);
   if (v === null || v === undefined) return '';
@@ -33,22 +35,25 @@ function int(obj, path, def) {
   return isNaN(n) ? (def === undefined ? 0 : def) : n;
 }
 
+/** 读取数组，不存在返回空数组 */
 function items(obj, path) {
   var v = (path === undefined || path === null) ? obj : at(obj, path);
   return Array.isArray(v) ? v.filter(function (x) { return x !== null && x !== undefined; }) : [];
 }
 
+/** 用正则取第一个分组并转成整数 */
 function regexInt(input, re, def) {
   var m = re.exec(input || '');
   var n = m ? parseInt(m[1], 10) : NaN;
   return isNaN(n) ? (def === undefined ? 1 : def) : n;
 }
 
+/** 解析 JSON，兼容 JSONP：callback({...}) */
 function parseJson(text) {
   text = String(text).trim();
   var c = text.charAt(0);
   if (c !== '{' && c !== '[') {
-    var l = text.search(/[{[]/);
+    var l = text.search(/[{\[]/);
     var r = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
     if (l >= 0 && r > l) text = text.substring(l, r + 1);
   }
@@ -87,13 +92,19 @@ function __makeHost(j) {
     sniff: function (url, o) { return un(j.sniff(String(url), opt(o), fn(o, 'validate'))); },
     cookies: function (url) { return j.cookies(String(url)); },
     playsAnyDownload: true,
-    getPref: function (key, def) { var v = j.getPref(String(key)); return v === null ? (def === undefined ? null : def) : v; },
+    getPref: function (key, def) {
+      var v = j.getPref(String(key));
+      return (v === null || v === undefined) ? (def === undefined ? null : def) : v;
+    },
     setPref: function (key, value) { j.setPref(String(key), s(value)); },
     toast: function (msg) { j.toast(String(msg)); },
     log: function (msg) { j.log(String(msg)); },
     progress: function (info) { j.progress(s(info)); },
     sleep: function (ms) { j.sleep(Math.max(0, Math.round(ms))); },
-    readCache: function (name) { return j.readCache(String(name)); },
+    readCache: function (name) {
+      var v = j.readCache(String(name));
+      return v === undefined ? null : v;
+    },
     writeCache: function (name, text) { j.writeCache(String(name), String(text)); },
     cacheAge: function (name) { return j.cacheAge(String(name)); },
     base64Decode: function (v) { return j.base64Decode(String(v)); },
