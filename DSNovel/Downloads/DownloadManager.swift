@@ -225,62 +225,36 @@ final class DownloadManager {
 
     private struct UnsupportedStream: Error {}
 
+    /// 统一解析入口（官方书源接口优先，VIP 章节自动回退「内置解析」）
+    private func resolveStream(for item: DownloadItem) async throws -> PlayStreamInfo {
+        try await PluginRuntime.shared.resolvePlayStream(
+            sourceID: item.sourceID,
+            episodeURL: item.chapterID,
+            forDownload: true
+        )
+    }
+
     private func executeDownload(for item: DownloadItem) async {
         let isPrecache = item.kind == "precache"
         do {
-            let stream = try await PluginRuntime.shared.resolvePlayURL(sourceID: item.sourceID, episodeURL: item.chapterID)
-            guard let url = JsHostBridge.makeRequestURL(from: stream.url, relativeTo: item.chapterID) else {
-                throw PluginError.parseFailed("无效音频地址")
+            // 直链（尤其内置解析给出的付费直链）有时效：首次失败且来源为内置解析时，
+            // 作废缓存并强制重新解析一次，再退化为普通重试计数
+            var attempt = 0
+            var stream = try await resolveStream(for: item)
+            while true {
+                do {
+                    try await performDownload(for: item, stream: stream)
+                    return
+                } catch {
+                    if attempt == 0, stream.resolvedBy == BuiltinParserRuntime.resolverTag {
+                        attempt = 1
+                        await BuiltinParserRuntime.shared.invalidateCache(parserID: nil, episodeURL: item.chapterID)
+                        stream = try await resolveStream(for: item)
+                        continue
+                    }
+                    throw error
+                }
             }
-            // HLS(.m3u8)/直播无法作为单个文件保存：原实现会把几 KB 的播放列表当成 .mp3 存盘并标记完成，
-            // 之后该章节优先播放本地「音频」，导致无法解码、进度/时长错乱
-            let lowerURL = url.absoluteString.lowercased()
-            if stream.kind != .onDemand || lowerURL.contains(".m3u8") {
-                throw UnsupportedStream()
-            }
-
-            var req = URLRequest(url: url, timeoutInterval: 30)
-            var hasUA = false, hasCookie = false
-            for (k, v) in stream.headers {
-                let lk = k.lowercased()
-                if lk == "x-media-type" { continue }
-                if lk == "user-agent" { hasUA = true }
-                if lk == "cookie" { hasCookie = true }
-                req.setValue(v, forHTTPHeaderField: k)
-            }
-            if !hasUA { req.setValue(JsHostBridge.mobileUA, forHTTPHeaderField: "User-Agent") }
-            if !hasCookie {
-                let cookie = CookieSync.cookieHeader(for: url)
-                if !cookie.isEmpty { req.setValue(cookie, forHTTPHeaderField: "Cookie") }
-            }
-
-            // 直接落盘（不再把整首音频读进内存）
-            let (tmpURL, resp) = try await URLSession.shared.download(for: req)
-            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                try? FileManager.default.removeItem(at: tmpURL)
-                throw URLError(.badServerResponse)
-            }
-            let mime = http.mimeType?.lowercased() ?? ""
-            let fileSize = (try? FileManager.default.attributesOfItem(atPath: tmpURL.path)[.size] as? Int64) ?? 0
-            if mime.hasPrefix("text/") || mime.contains("mpegurl") || mime.contains("json") || mime.contains("html") || fileSize < 1024 {
-                try? FileManager.default.removeItem(at: tmpURL)
-                throw UnsupportedStream()
-            }
-
-            let ext = Self.inferAudioExtension(url: url, mimeType: http.mimeType)
-            let safeBookDir = JsHostBridge.md5Hex(item.bookID)
-            let safeChapFile = "\(JsHostBridge.md5Hex(item.chapterID)).\(ext)"
-            let relPath = "\(safeBookDir)/\(safeChapFile)"
-            let destDir = downloadsRootDirectory.appendingPathComponent(safeBookDir, isDirectory: true)
-            try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
-            let destFile = downloadsRootDirectory.appendingPathComponent(relPath)
-            try? FileManager.default.removeItem(at: destFile)
-            try FileManager.default.moveItem(at: tmpURL, to: destFile)
-
-            item.localPath = relPath
-            item.bytes = fileSize
-            item.state = "completed"
-            try? modelContext?.save()
         } catch is UnsupportedStream {
             // 不可缓存的流：预缓存直接丢弃记录（在线播放即可），手动下载标记失败且不再重试
             if isPrecache {
@@ -301,6 +275,62 @@ final class DownloadManager {
             }
             try? modelContext?.save()
         }
+    }
+
+    /// 单次下载落盘：HLS/直播与文本响应一律按「不可缓存」处理
+    private func performDownload(for item: DownloadItem, stream: PlayStreamInfo) async throws {
+        guard let url = JsHostBridge.makeRequestURL(from: stream.url, relativeTo: item.chapterID) else {
+            throw PluginError.parseFailed("无效音频地址")
+        }
+        // HLS(.m3u8)/直播无法作为单个文件保存：原实现会把几 KB 的播放列表当成 .mp3 存盘并标记完成，
+        // 之后该章节优先播放本地「音频」，导致无法解码、进度/时长错乱
+        let lowerURL = url.absoluteString.lowercased()
+        if stream.kind != .onDemand || lowerURL.contains(".m3u8") {
+            throw UnsupportedStream()
+        }
+
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        var hasUA = false, hasCookie = false
+        for (k, v) in stream.headers {
+            let lk = k.lowercased()
+            if lk == "x-media-type" { continue }
+            if lk == "user-agent" { hasUA = true }
+            if lk == "cookie" { hasCookie = true }
+            req.setValue(v, forHTTPHeaderField: k)
+        }
+        if !hasUA { req.setValue(JsHostBridge.mobileUA, forHTTPHeaderField: "User-Agent") }
+        if !hasCookie {
+            let cookie = CookieSync.cookieHeader(for: url)
+            if !cookie.isEmpty { req.setValue(cookie, forHTTPHeaderField: "Cookie") }
+        }
+
+        // 直接落盘（不再把整首音频读进内存）
+        let (tmpURL, resp) = try await URLSession.shared.download(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw URLError(.badServerResponse)
+        }
+        let mime = http.mimeType?.lowercased() ?? ""
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: tmpURL.path)[.size] as? Int64) ?? 0
+        if mime.hasPrefix("text/") || mime.contains("mpegurl") || mime.contains("json") || mime.contains("html") || fileSize < 1024 {
+            try? FileManager.default.removeItem(at: tmpURL)
+            throw UnsupportedStream()
+        }
+
+        let ext = Self.inferAudioExtension(url: url, mimeType: http.mimeType)
+        let safeBookDir = JsHostBridge.md5Hex(item.bookID)
+        let safeChapFile = "\(JsHostBridge.md5Hex(item.chapterID)).\(ext)"
+        let relPath = "\(safeBookDir)/\(safeChapFile)"
+        let destDir = downloadsRootDirectory.appendingPathComponent(safeBookDir, isDirectory: true)
+        try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+        let destFile = downloadsRootDirectory.appendingPathComponent(relPath)
+        try? FileManager.default.removeItem(at: destFile)
+        try FileManager.default.moveItem(at: tmpURL, to: destFile)
+
+        item.localPath = relPath
+        item.bytes = fileSize
+        item.state = "completed"
+        try? modelContext?.save()
     }
 
     private static func inferAudioExtension(url: URL, mimeType: String?) -> String {

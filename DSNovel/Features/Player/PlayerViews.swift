@@ -233,7 +233,19 @@ struct PlayerFullScreenView: View {
                                 .background(Capsule().fill(Color.white.opacity(0.24)))
                                 .foregroundStyle(.white)
                             default:
-                                EmptyView()
+                                // VIP 章节：唯一提示出口 —— 跳到「书源管理 → 内置解析」
+                                if let jumpTitle = pErr.builtinParserJumpTitle {
+                                    Button(jumpTitle) {
+                                        AppRouter.shared.openBuiltinParser(sourceID: player.currentBook?.sourceID)
+                                    }
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(Capsule().fill(Color.white.opacity(0.24)))
+                                    .foregroundStyle(.white)
+                                } else {
+                                    EmptyView()
+                                }
                             }
                         }
                         Button("重试") {

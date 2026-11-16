@@ -37,6 +37,8 @@ targets:
         buildPhase: resources
       - path: DSNovel/Resources/prelude.js
         buildPhase: resources
+      - path: DSNovel/Resources/prelude_parser.js
+        buildPhase: resources
       - path: DSNovel/Resources/PrivacyInfo.xcprivacy
         buildPhase: resources
       - path: DSNovel/Resources/BundledSources/ShunAudiobookPro-v5.6.zip

@@ -423,6 +423,10 @@ struct PluginDetailAndCheckSheet: View {
         NavigationStack {
             Form {
                 healthCheckSection
+                // 内置解析：仅喜马拉雅类书源显示；未导入脚本时是纯中性空位（不产生任何提示）
+                if BuiltinParserSection.isSupportedSource(plugin) {
+                    BuiltinParserSection(plugin: plugin)
+                }
                 statusAndGroupSection
                 if !configItems.isEmpty {
                     customConfigSection

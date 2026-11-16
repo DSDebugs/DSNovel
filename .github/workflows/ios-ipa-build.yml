@@ -117,7 +117,7 @@ jobs:
 
           echo "=== .app contents (verify bundled resources) ==="
           ls -la "$APP_PATH"
-          for f in Info.plist Assets.car PkgInfo prelude.js PrivacyInfo.xcprivacy; do
+          for f in Info.plist Assets.car PkgInfo prelude.js prelude_parser.js PrivacyInfo.xcprivacy; do
             if [ -e "$APP_PATH/$f" ]; then
               echo "  [OK] $f"
             else

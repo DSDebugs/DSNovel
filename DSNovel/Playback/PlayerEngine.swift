@@ -129,6 +129,8 @@ final class PlayerEngine {
     /// 当前章节正在播放本地文件但文件损坏时，强制改走在线流
     private var bypassLocalChapterID: String?
     private var isPlayingLocalFile = false
+    /// 当前章节地址是否由「内置解析」给出（用于直链过期后的强制重解析）
+    private var builtinParserResolved = false
     var modelContext: ModelContext?
 
     init() {
@@ -436,7 +438,8 @@ final class PlayerEngine {
                 playURL = localURL
                 usingLocal = true
             } else {
-                let stream = try await PluginRuntime.shared.resolvePlayURL(sourceID: book.sourceID, episodeURL: chapter.url)
+                // 统一解析入口：官方书源接口优先，VIP/受限章节自动回退到「内置解析」
+                let stream = try await PluginRuntime.shared.resolvePlayStream(sourceID: book.sourceID, episodeURL: chapter.url)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 guard let remote = JsHostBridge.makeRequestURL(from: stream.url, relativeTo: chapter.url) else {
                     throw PluginError.parseFailed("无效的音频 URL")
@@ -444,6 +447,7 @@ final class PlayerEngine {
                 playURL = remote
                 headers = stream.headers
                 streamKind = stream.kind
+                builtinParserResolved = stream.resolvedBy == BuiltinParserRuntime.resolverTag
             }
 
             guard !Task.isCancelled, generation == playbackGeneration else { return }
@@ -546,6 +550,10 @@ final class PlayerEngine {
                         )
                     } else if !self.hasRetriedCurrentChapter {
                         self.hasRetriedCurrentChapter = true
+                        // 内置解析给出的直链可能已过期：重试前先作废缓存，强制重新解析
+                        if self.builtinParserResolved {
+                            await BuiltinParserRuntime.shared.invalidateCache(parserID: nil, episodeURL: chapter.url)
+                        }
                         await self.loadAndPlay(
                             chapter: chapter,
                             initialPositionMs: initialPositionMs,

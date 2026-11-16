@@ -15,6 +15,12 @@ enum PluginError: LocalizedError, Equatable, Sendable {
     case parseFailed(String)
     case timeout
     case network(String)
+    /// 书源明确答复「需要会员/购买」——由内置解析回退链处理
+    case vipRequired(sourceID: String)
+    /// VIP 章节但没有可用的内置解析脚本（UI 唯一提示出口：去导入）
+    case builtinParserMissing(sourceID: String)
+    /// 已安装内置解析，但解析失败
+    case builtinParserFailed(sourceID: String, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +30,27 @@ enum PluginError: LocalizedError, Equatable, Sendable {
         case .parseFailed(let detail): return "解析内容失败：\(detail)"
         case .timeout: return "书源响应超时"
         case .network(let msg): return "网络请求异常：\(msg)"
+        case .vipRequired: return BuiltinParserStrings.vipNeedsParser
+        case .builtinParserMissing: return BuiltinParserStrings.vipNeedsParser
+        case .builtinParserFailed(_, let reason):
+            return reason.isEmpty ? "VIP 章节解析失败" : "VIP 章节解析失败：\(reason)"
+        }
+    }
+
+    /// 是否属于「需要内置解析」的 VIP 类错误（决定 UI 是否显示跳转按钮）
+    var isVIPRelated: Bool {
+        switch self {
+        case .vipRequired, .builtinParserMissing, .builtinParserFailed: return true
+        default: return false
+        }
+    }
+
+    /// 该错误对应的跳转按钮标题（唯一提示出口）
+    var builtinParserJumpTitle: String? {
+        switch self {
+        case .builtinParserMissing, .vipRequired: return BuiltinParserStrings.jumpToImport
+        case .builtinParserFailed: return BuiltinParserStrings.jumpToInspect
+        default: return nil
         }
     }
 }
@@ -897,6 +924,96 @@ actor PluginRuntime {
         return PlayStreamInfo(url: urlString, headers: headers, kind: kind)
     }
 
+    /// 播放/下载统一解析入口（推荐调用点：PlayerEngine / DownloadManager）
+    ///
+    /// 决策链（策略默认 fallback）：
+    ///  0. always：优先内置解析，失败静默回落书源接口
+    ///  1. 书源自身的 audio()/audioHeaders()（免费章节、或已登录会员账号通常在这一步就成功）
+    ///  2. 若书源抛出「需要会员/购买」类错误 → 回退内置解析
+    ///  3. 未安装匹配解析器 → .builtinParserMissing（UI 唯一提示出口：去导入）
+    ///  4. 解析器也失败 → .builtinParserFailed（UI：去查内置解析）
+    func resolvePlayStream(sourceID: String, episodeURL: String, forDownload: Bool = false) async throws -> PlayStreamInfo {
+        let route = try? ensureRoute(for: sourceID)
+        let sourceURL = route?.meta.url ?? ""
+        let parser = await BuiltinParserRuntime.shared.parser(forSourceID: sourceID, sourceURL: sourceURL)
+        let strategy: BuiltinParserStrategy = if let parser {
+            await BuiltinParserRuntime.shared.strategy(for: parser.id)
+        } else {
+            .never
+        }
+
+        // ① always：内置解析优先
+        if let parser, strategy == .always {
+            if let stream = try? await BuiltinParserRuntime.shared.resolve(
+                parser: parser,
+                sourceID: sourceID,
+                episodeURL: episodeURL,
+                forDownload: forDownload
+            ) {
+                return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
+            }
+        }
+
+        do {
+            return try await resolvePlayURL(sourceID: sourceID, episodeURL: episodeURL)
+        } catch let error as PluginError {
+            switch error {
+            case .vipRequired:
+                guard let parser, strategy != .never else {
+                    throw PluginError.builtinParserMissing(sourceID: sourceID)
+                }
+                do {
+                    let stream = try await BuiltinParserRuntime.shared.resolve(
+                        parser: parser,
+                        sourceID: sourceID,
+                        episodeURL: episodeURL,
+                        forDownload: forDownload
+                    )
+                    return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
+                } catch let parserError as BuiltinParserError {
+                    throw PluginError.builtinParserFailed(
+                        sourceID: sourceID,
+                        reason: parserError.errorDescription ?? "未知原因"
+                    )
+                }
+
+            case .needLogin:
+                // 书源自认知未登录：若装了解析器仍先尝试一次（解析器有自己的 Cookie 来源），
+                // 失败则保留原错误，把用户引导到登录（登录后往往第 1 步就能成功）
+                if let parser, strategy != .never,
+                   let stream = try? await BuiltinParserRuntime.shared.resolve(
+                    parser: parser,
+                    sourceID: sourceID,
+                    episodeURL: episodeURL,
+                    forDownload: forDownload
+                   ) {
+                    return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
+                }
+                throw error
+
+            default:
+                throw error
+            }
+        }
+    }
+
+    /// 补齐内置解析返回流缺失的 User-Agent 与跨子域 Cookie（脚本已给出则不覆盖）
+    nonisolated private static func fillDefaultHeaders(_ stream: PlayStreamInfo, episodeURL: String) -> PlayStreamInfo {
+        var result = stream
+        let hasUA = result.headers.keys.contains { $0.lowercased() == "user-agent" }
+        if !hasUA {
+            result.headers["User-Agent"] = JsHostBridge.mobileUA
+        }
+        let hasCookie = result.headers.keys.contains { $0.lowercased() == "cookie" }
+        if !hasCookie, let url = JsHostBridge.makeRequestURL(from: result.url, relativeTo: episodeURL) {
+            let cookie = CookieSync.cookieHeader(for: url)
+            if !cookie.isEmpty {
+                result.headers["Cookie"] = cookie
+            }
+        }
+        return result
+    }
+
     func coverHeaders(sourceID: String, coverURL: String) async -> [String: String] {
         guard !coverURL.isEmpty,
               let route = try? ensureRoute(for: sourceID),
@@ -1052,6 +1169,11 @@ actor PluginRuntime {
         }
         if excMsg.contains("429") {
             return .rateLimited
+        }
+        // VIP / 付费受限：书源明确答复「需要会员或购买」→ 交给内置解析回退链处理
+        let vipMarkers = ["会员", "购买", "付费", "试听", "VIP", "vip", "已购"]
+        if vipMarkers.contains(where: { excMsg.contains($0) }) {
+            return .vipRequired(sourceID: sourceID)
         }
         return .network(excMsg)
     }

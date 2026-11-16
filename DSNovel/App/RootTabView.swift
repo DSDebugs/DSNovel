@@ -13,6 +13,7 @@ struct RootTabView: View {
     private var player = PlayerEngine.shared
     private var toast = ToastManager.shared
     private var settings = AppSettingsStore.shared
+    private var router = AppRouter.shared
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -109,6 +110,14 @@ struct RootTabView: View {
         }
         .fullScreenCover(isPresented: $isShowingFullPlayer) {
             PlayerFullScreenView()
+        }
+        // VIP 章节报错 → 跳到「设置 → 书源管理 → 该书源的内置解析分区」（全 App 唯一提示出口）
+        .onChange(of: router.pendingParserSourceID) { _, newValue in
+            guard newValue != nil else { return }
+            selectedTab = .settings
+            if settingsPath.last != .pluginManager {
+                settingsPath = [.pluginManager]
+            }
         }
     }
 

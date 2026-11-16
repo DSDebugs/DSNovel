@@ -229,9 +229,31 @@ struct PluginManagerView: View {
         .task {
             _ = await CookieSync.pullFromWebView()
             await reconcilePluginLoginStates()
+            await handlePendingBuiltinParserFocus()
+        }
+        .onChange(of: AppRouter.shared.pendingParserSourceID) { _, newValue in
+            guard newValue != nil else { return }
+            Task { await handlePendingBuiltinParserFocus() }
         }
         .onDisappear {
             batchCheckTask?.cancel()
+        }
+    }
+
+    /// VIP 章节报错的唯一落点：直接把对应书源的详情（含内置解析分区）推到前台
+    private func handlePendingBuiltinParserFocus() async {
+        guard let sourceID = AppRouter.shared.consumePendingParserFocus() else { return }
+        let target: PluginRecord?
+        if sourceID.isEmpty {
+            target = plugins.first { BuiltinParserSection.isSupportedSource($0) }
+        } else {
+            target = plugins.first { $0.id == sourceID }
+                ?? plugins.first { $0.siteURL.contains(sourceID) }
+                ?? plugins.first { BuiltinParserSection.isSupportedSource($0) }
+        }
+        guard let target else { return }
+        await MainActor.run {
+            activeSheet = .detail(target)
         }
     }
 

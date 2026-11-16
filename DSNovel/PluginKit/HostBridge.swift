@@ -650,6 +650,13 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
     let sourceId: String
     let sourceName: String
 
+    /// 书源作用域：plugin_pref_<sourceID>.<key>；内置解析作用域：parser_pref_<parserID>.<key>
+    var prefPrefix: String = "plugin_pref_"
+    /// 缓存命名空间；nil 表示沿用 sourceId（书源行为完全不变），内置解析为 "Parser/<parserID>"
+    var cacheNamespace: String?
+    /// 非 nil 时，host.log 写入内置解析日志环形缓冲（供「查看日志」展示）
+    var parserLogID: String?
+
     static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
     static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
 
@@ -674,7 +681,36 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
 
     /// 将原生块函数与 __bridge / __invokeSafe 注入到指定 JSContext（100% 匹配 ssts PluginEngine.installNative）
     static func installNative(into ctx: JSContext, packageID: String) {
-        let helper = JsHostBridge(packageID: packageID, sourceId: packageID, sourceName: packageID)
+        installNative(into: ctx,
+                      ownerID: packageID,
+                      ownerName: packageID,
+                      prefPrefix: "plugin_pref_",
+                      parserLogID: nil,
+                      cacheNamespace: nil)
+    }
+
+    /// 内置解析专用：pref 走 parser_pref_ 前缀、缓存走 Parser/<parserID> 命名空间、日志进解析日志缓冲
+    static func installParserNative(into ctx: JSContext, parserID: String, parserName: String) {
+        installNative(into: ctx,
+                      ownerID: parserID,
+                      ownerName: parserName,
+                      prefPrefix: "parser_pref_",
+                      parserLogID: parserID,
+                      cacheNamespace: "Parser/\(parserID)")
+    }
+
+    private static func installNative(
+        into ctx: JSContext,
+        ownerID: String,
+        ownerName: String,
+        prefPrefix: String,
+        parserLogID: String?,
+        cacheNamespace: String?
+    ) {
+        let helper = JsHostBridge(packageID: ownerID, sourceId: ownerID, sourceName: ownerName)
+        helper.prefPrefix = prefPrefix
+        helper.parserLogID = parserLogID
+        helper.cacheNamespace = cacheNamespace
 
         let nUserAgent: @convention(block) (Bool) -> String = { desktop in
             desktop ? Self.desktopUA : Self.mobileUA
@@ -711,13 +747,13 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
             helper.cookies(url)
         }
         let nGetPref: @convention(block) (String) -> Any = { fullKey in
-            if let val = UserDefaults.standard.string(forKey: "plugin_pref_\(fullKey)") {
+            if let val = UserDefaults.standard.string(forKey: "\(prefPrefix)\(fullKey)") {
                 return val
             }
             return NSNull()
         }
         let nSetPref: @convention(block) (String, JSValue) -> Void = { fullKey, val in
-            let storageKey = "plugin_pref_\(fullKey)"
+            let storageKey = "\(prefPrefix)\(fullKey)"
             if let s = Self.optionalString(from: val) {
                 UserDefaults.standard.set(s, forKey: storageKey)
             } else {
@@ -793,8 +829,9 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
         ctx.setObject(nUuid, forKeyedSubscript: "__n_uuid" as NSString)
         ctx.setObject(nHtmlDecode, forKeyedSubscript: "__n_htmlDecode" as NSString)
 
+        let cacheNamespaceExpression = cacheNamespace.map { "'" + $0 + "'" } ?? "id"
         let bridgeScript = """
-        var __bridge = { host: function (id, name) { return {
+        var __bridge = { host: function (id, name) { var ns = \(cacheNamespaceExpression); return {
           getSourceId: function () { return id; },
           userAgent: function (d) { return __n_userAgent(!!d); },
           webViewUA: function () { return __n_webViewUA(); },
@@ -813,9 +850,9 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
           log: function (m) { __n_log('[' + name + '] ' + m); },
           progress: function (i) { __n_progress(id, i); },
           sleep: function (ms) { var e = __n_sleep(ms); if (e) { var err = new Error(e); err.cancelled = true; throw err; } },
-          readCache: function (n) { return __n_readCache(id, n); },
-          writeCache: function (n, t) { __n_writeCache(id, n, t); },
-          cacheAge: function (n) { return __n_cacheAge(id, n); },
+          readCache: function (n) { return __n_readCache(ns, n); },
+          writeCache: function (n, t) { __n_writeCache(ns, n, t); },
+          cacheAge: function (n) { return __n_cacheAge(ns, n); },
           base64Decode: function (v) { return __n_base64Decode(v); },
           base64Encode: function (v) { return __n_base64Encode(v); },
           md5: function (v) { return __n_md5(v); },
@@ -1087,15 +1124,15 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
     }
 
     func getPref(_ key: String) -> Any {
-        if let v = UserDefaults.standard.string(forKey: "plugin_pref_\(sourceId).\(key)") ??
-                   UserDefaults.standard.string(forKey: "plugin_pref_\(sourceId)_\(key)") {
+        if let v = UserDefaults.standard.string(forKey: "\(prefPrefix)\(sourceId).\(key)") ??
+                   UserDefaults.standard.string(forKey: "\(prefPrefix)\(sourceId)_\(key)") {
             return v
         }
         return NSNull()
     }
 
     func setPref(_ key: String, _ value: JSValue?) {
-        let storageKey = "plugin_pref_\(sourceId).\(key)"
+        let storageKey = "\(prefPrefix)\(sourceId).\(key)"
         if let s = Self.optionalString(from: value) {
             UserDefaults.standard.set(s, forKey: storageKey)
         } else {
@@ -1110,6 +1147,10 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
     }
 
     func log(_ message: String) {
+        if let parserLogID {
+            BuiltinParserLogStore.shared.append(parserLogID, message)
+            return
+        }
         #if DEBUG
         print("[Plugin] \(message)")
         #endif
@@ -1125,7 +1166,7 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
     }
 
     func readCache(_ name: String) -> Any {
-        let url = Self.cacheFileURL(sourceId: sourceId, name: name)
+        let url = Self.cacheFileURL(sourceId: cacheNamespace ?? sourceId, name: name)
         if let str = try? String(contentsOf: url, encoding: .utf8) {
             return str
         }
@@ -1133,12 +1174,12 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
     }
 
     func writeCache(_ name: String, _ text: String) {
-        let url = Self.cacheFileURL(sourceId: sourceId, name: name)
+        let url = Self.cacheFileURL(sourceId: cacheNamespace ?? sourceId, name: name)
         try? text.write(to: url, atomically: true, encoding: .utf8)
     }
 
     func cacheAge(_ name: String) -> Double {
-        let url = Self.cacheFileURL(sourceId: sourceId, name: name)
+        let url = Self.cacheFileURL(sourceId: cacheNamespace ?? sourceId, name: name)
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let modDate = attrs[.modificationDate] as? Date else {
             return -1

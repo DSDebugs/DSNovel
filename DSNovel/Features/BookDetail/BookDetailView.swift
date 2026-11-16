@@ -536,7 +536,16 @@ struct BookDetailView: View {
                         .font(.caption.weight(.semibold))
                         .buttonStyle(.borderedProminent)
                     default:
-                        EmptyView()
+                        // VIP 章节：唯一提示出口 —— 跳到「书源管理 → 内置解析」
+                        if let jumpTitle = pErr.builtinParserJumpTitle {
+                            Button(jumpTitle) {
+                                AppRouter.shared.openBuiltinParser(sourceID: viewModel.activeBook.sourceID)
+                            }
+                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.borderedProminent)
+                        } else {
+                            EmptyView()
+                        }
                     }
                 }
                 Button("重试") {

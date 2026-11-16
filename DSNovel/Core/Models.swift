@@ -335,6 +335,104 @@ final class SearchHistory {
     }
 }
 
+/// 内置解析脚本记录（仅用于「书源管理 → 内置解析」展示与管理）
+///
+/// 注意：解析链路不读这张表 —— `BuiltinParserRuntime` 直接扫盘读取
+/// `Application Support/BuiltinParsers/<parserID>/`，因此即使 SwiftData 记录缺失，
+/// 已安装的解析器依然可用（两者由安装/删除流程同步写入）。
+@Model
+final class BuiltinParserRecord {
+    @Attribute(.unique) var id: String
+    var name: String
+    var version: String
+    var author: String
+    var summary: String
+    /// 目标书源 host（逗号分隔）
+    var targetHosts: String
+    /// 目标书源 sourceID（逗号分隔，兜底匹配用）
+    var targetSourceIDs: String
+    var fileName: String
+    var sha256: String
+    var sizeBytes: Int
+    var importedAt: Date
+    var isEnabled: Bool
+    /// "untested" | "ok" | "failed"
+    var lastCheckStatus: String = "untested"
+    var lastCheckMessage: String = ""
+    var lastLatencyMs: Int = -1
+    var lastCheckedAt: Date? = nil
+    var lastAccountNickname: String = ""
+    var lastAccountExpireAt: String = ""
+
+    init(
+        id: String,
+        name: String,
+        version: String,
+        author: String = "",
+        summary: String = "",
+        targetHosts: String = "",
+        targetSourceIDs: String = "",
+        fileName: String = "",
+        sha256: String = "",
+        sizeBytes: Int = 0,
+        importedAt: Date = .now,
+        isEnabled: Bool = true,
+        lastCheckStatus: String = "untested",
+        lastCheckMessage: String = "",
+        lastLatencyMs: Int = -1,
+        lastCheckedAt: Date? = nil,
+        lastAccountNickname: String = "",
+        lastAccountExpireAt: String = ""
+    ) {
+        self.id = id
+        self.name = name
+        self.version = version
+        self.author = author
+        self.summary = summary
+        self.targetHosts = targetHosts
+        self.targetSourceIDs = targetSourceIDs
+        self.fileName = fileName
+        self.sha256 = sha256
+        self.sizeBytes = sizeBytes
+        self.importedAt = importedAt
+        self.isEnabled = isEnabled
+        self.lastCheckStatus = lastCheckStatus
+        self.lastCheckMessage = lastCheckMessage
+        self.lastLatencyMs = lastLatencyMs
+        self.lastCheckedAt = lastCheckedAt
+        self.lastAccountNickname = lastAccountNickname
+        self.lastAccountExpireAt = lastAccountExpireAt
+    }
+
+    /// 由磁盘扫描结果同步展示字段（不改动用户开关与自检结果）
+    func applyDiskState(_ parser: InstalledBuiltinParser) {
+        name = parser.meta.name
+        version = parser.meta.version
+        author = parser.meta.author
+        summary = parser.meta.summary
+        targetHosts = parser.meta.targets.hosts.joined(separator: ",")
+        targetSourceIDs = parser.meta.targets.sourceIDs.joined(separator: ",")
+        fileName = parser.fileName
+        sha256 = parser.sha256
+        sizeBytes = parser.sizeBytes
+        importedAt = parser.importedAt
+    }
+
+    var targetHostList: [String] {
+        targetHosts.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    var targetSourceIDList: [String] {
+        targetSourceIDs.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    var formattedSize: String {
+        if sizeBytes <= 0 { return "—" }
+        if sizeBytes < 1024 { return "\(sizeBytes) B" }
+        return String(format: "%.1f KB", Double(sizeBytes) / 1024.0)
+    }
+}
+
 // MARK: - 轻量值类型 DTO 与路由枚举
 
 /// 底部主导航标签：固定顺序为「发现 · 搜索 · 书架 · 设置」
@@ -529,6 +627,10 @@ struct PlayStreamInfo: Hashable, Codable, Sendable {
     var url: String
     var headers: [String: String]
     var kind: StreamKind
+    /// 该地址的来源："" = 书源自己解析；"builtinParser" = 内置解析
+    var resolvedBy: String = ""
+    /// 直链有效期（内置解析会给出；过期后需要重新解析）
+    var expiresAt: Date? = nil
 }
 
 struct SourceConfigItem: Identifiable, Hashable, Codable, Sendable {

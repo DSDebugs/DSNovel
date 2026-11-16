@@ -17,7 +17,8 @@ struct DSNovelApp: App {
             DownloadItem.self,
             PluginRecord.self,
             PluginGroup.self,
-            SearchHistory.self
+            SearchHistory.self,
+            BuiltinParserRecord.self
         ])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
@@ -40,6 +41,9 @@ struct DSNovelApp: App {
                     // 首次启动：把随 App 打包的听书书源种子安装到插件目录（幂等，不覆盖用户数据）
                     await BundledSourceSeeder.seedIfNeeded(modelContext: context)
                     await PluginRuntime.shared.reloadInstalledPackages()
+                    // 内置解析：扫盘载入已安装的解析脚本（未导入时为空列表，功能保持静默）
+                    await BuiltinParserRuntime.shared.reload()
+                    BuiltinParserRegistrySync.syncRecords(context: context)
                     autoResumeIfNeeded(context: context)
                 }
         }
