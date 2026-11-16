@@ -23,10 +23,11 @@
  */
 
 const fs = require('fs');
+const path = require('path');
 const vm = require('vm');
 const util = require('util');
 
-const DEFAULT_ORIGINAL = 'C:/Users/LY-PC/Desktop/ximalaya.js';
+const DEFAULT_ORIGINAL = path.join(__dirname, 'ximalaya_ep.js');
 const CLASS_BINDING = '_0x51df08';
 
 /* ------------------------------------------------------------------ *

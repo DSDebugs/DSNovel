@@ -49,7 +49,6 @@ enum BuiltinParserRegistrySync {
 
     /// 安装后写入/更新单条记录
     static func upsert(context: ModelContext, parser: InstalledBuiltinParser) {
-        // #Predicate 不能捕获复杂对象，先提取为简单值类型
         let targetID = parser.id
         let descriptor = FetchDescriptor<BuiltinParserRecord>(
             predicate: #Predicate<BuiltinParserRecord> { $0.id == targetID }
@@ -76,8 +75,9 @@ enum BuiltinParserRegistrySync {
     }
 
     static func remove(context: ModelContext, parserID: String) {
+        let targetID = parserID
         let descriptor = FetchDescriptor<BuiltinParserRecord>(
-            predicate: #Predicate<BuiltinParserRecord> { $0.id == parserID }
+            predicate: #Predicate<BuiltinParserRecord> { $0.id == targetID }
         )
         if let record = (try? context.fetch(descriptor))?.first {
             context.delete(record)

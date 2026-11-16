@@ -169,10 +169,14 @@ enum BuiltinParserStore {
         try metaData.write(to: staging.appendingPathComponent(metaFileName), options: .atomic)
 
         if fm.fileExists(atPath: targetDir.path) {
-            // 已存在：整体替换，但把旧脚本留作 .bak 以便回滚
+            // 已存在：整体替换，但把旧脚本与元数据留作 .bak 以便回滚
             let backupSource = targetDir.appendingPathComponent(scriptFileName)
             if let old = try? Data(contentsOf: backupSource) {
                 try? old.write(to: staging.appendingPathComponent(backupFileName), options: .atomic)
+            }
+            let backupMeta = targetDir.appendingPathComponent(metaFileName)
+            if let oldMeta = try? Data(contentsOf: backupMeta) {
+                try? oldMeta.write(to: staging.appendingPathComponent(metaFileName + ".bak"), options: .atomic)
             }
             let trash = rootDirectory.appendingPathComponent(".trash-\(UUID().uuidString)", isDirectory: true)
             try fm.moveItem(at: targetDir, to: trash)
@@ -215,6 +219,12 @@ enum BuiltinParserStore {
         let script = dir.appendingPathComponent(scriptFileName)
         try? FileManager.default.removeItem(at: script)
         try FileManager.default.moveItem(at: backup, to: script)
+        let metaBackup = dir.appendingPathComponent(metaFileName + ".bak")
+        if FileManager.default.fileExists(atPath: metaBackup.path) {
+            let meta = dir.appendingPathComponent(metaFileName)
+            try? FileManager.default.removeItem(at: meta)
+            try? FileManager.default.moveItem(at: metaBackup, to: meta)
+        }
     }
 
     // MARK: 工具

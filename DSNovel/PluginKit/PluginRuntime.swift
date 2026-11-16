@@ -952,16 +952,24 @@ actor PluginRuntime {
             .never
         }
 
-        // ① always：内置解析优先
+        // ① always：内置解析优先（明确拒绝错误如 not_vip / rate_limited 直接透传）
         if let parser, strategy == .always {
-            if let stream = try? await BuiltinParserRuntime.shared.resolve(
-                parser: parser,
-                sourceID: sourceID,
-                episodeURL: episodeURL,
-                forDownload: forDownload
-            ) {
+            do {
+                let stream = try await BuiltinParserRuntime.shared.resolve(
+                    parser: parser,
+                    sourceID: sourceID,
+                    episodeURL: episodeURL,
+                    forDownload: forDownload
+                )
                 return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
-            }
+            } catch let parserError as BuiltinParserError {
+                if case .rejected = parserError {
+                    throw PluginError.builtinParserFailed(
+                        sourceID: sourceID,
+                        reason: parserError.errorDescription ?? "未知原因"
+                    )
+                }
+            } catch {}
         }
 
         do {
@@ -989,15 +997,24 @@ actor PluginRuntime {
 
             case .needLogin:
                 // 书源自认知未登录：若装了解析器仍先尝试一次（解析器有自己的 Cookie 来源），
-                // 失败则保留原错误，把用户引导到登录（登录后往往第 1 步就能成功）
-                if let parser, strategy != .never,
-                   let stream = try? await BuiltinParserRuntime.shared.resolve(
-                    parser: parser,
-                    sourceID: sourceID,
-                    episodeURL: episodeURL,
-                    forDownload: forDownload
-                   ) {
-                    return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
+                // 若明确被解析器拒绝（如 not_vip / rate_limited）则透传真实原因，否则引导登录
+                if let parser, strategy != .never {
+                    do {
+                        let stream = try await BuiltinParserRuntime.shared.resolve(
+                            parser: parser,
+                            sourceID: sourceID,
+                            episodeURL: episodeURL,
+                            forDownload: forDownload
+                        )
+                        return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
+                    } catch let parserError as BuiltinParserError {
+                        if case .rejected = parserError {
+                            throw PluginError.builtinParserFailed(
+                                sourceID: sourceID,
+                                reason: parserError.errorDescription ?? "未知原因"
+                            )
+                        }
+                    } catch {}
                 }
                 throw error
 

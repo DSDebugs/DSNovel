@@ -1,14 +1,14 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 // MARK: - 内置解析分区（书源详情的「内置解析」功能区）
 //
 // 交互约束（按需求确定）：
-// - 无论是否安装脚本，本分区**不输出任何提示**：没有空态引导文案、没有徽标、没有 Toast、没有红点。
-//   未安装时只是一个中性空位（"解析脚本：未安装" + 一个编辑入口控件）。
-// - 脚本通过「编辑脚本」面板粘贴脚本内容安装（不再使用文件选择器）。
+// - 无论是否配置脚本，本分区**不输出任何提示**：没有空态引导文案、没有徽标、没有 Toast、没有红点。
+//   未配置时只是一个中性空位（"解析脚本：未安装" + 一个「编辑脚本」入口控件）。
 // - 全 App 唯一的内置解析提示出口是「VIP 章节报错」时的跳转按钮（见 PlayerViews / BookDetailView）。
-// - 只有「解析/安装失败」与「用户主动点自检失败」会出声（属错误反馈，不是提示）。
+// - 只有「保存/校验失败」与「用户主动点自检失败」会出声（属错误反馈，不是提示）。
 
 struct BuiltinParserSection: View {
     @Environment(\.modelContext) private var modelContext
@@ -17,9 +17,10 @@ struct BuiltinParserSection: View {
 
     let plugin: PluginRecord
 
-    @State private var showScriptEditor = false
-    @State private var editorScriptText = ""
-    @State private var isImporting = false
+    @State private var showEditorSheet = false
+    @State private var editorInitialText: String = ""
+    @State private var editorInitialFileName: String = "ximalaya_parser.js"
+    @State private var isSavingScript = false
     @State private var pendingPreview: BuiltinParserPreview?
     @State private var errorAlertMessage: String?
     @State private var statusNote: String = ""
@@ -37,7 +38,14 @@ struct BuiltinParserSection: View {
         }.isEmpty
     }
 
-    private var activeRecord: BuiltinParserRecord? { records.first }
+    private var activeRecord: BuiltinParserRecord? {
+        records.first { record in
+            let hosts = record.targetHosts.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            let sourceIDs = record.targetSourceIDs.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            return BuiltinParserTargets(hosts: hosts, sourceIDs: sourceIDs)
+                .matches(sourceID: plugin.id, sourceURL: plugin.siteURL)
+        }
+    }
 
     private var installedParser: InstalledBuiltinParser? {
         guard let id = activeRecord?.id else { return nil }
@@ -51,17 +59,26 @@ struct BuiltinParserSection: View {
             } else {
                 // 中性空位：只有状态与编辑入口，没有任何引导性文案
                 LabeledContent("解析脚本", value: BuiltinParserStrings.notInstalledValue)
-                importButton(title: "编辑脚本")
+                editScriptButton(title: "编辑脚本")
             }
 
             if !statusNote.isEmpty {
                 LabeledContent("最近自检", value: statusNote)
             }
         }
-        .sheet(isPresented: $showScriptEditor) {
-            BuiltinParserScriptEditorSheet(initialText: editorScriptText) { text in
-                analyzeAndPreview(scriptText: text)
-            }
+        .sheet(isPresented: $showEditorSheet) {
+            BuiltinParserEditorSheet(
+                initialText: editorInitialText,
+                fileName: editorInitialFileName,
+                isInstalled: activeRecord != nil,
+                onCancel: {
+                    showEditorSheet = false
+                },
+                onSave: { scriptText, fileName in
+                    showEditorSheet = false
+                    handleScriptSubmit(scriptText: scriptText, fileName: fileName)
+                }
+            )
         }
         .sheet(item: $pendingPreview) { preview in
             BuiltinParserPreviewSheet(preview: preview) {
@@ -104,13 +121,14 @@ struct BuiltinParserSection: View {
         }
         LabeledContent("文件", value: "\(record.fileName) · \(record.formattedSize)")
         LabeledContent("校验值", value: String(record.sha256.prefix(12)))
-        LabeledContent("导入时间", value: Self.dateFormatter.string(from: record.importedAt))
+        LabeledContent("更新时间", value: Self.dateFormatter.string(from: record.importedAt))
 
         Toggle("启用", isOn: Binding(
             get: { record.isEnabled },
             set: { newValue in
                 record.isEnabled = newValue
                 try? modelContext.save()
+                Task { await BuiltinParserRuntime.shared.setEnabled(newValue, for: record.id) }
             }
         ))
 
@@ -135,7 +153,7 @@ struct BuiltinParserSection: View {
             Label("自检", systemImage: "stethoscope")
         }
 
-        importButton(title: "编辑脚本")
+        editScriptButton(title: "编辑脚本")
 
         Button {
             showLogSheet = true
@@ -198,42 +216,57 @@ struct BuiltinParserSection: View {
         }
     }
 
-    private func importButton(title: String) -> some View {
+    private func editScriptButton(title: String) -> some View {
         Button {
-            // 更新场景预填当前脚本文本，方便在其基础上修改；未安装时为空
-            editorScriptText = installedParser.flatMap { BuiltinParserStore.scriptText(for: $0) } ?? ""
-            showScriptEditor = true
+            if let parser = installedParser,
+               let existingText = BuiltinParserStore.scriptText(for: parser) {
+                editorInitialText = existingText
+                editorInitialFileName = parser.fileName
+            } else {
+                editorInitialText = ""
+                editorInitialFileName = "ximalaya_parser.js"
+            }
+            showEditorSheet = true
         } label: {
-            if isImporting {
+            if isSavingScript {
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("解析中…")
+                    Text("校验中…")
                 }
             } else {
-                Label(title, systemImage: "square.and.pencil")
+                Label(title, systemImage: "curlybraces.square")
             }
         }
-        .disabled(isImporting)
+        .disabled(isSavingScript)
     }
 
-    // MARK: 解析粘贴的脚本文本
+    // MARK: 编辑与保存脚本
 
-    /// 对用户粘贴的脚本文本做干跑校验并进入安装预览；文件名由脚本自身元数据决定，这里给一个稳定的占位名
-    private func analyzeAndPreview(scriptText: String) {
-        let text = scriptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            errorAlertMessage = "请先粘贴脚本内容"
+    private func handleScriptSubmit(scriptText: String, fileName: String) {
+        let trimmed = scriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorAlertMessage = "脚本内容不能为空，请粘贴内置解析脚本代码"
             return
         }
-        isImporting = true
+        isSavingScript = true
         Task {
             do {
-                let preview = try await BuiltinParserRuntime.shared.analyze(scriptText: text, fileName: "pasted-parser.js")
-                isImporting = false
-                pendingPreview = preview
+                let preview = try await BuiltinParserRuntime.shared.analyze(
+                    scriptText: scriptText,
+                    fileName: fileName.isEmpty ? "ximalaya_parser.js" : fileName
+                )
+                await MainActor.run {
+                    isSavingScript = false
+                }
+                try? await Task.sleep(for: .milliseconds(350))
+                await MainActor.run {
+                    pendingPreview = preview
+                }
             } catch {
-                isImporting = false
-                errorAlertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                await MainActor.run {
+                    isSavingScript = false
+                    errorAlertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                }
             }
         }
     }
@@ -336,73 +369,91 @@ struct BuiltinParserSection: View {
     }()
 }
 
-// MARK: - 编辑脚本（用户粘贴脚本内容）
+// MARK: - 脚本编辑器弹窗（用户直接粘贴或编辑 JS 脚本内容）
 
-struct BuiltinParserScriptEditorSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var text: String
-    let onCommit: (String) -> Void
+struct BuiltinParserEditorSheet: View {
+    let initialText: String
+    let fileName: String
+    let isInstalled: Bool
+    let onCancel: () -> Void
+    let onSave: (String, String) -> Void
 
-    init(initialText: String, onCommit: @escaping (String) -> Void) {
-        _text = State(initialValue: initialText)
-        self.onCommit = onCommit
-    }
-
-    private var trimmedText: String {
-        text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    @State private var scriptText: String = ""
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
-                Text("将解析脚本内容粘贴到下方，点击右上角「解析」进行校验并安装。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    Button {
+                        if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                            scriptText = clip
+                        }
+                    } label: {
+                        Label("从剪贴板粘贴", systemImage: "doc.on.clipboard")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
 
-                TextEditor(text: $text)
-                    .font(.system(.caption2, design: .monospaced))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1)
-                    )
-                    .accessibilityLabel("解析脚本内容")
-                    .accessibilityHint("在此粘贴 JavaScript 解析脚本内容")
+                    Button(role: .destructive) {
+                        scriptText = ""
+                    } label: {
+                        Label("清空", systemImage: "xmark.circle")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(scriptText.isEmpty)
+
+                    Spacer()
+
+                    Text("\(scriptText.utf8.count) 字节")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color(.secondarySystemBackground))
+
+                Divider()
+
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $scriptText)
+                        .font(.system(.footnote, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .scrollContentBackground(.hidden)
+                        .padding(12)
+
+                    if scriptText.isEmpty {
+                        Text("在此粘贴内置解析脚本内容（调用 registerBuiltinParser({...}) 的 JavaScript 代码）…")
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 17)
+                            .padding(.vertical, 20)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
-            .padding()
-            .navigationTitle("编辑解析脚本")
+            .navigationTitle("编辑脚本")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("清空") { text = "" }
-                        .disabled(text.isEmpty)
+                    Button("取消", action: onCancel)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("解析") {
-                        let payload = trimmedText
-                        guard !payload.isEmpty else { return }
-                        dismiss()
-                        // 等编辑弹窗收起动画结束再触发校验/预览，避免新 sheet 被系统丢弃
-                        Task {
-                            try? await Task.sleep(for: .milliseconds(350))
-                            onCommit(payload)
-                        }
+                    Button("校验并保存") {
+                        onSave(scriptText, fileName)
                     }
-                    .fontWeight(.semibold)
-                    .disabled(trimmedText.isEmpty)
+                    .disabled(scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+            }
+            .onAppear {
+                scriptText = initialText
             }
         }
     }
 }
 
-// MARK: - 导入预览（写入前的确认弹窗，不是提示）
+// MARK: - 保存预览（写入前的确认弹窗，不是提示）
 
 struct BuiltinParserPreviewSheet: View {
     let preview: BuiltinParserPreview
@@ -450,14 +501,14 @@ struct BuiltinParserPreviewSheet: View {
                     }
                 }
             }
-            .navigationTitle("确认导入")
+            .navigationTitle("确认保存")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消", action: onCancel)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(preview.isUpdate ? "覆盖安装" : "安装", action: onConfirm)
+                    Button(preview.isUpdate ? "覆盖保存" : "保存", action: onConfirm)
                 }
             }
         }
@@ -486,7 +537,7 @@ struct BuiltinParserLogSheet: View {
                 if lines.isEmpty {
                     ContentUnavailableView("暂无日志", systemImage: "text.alignleft")
                 } else {
-                    List(lines, id: \.self) { line in
+                    List(Array(lines.enumerated()), id: \.offset) { _, line in
                         Text(line)
                             .font(.system(.caption, design: .monospaced))
                     }

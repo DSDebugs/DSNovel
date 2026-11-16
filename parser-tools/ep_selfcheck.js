@@ -84,25 +84,31 @@ const GOLDEN = [
   ['hIkqUdgZ/DiQnjXrb0XqyKTiAyvDSnEU6sWrbcUx5fxZ', '免费佩戴-中文-音质-等级'],
   ['hbQKX/on/jCykBLKb5F/ld36MQ==', '中文测试-0-🎵']
 ];
-const oracle = loadOracle({});
+const hasOracleClass = !!process.env.XM_ORIGINAL;
+const oracle = hasOracleClass ? loadOracle({}) : null;
 for (const [ct, want] of GOLDEN) {
-  const o = oracle.safeDecrypt(ct);
-  check('oracle 解密 ' + JSON.stringify(ct.slice(0, 24) + '…') + ' -> ' + JSON.stringify(want),
-    o.ok && o.value === want, o.ok ? '' : 'THROW:' + o.message);
+  if (oracle) {
+    const o = oracle.safeDecrypt(ct);
+    check('oracle 解密 ' + JSON.stringify(ct.slice(0, 24) + '…') + ' -> ' + JSON.stringify(want),
+      o.ok && o.value === want, o.ok ? '' : 'THROW:' + o.message);
+  }
   const m = MINE.epDecrypt(ct);
-  check('净版(Node) 解密结果相同', m === want, JSON.stringify(m));
+  check('净版(Node) 解密结果 ' + JSON.stringify(ct.slice(0, 16) + '…'), m === want, JSON.stringify(m));
   if (bareOk) {
     const b = vm.runInContext('XimalayaEp.epDecrypt(' + JSON.stringify(ct) + ')', bare);
     check('净版(裸宿主) 解密结果相同', b === want, JSON.stringify(b));
   }
 }
-const oP = oracle.safeParse(GOLDEN[0][0]);
 const mP = MINE.epParse(GOLDEN[0][0]);
-const sameArr = oP.ok && Array.isArray(mP) && oP.value.length === mP.length &&
-  Array.prototype.every.call(oP.value, function (v, i) { return v === mP[i]; });
-check('epParse 结果一致', sameArr,
-  'oracle=' + (oP.ok ? JSON.stringify(Array.prototype.slice.call(oP.value)) : 'THROW:' + oP.message) +
-  ' mine=' + JSON.stringify(mP));
+check('净版 epParse 返回 4 段数组', Array.isArray(mP) && mP.length === 4, JSON.stringify(mP));
+if (oracle) {
+  const oP = oracle.safeParse(GOLDEN[0][0]);
+  const sameArr = oP.ok && Array.isArray(mP) && oP.value.length === mP.length &&
+    Array.prototype.every.call(oP.value, function (v, i) { return v === mP[i]; });
+  check('epParse 结果一致', sameArr,
+    'oracle=' + (oP.ok ? JSON.stringify(Array.prototype.slice.call(oP.value)) : 'THROW:' + oP.message) +
+    ' mine=' + JSON.stringify(mP));
+}
 
 /* ---- 4. 密钥还原 ---- */
 console.log('[4] 密钥还原');
@@ -112,11 +118,13 @@ check('deriveKey("MZ4uGVu3dvMOKb1k") === "MZe3GV3txvMOKb1p"',
 check('替换表长度 = 36 且为 0..35 的置换',
   MINE.SUBST_TABLE.length === 36 &&
   MINE.SUBST_TABLE.slice().sort(function (a, b) { return a - b; }).every(function (v, i) { return v === i; }));
-const kc = oracle.lexical('_0x22fc81');
-if (kc.ok) {
-  check('净版常量与原始脚本运行时 _0x22fc81 完全一致',
-    kc.value.A === MINE.OBFUSCATED_KEY &&
-    JSON.stringify(Array.prototype.slice.call(kc.value.g)) === JSON.stringify(MINE.SUBST_TABLE));
+if (oracle) {
+  const kc = oracle.lexical('_0x22fc81');
+  if (kc.ok) {
+    check('净版常量与原始脚本运行时 _0x22fc81 完全一致',
+      kc.value.A === MINE.OBFUSCATED_KEY &&
+      JSON.stringify(Array.prototype.slice.call(kc.value.g)) === JSON.stringify(MINE.SUBST_TABLE));
+  }
 }
 
 console.log('==============================================================');

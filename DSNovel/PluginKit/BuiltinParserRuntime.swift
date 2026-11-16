@@ -98,13 +98,23 @@ actor BuiltinParserRuntime {
 
     @discardableResult
     func reload() -> [InstalledBuiltinParser] {
+        let oldHashes = Dictionary(uniqueKeysWithValues: installed.map { ($0.id, $0.sha256) })
         installed = BuiltinParserStore.installedParsers()
-        let aliveIDs = Set(installed.map(\.id))
-        for id in contextPool.keys where !aliveIDs.contains(id) {
-            contextPool[id] = nil
-            contextCount[id] = nil
+        let newHashes = Dictionary(uniqueKeysWithValues: installed.map { ($0.id, $0.sha256) })
+        for (id, oldHash) in oldHashes where newHashes[id] != oldHash {
+            invalidateParserState(parserID: id)
+        }
+        for id in contextPool.keys where newHashes[id] == nil {
+            invalidateParserState(parserID: id)
         }
         return installed
+    }
+
+    private func invalidateParserState(parserID: String) {
+        contextPool[parserID] = nil
+        contextCount[parserID] = nil
+        cache = cache.filter { !$0.key.hasPrefix("\(parserID)|") }
+        negativeCache = negativeCache.filter { !$0.key.hasPrefix("\(parserID)|") }
     }
 
     func installedParsers() -> [InstalledBuiltinParser] {
@@ -114,17 +124,18 @@ actor BuiltinParserRuntime {
         return installed
     }
 
-    /// host 匹配优先 + sourceID 兜底
+    /// host 匹配优先 + sourceID 兜底（仅匹配已启用的解析器）
     func parser(forSourceID sourceID: String, sourceURL: String) -> InstalledBuiltinParser? {
         if installed.isEmpty {
             installed = BuiltinParserStore.installedParsers()
         }
+        let enabledParsers = installed.filter { isEnabled(for: $0.id) }
         // 1) host 优先
-        if let byHost = installed.first(where: { !$0.meta.targets.hosts.isEmpty && $0.meta.targets.matches(sourceID: sourceID, sourceURL: sourceURL) }) {
+        if let byHost = enabledParsers.first(where: { !$0.meta.targets.hosts.isEmpty && $0.meta.targets.matches(sourceID: sourceID, sourceURL: sourceURL) }) {
             return byHost
         }
         // 2) sourceID 兜底
-        return installed.first { $0.meta.targets.sourceIDs.contains(sourceID) }
+        return enabledParsers.first { $0.meta.targets.sourceIDs.contains(sourceID) }
     }
 
     func parser(withID parserID: String) -> InstalledBuiltinParser? {
@@ -134,6 +145,15 @@ actor BuiltinParserRuntime {
     // MARK: 策略与配置（UserDefaults，与 HostBridge 的 parser pref 前缀一致）
 
     static func strategyKey(_ parserID: String) -> String { "parser_strategy_\(parserID)" }
+    static func enabledKey(_ parserID: String) -> String { "parser_enabled_\(parserID)" }
+
+    func isEnabled(for parserID: String) -> Bool {
+        UserDefaults.standard.object(forKey: Self.enabledKey(parserID)) as? Bool ?? true
+    }
+
+    func setEnabled(_ enabled: Bool, for parserID: String) {
+        UserDefaults.standard.set(enabled, forKey: Self.enabledKey(parserID))
+    }
 
     func strategy(for parserID: String) -> BuiltinParserStrategy {
         let raw = UserDefaults.standard.string(forKey: Self.strategyKey(parserID)) ?? ""
@@ -191,21 +211,21 @@ actor BuiltinParserRuntime {
 
         guard let metaValue = ctx.objectForKeyedSubscript("__metaParser")?.call(withArguments: []),
               let metaJSON = metaValue.toString(),
-              let data = metaJSON.data(using: .utf8),
-              let rawArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+              let metaData = metaJSON.data(using: .utf8),
+              let rawArray = try? JSONSerialization.jsonObject(with: metaData) as? [[String: Any]],
               !rawArray.isEmpty else {
             throw BuiltinParserError.scriptInvalid("脚本未注册内置解析器（未调用 registerBuiltinParser）")
         }
 
         let meta = try Self.decodeMeta(rawArray[0])
-        let payloadData = Data(scriptText.utf8)
-        let sha = BuiltinParserStore.sha256Hex(payloadData)
+        let scriptData = Data(scriptText.utf8)
+        let sha = BuiltinParserStore.sha256Hex(scriptData)
         let existing = BuiltinParserStore.loadParser(in: BuiltinParserStore.directory(for: meta.id))
         return BuiltinParserPreview(
             meta: meta,
             fileName: fileName,
             sha256: sha,
-            sizeBytes: payloadData.count,
+            sizeBytes: scriptData.count,
             scriptText: scriptText,
             isUpdate: existing != nil,
             installedVersion: existing?.meta.version
@@ -216,15 +236,14 @@ actor BuiltinParserRuntime {
     func install(preview: BuiltinParserPreview) throws -> InstalledBuiltinParser {
         let parser = try BuiltinParserStore.install(preview: preview)
         installed = BuiltinParserStore.installedParsers()
-        cache.removeAll()
-        negativeCache.removeAll()
+        invalidateParserState(parserID: parser.id)
         BuiltinParserLogStore.shared.append(parser.id, "已安装 v\(parser.meta.version)（sha256 \(parser.sha256.prefix(12))）")
         return parser
     }
 
     func uninstall(parserID: String) throws {
         try BuiltinParserStore.remove(parserID: parserID)
-        for key in cache.keys where key.hasPrefix("\(parserID)|") { cache[key] = nil }
+        invalidateParserState(parserID: parserID)
         installed = BuiltinParserStore.installedParsers()
     }
 
@@ -444,7 +463,13 @@ actor BuiltinParserRuntime {
         }
 
         try await acquireSlot()
-        let ctx = await leaseContext(parser: parser, prelude: prelude, script: script)
+        let ctx: JSContext
+        do {
+            ctx = try await leaseContext(parser: parser, prelude: prelude, script: script)
+        } catch {
+            releaseSlot()
+            throw error
+        }
 
         let outcome: Result<String?, Error> = await withCheckedContinuation { (continuation: CheckedContinuation<Result<String?, Error>, Never>) in
             let gate = OnceContinuationGate { result in
@@ -501,7 +526,7 @@ actor BuiltinParserRuntime {
 
     // MARK: 上下文池
 
-    private func leaseContext(parser: InstalledBuiltinParser, prelude: String, script: String) async -> JSContext {
+    private func leaseContext(parser: InstalledBuiltinParser, prelude: String, script: String) async throws -> JSContext {
         if var pool = contextPool[parser.id], let ctx = pool.popLast() {
             contextPool[parser.id] = pool
             return ctx
@@ -512,7 +537,9 @@ actor BuiltinParserRuntime {
             if let ctx = Self.makeContext(parser: parser, prelude: prelude, script: script) {
                 return ctx
             }
-            BuiltinParserLogStore.shared.append(parser.id, "创建 JSContext 失败，使用降级上下文")
+            contextCount[parser.id] = created
+            BuiltinParserLogStore.shared.append(parser.id, "创建 JSContext 失败")
+            throw BuiltinParserError.scriptInvalid("创建 JSContext 失败")
         }
         // 池已满：等待别人归还
         let ctx = await withCheckedContinuation { (continuation: CheckedContinuation<JSContext, Never>) in

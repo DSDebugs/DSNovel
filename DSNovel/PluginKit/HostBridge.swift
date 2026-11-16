@@ -829,7 +829,14 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
         ctx.setObject(nUuid, forKeyedSubscript: "__n_uuid" as NSString)
         ctx.setObject(nHtmlDecode, forKeyedSubscript: "__n_htmlDecode" as NSString)
 
-        let cacheNamespaceExpression = cacheNamespace.map { "'" + $0 + "'" } ?? "id"
+        let cacheNamespaceExpression: String
+        if let ns = cacheNamespace,
+           let nsData = try? JSONEncoder().encode(ns),
+           let nsLiteral = String(data: nsData, encoding: .utf8) {
+            cacheNamespaceExpression = nsLiteral
+        } else {
+            cacheNamespaceExpression = "id"
+        }
         let bridgeScript = """
         var __bridge = { host: function (id, name) { var ns = \(cacheNamespaceExpression); return {
           getSourceId: function () { return id; },

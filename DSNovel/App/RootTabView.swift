@@ -114,6 +114,7 @@ struct RootTabView: View {
         // VIP 章节报错 → 跳到「设置 → 书源管理 → 该书源的内置解析分区」（全 App 唯一提示出口）
         .onChange(of: router.pendingParserSourceID) { _, newValue in
             guard newValue != nil else { return }
+            isShowingFullPlayer = false
             selectedTab = .settings
             if settingsPath.last != .pluginManager {
                 settingsPath = [.pluginManager]
