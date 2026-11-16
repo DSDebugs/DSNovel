@@ -267,7 +267,7 @@ struct ShelfView: View {
                         recentPlayedRow(for: book)
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
-                                    removeRecentHistory(for: book)
+                                    removeRecentHistory(book)
                                 } label: {
                                     Label("移除记录", systemImage: "trash")
                                 }
@@ -427,7 +427,7 @@ struct ShelfView: View {
             }
 
             Button(role: .destructive) {
-                removeRecentHistory(for: book)
+                removeRecentHistory(book)
             } label: {
                 Label("删除此条播放记录", systemImage: "trash")
             }
