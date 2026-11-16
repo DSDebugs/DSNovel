@@ -11,7 +11,7 @@ import UIKit
 //  · 顶部一张状态卡：当前书源概况 + 一键检测
 //  · 分段筛选：全部 / 可用 / 异常 / 已停用
 //  · 每行：状态灯 + 名称 + 延迟，右侧开关直接启用/停用；点击行进入详情
-//  · 左滑：删除、置顶；右滑：检测
+//  · 左滑：删除、置顶；右滑：检测 / 登录
 
 enum SourceFilterMode: String, CaseIterable, Identifiable {
     case all = "全部"
@@ -226,8 +226,26 @@ struct PluginManagerView: View {
         .sheet(item: $activeSheet) { sheet in
             sheetView(for: sheet)
         }
+        .task {
+            _ = await CookieSync.pullFromWebView()
+            syncPluginCookieFlags()
+        }
         .onDisappear {
             batchCheckTask?.cancel()
+        }
+    }
+
+    private func syncPluginCookieFlags() {
+        var changed = false
+        for p in plugins {
+            let target = p.loginURL.isEmpty ? p.siteURL : p.loginURL
+            if !target.isEmpty, CookieSync.hasCookies(for: target), !p.loggedIn {
+                p.loggedIn = true
+                changed = true
+            }
+        }
+        if changed {
+            try? modelContext.save()
         }
     }
 
@@ -563,6 +581,15 @@ struct PluginManagerView: View {
                 Label("检测", systemImage: "bolt.heart")
             }
             .tint(.blue)
+
+            if plugin.requiresLogin || plugin.healthState == .needAuth || !plugin.loginURL.isEmpty {
+                Button {
+                    openWebAuth(for: plugin)
+                } label: {
+                    Label("登录", systemImage: "person.badge.key")
+                }
+                .tint(.green)
+            }
         }
     }
 
@@ -611,17 +638,26 @@ struct PluginManagerView: View {
             onCompleted: {
                 if let record = record(for: sid) {
                     record.loggedIn = true
+                    try? modelContext.save()
                     Task { await checkSinglePlugin(record) }
                 }
             }
         )
-        activeSheet = .webAuth(session)
+        if activeSheet != nil {
+            activeSheet = nil
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                activeSheet = .webAuth(session)
+            }
+        } else {
+            activeSheet = .webAuth(session)
+        }
     }
 
     // MARK: 检测
 
-    private func record(for id: String) -> PluginRecord? {
-        var descriptor = FetchDescriptor<PluginRecord>(predicate: #Predicate { $0.id == id })
+    private func record(for targetID: String) -> PluginRecord? {
+        var descriptor = FetchDescriptor<PluginRecord>(predicate: #Predicate<PluginRecord> { $0.id == targetID })
         descriptor.fetchLimit = 1
         return try? modelContext.fetch(descriptor).first
     }
@@ -985,6 +1021,9 @@ struct PluginManagerView: View {
                 targetGroupID = nil
             }
 
+            let targetLoginCheckURL = meta.loginURL.isEmpty ? meta.url : meta.loginURL
+            let alreadyHasCookies = CookieSync.hasCookies(for: targetLoginCheckURL)
+
             if let existing = plugins.first(where: { $0.id == meta.id }) {
                 existing.packageID = preview.packageID
                 existing.name = meta.name
@@ -996,6 +1035,7 @@ struct PluginManagerView: View {
                 existing.discoverable = meta.discoverable
                 existing.requiresLogin = !meta.loginURL.isEmpty
                 existing.loginURL = meta.loginURL
+                if alreadyHasCookies { existing.loggedIn = true }
                 if existing.groupID == nil {
                     existing.groupID = targetGroupID
                 }
@@ -1015,7 +1055,8 @@ struct PluginManagerView: View {
                     searchable: meta.searchable,
                     discoverable: meta.discoverable,
                     requiresLogin: !meta.loginURL.isEmpty,
-                    loginURL: meta.loginURL
+                    loginURL: meta.loginURL,
+                    loggedIn: alreadyHasCookies
                 )
                 nextPluginOrder += 1
                 modelContext.insert(record)
@@ -1039,8 +1080,6 @@ struct PluginManagerView: View {
         Task { await downloadAndPreparePreview(from: raw) }
     }
 }
-
-
 
 // MARK: - 单行书源
 
@@ -1091,10 +1130,10 @@ struct PluginSourceRow: View {
                         .font(.body.weight(.medium))
                         .foregroundStyle(plugin.isEnabled ? .primary : .secondary)
                         .lineLimit(1)
-                    if plugin.requiresLogin && !plugin.loggedIn {
-                        Image(systemName: "key.fill")
+                    if plugin.requiresLogin {
+                        Image(systemName: plugin.loggedIn ? "checkmark.shield.fill" : "key.fill")
                             .font(.caption2)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(plugin.loggedIn ? .green : .orange)
                     }
                 }
                 Text(subtitle)
@@ -1120,4 +1159,3 @@ struct PluginSourceRow: View {
         .onTapGesture(perform: onTap)
     }
 }
-

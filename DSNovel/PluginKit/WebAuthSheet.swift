@@ -1,71 +1,159 @@
 import SwiftUI
 import WebKit
 
+/// 书源网页登录与人机验证请求模型（对齐 ssts WebScreenData / WebViewHost）
 struct WebAuthSessionRequest: Identifiable {
     let id = UUID()
     let sourceID: String
     let title: String
     let initialURL: String
     let expectedCookieName: String?
-    var onCompleted: (() -> Void)?
+    let onCompleted: () -> Void
 }
 
-/// 统一的登录与人机验证弹层（WKWebView + 顶部进度条 + WKHTTPCookieStore 自动同步）
+/// 内嵌 WKWebView 网页登录与安全验证弹层：双向同步 HTTPCookieStorage 与 WKHTTPCookieStore，支持 loginDesktop UA 切换与 loginScript 自动注入
 struct WebAuthSheet: View {
     let session: WebAuthSessionRequest
     @Environment(\.dismiss) private var dismiss
-    @State private var progress: Double = 0.1
+
     @State private var currentURLString: String = ""
+    @State private var isLoading: Bool = true
+    @State private var capturedCookiesCount: Int = 0
+    @State private var isDesktopUA: Bool = false
+    @State private var loginScript: String = ""
+    @State private var altLoginURL: String = ""
+    @State private var activeTargetURL: String = ""
+    @State private var reloadTrigger: Int = 0
+    @State private var isCompleting: Bool = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if progress < 1.0 {
-                    ProgressView(value: progress, total: 1.0)
-                        .progressViewStyle(.linear)
-                        .tint(DSColor.primary)
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.shield")
+                        .font(.caption)
+                        .foregroundStyle(DSColor.primary)
+                    Text(currentURLString.isEmpty ? session.initialURL : currentURLString)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else if capturedCookiesCount > 0 {
+                        Text("已同步 \(capturedCookiesCount) 项凭证")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    }
                 }
+                .padding(.horizontal, DSSpacing.md)
+                .padding(.vertical, 8)
+                .background(DSColor.cardSurface)
 
-                WebAuthRepresentable(
-                    urlString: session.initialURL,
+                WebAuthViewRepresentable(
+                    urlString: activeTargetURL.isEmpty ? session.initialURL : activeTargetURL,
+                    desktop: isDesktopUA,
+                    loginScript: loginScript,
+                    reloadTrigger: reloadTrigger,
                     expectedCookieName: session.expectedCookieName,
-                    progress: $progress,
-                    currentURLString: $currentURLString,
-                    onVerified: {
-                        ToastManager.shared.show("验证/登录已同步")
-                        session.onCompleted?()
-                        dismiss()
+                    onStateChange: { urlStr, loading, cookieCount in
+                        self.currentURLString = urlStr
+                        self.isLoading = loading
+                        self.capturedCookiesCount = cookieCount
+                    },
+                    onExpectedCookieDetected: {
+                        completeAndDismiss()
                     }
                 )
             }
-            .background(DSColor.contentBackground)
             .navigationTitle(session.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") {
-                        dismiss()
+                        completeAndDismiss()
                     }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") {
-                        WebAuthRepresentable.syncCookiesToSharedStorage {
-                            session.onCompleted?()
-                            dismiss()
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            isDesktopUA.toggle()
+                            reloadTrigger += 1
+                        } label: {
+                            Label(
+                                isDesktopUA ? "切换为手机版网页" : "切换为桌面版网页（推荐扫码）",
+                                systemImage: isDesktopUA ? "iphone" : "desktopcomputer"
+                            )
                         }
+
+                        if !altLoginURL.isEmpty {
+                            Button {
+                                activeTargetURL = (activeTargetURL == altLoginURL) ? session.initialURL : altLoginURL
+                                reloadTrigger += 1
+                            } label: {
+                                Label("切换备用登录入口", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                        }
+
+                        Button {
+                            reloadTrigger += 1
+                        } label: {
+                            Label("刷新当前页面", systemImage: "arrow.clockwise")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                     }
+                    .accessibilityLabel("网页登录选项")
+
+                    Button("完成") {
+                        completeAndDismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(isCompleting)
+                }
+            }
+            .task {
+                if let meta = await PluginRuntime.shared.sourceLoginMeta(sourceID: session.sourceID) {
+                    isDesktopUA = meta.loginDesktop
+                    loginScript = meta.loginScript
+                    altLoginURL = meta.loginAltURL
+                    if session.initialURL.isEmpty {
+                        activeTargetURL = meta.loginURL.isEmpty ? meta.siteURL : meta.loginURL
+                    } else {
+                        activeTargetURL = session.initialURL
+                    }
+                } else {
+                    activeTargetURL = session.initialURL
                 }
             }
         }
     }
+
+    private func completeAndDismiss() {
+        guard !isCompleting else { return }
+        isCompleting = true
+        Task { @MainActor in
+            _ = await CookieSync.pullFromWebView()
+            if let nickname = try? await PluginRuntime.shared.checkLogin(sourceID: session.sourceID),
+               !nickname.isEmpty {
+                ToastManager.shared.show("登录成功：\(nickname)")
+            }
+            session.onCompleted()
+            dismiss()
+        }
+    }
 }
 
-struct WebAuthRepresentable: UIViewRepresentable {
+@MainActor
+private struct WebAuthViewRepresentable: UIViewRepresentable {
     let urlString: String
+    let desktop: Bool
+    let loginScript: String
+    let reloadTrigger: Int
     let expectedCookieName: String?
-    @Binding var progress: Double
-    @Binding var currentURLString: String
-    let onVerified: () -> Void
+    let onStateChange: (String, Bool, Int) -> Void
+    let onExpectedCookieDetected: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -74,61 +162,86 @@ struct WebAuthRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        config.allowsInlineMediaPlayback = true
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
-        context.coordinator.observeProgress(of: webView)
+        webView.customUserAgent = desktop ? JsHostBridge.desktopUA : JsHostBridge.mobileUA
 
-        if let url = URL(string: urlString) {
-            webView.load(URLRequest(url: url))
+        context.coordinator.lastLoadedURL = urlString
+        context.coordinator.lastDesktop = desktop
+        context.coordinator.lastReloadTrigger = reloadTrigger
+        let initialTarget = urlString
+
+        Task { @MainActor in
+            await CookieSync.pushToWebView()
+            if let url = JsHostBridge.makeRequestURL(from: initialTarget) {
+                webView.load(URLRequest(url: url))
+            }
         }
         return webView
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.parent = self
+        let needReload = context.coordinator.lastLoadedURL != urlString
+            || context.coordinator.lastDesktop != desktop
+            || context.coordinator.lastReloadTrigger != reloadTrigger
 
-    static func syncCookiesToSharedStorage(completion: @escaping @MainActor () -> Void) {
-        WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
-            for cookie in cookies {
-                HTTPCookieStorage.shared.setCookie(cookie)
-            }
-            Task { @MainActor in
-                completion()
+        if needReload {
+            context.coordinator.lastLoadedURL = urlString
+            context.coordinator.lastDesktop = desktop
+            context.coordinator.lastReloadTrigger = reloadTrigger
+            webView.customUserAgent = desktop ? JsHostBridge.desktopUA : JsHostBridge.mobileUA
+            if let url = JsHostBridge.makeRequestURL(from: urlString) {
+                webView.load(URLRequest(url: url))
             }
         }
     }
 
+    @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate {
-        let parent: WebAuthRepresentable
-        private var observation: NSKeyValueObservation?
+        var parent: WebAuthViewRepresentable
+        var didTriggerCompletion = false
+        var lastLoadedURL: String = ""
+        var lastDesktop: Bool = false
+        var lastReloadTrigger: Int = 0
 
-        init(parent: WebAuthRepresentable) {
+        init(parent: WebAuthViewRepresentable) {
             self.parent = parent
         }
 
-        func observeProgress(of webView: WKWebView) {
-            observation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] wv, _ in
-                guard let self else { return }
-                Task { @MainActor in
-                    self.parent.progress = wv.estimatedProgress
-                }
-            }
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            parent.onStateChange(webView.url?.absoluteString ?? parent.urlString, true, 0)
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            syncCookiesAndRunScript(from: webView, isFinished: false)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            let current = webView.url?.absoluteString ?? ""
-            Task { @MainActor in
-                self.parent.currentURLString = current
+            syncCookiesAndRunScript(from: webView, isFinished: true)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            syncCookiesAndRunScript(from: webView, isFinished: true)
+        }
+
+        private func syncCookiesAndRunScript(from webView: WKWebView, isFinished: Bool) {
+            let script = parent.loginScript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isFinished && !script.isEmpty {
+                webView.evaluateJavaScript(script, completionHandler: nil)
             }
-            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { [weak self] cookies in
-                guard let self else { return }
-                for cookie in cookies {
-                    HTTPCookieStorage.shared.setCookie(cookie)
-                }
-                if let expected = self.parent.expectedCookieName, !expected.isEmpty,
-                   cookies.contains(where: { $0.name.lowercased().contains(expected.lowercased()) }) {
-                    Task { @MainActor in
-                        self.parent.onVerified()
+            let currentURL = webView.url?.absoluteString ?? parent.urlString
+            let expectedName = parent.expectedCookieName
+            Task { @MainActor in
+                let count = await CookieSync.pullFromWebView()
+                self.parent.onStateChange(currentURL, !isFinished, count)
+                if let expected = expectedName, !expected.isEmpty, !self.didTriggerCompletion {
+                    if let targetURL = JsHostBridge.makeRequestURL(from: currentURL),
+                       CookieSync.cookies(for: targetURL).contains(where: { $0.name == expected && !$0.value.isEmpty }) {
+                        self.didTriggerCompletion = true
+                        self.parent.onExpectedCookieDetected()
                     }
                 }
             }

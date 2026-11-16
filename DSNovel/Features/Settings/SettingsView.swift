@@ -403,7 +403,7 @@ struct PluginImportPreviewSheet: View {
     }
 }
 
-// MARK: - 8. Plugin Detail & Check Sheet (单源详情、实时测速、自定义配置与删除面板)
+// MARK: - 8. Plugin Detail & Check Sheet (单源详情、实时测速、内嵌网页登录、自定义配置与删除面板)
 struct PluginDetailAndCheckSheet: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -416,6 +416,8 @@ struct PluginDetailAndCheckSheet: View {
 
     @State private var configItems: [SourceConfigItem] = []
     @State private var configValues: [String: String] = [:]
+    @State private var nestedAuthSession: WebAuthSessionRequest?
+    @State private var loginStatusNote: String = ""
 
     var body: some View {
         NavigationStack {
@@ -438,8 +440,12 @@ struct PluginDetailAndCheckSheet: View {
                     }
                 }
             }
+            .sheet(item: $nestedAuthSession) { session in
+                WebAuthSheet(session: session)
+            }
             .task {
                 await loadConfigMetadata()
+                await refreshLoginState()
             }
         }
     }
@@ -487,7 +493,7 @@ struct PluginDetailAndCheckSheet: View {
     }
 
     private var statusAndGroupSection: some View {
-        Section("书源状态与分组") {
+        Section("书源状态与账号登录") {
             Toggle("启用该书源", isOn: $plugin.isEnabled)
             Toggle("置顶该书源", isOn: $plugin.isPinned)
 
@@ -498,9 +504,65 @@ struct PluginDetailAndCheckSheet: View {
                 }
             }
 
-            Button(action: onOpenWebAuth) {
-                Label("打开网页登录 / 验证码验证", systemImage: "person.badge.key")
+            HStack {
+                Label("网页登录凭证", systemImage: plugin.loggedIn ? "checkmark.shield.fill" : "key.fill")
+                    .foregroundStyle(plugin.loggedIn ? .green : .primary)
+                Spacer()
+                Text(loginStatusNote.isEmpty ? (plugin.loggedIn ? "已同步 Cookie" : "未登录") : loginStatusNote)
+                    .font(.caption)
+                    .foregroundStyle(plugin.loggedIn ? .green : .secondary)
             }
+
+            Button {
+                presentInlineWebAuth()
+            } label: {
+                Label(
+                    plugin.loggedIn ? "重新打开网页登录 / 刷新验证" : "打开网页登录 / 验证码验证",
+                    systemImage: "person.badge.key"
+                )
+            }
+        }
+    }
+
+    private func presentInlineWebAuth() {
+        let targetURL = plugin.loginURL.isEmpty ? plugin.siteURL : plugin.loginURL
+        guard !targetURL.isEmpty else {
+            onOpenWebAuth()
+            return
+        }
+        nestedAuthSession = WebAuthSessionRequest(
+            sourceID: plugin.id,
+            title: "登录/验证 · \(plugin.name)",
+            initialURL: targetURL,
+            expectedCookieName: nil,
+            onCompleted: {
+                plugin.loggedIn = true
+                if plugin.healthState == .needAuth {
+                    plugin.lastCheckStatus = SourceHealthState.healthy.rawValue
+                    plugin.lastCheckMessage = "已完成网页登录"
+                }
+                try? modelContext.save()
+                Task {
+                    await refreshLoginState()
+                    onTriggerCheck()
+                }
+            }
+        )
+    }
+
+    private func refreshLoginState() async {
+        let targetURL = plugin.loginURL.isEmpty ? plugin.siteURL : plugin.loginURL
+        let hasCookies = CookieSync.hasCookies(for: targetURL)
+        if hasCookies && !plugin.loggedIn {
+            plugin.loggedIn = true
+            try? modelContext.save()
+        }
+        if let nick = try? await PluginRuntime.shared.checkLogin(sourceID: plugin.id), !nick.isEmpty {
+            loginStatusNote = "已登录 (\(nick))"
+            plugin.loggedIn = true
+            try? modelContext.save()
+        } else if hasCookies {
+            loginStatusNote = "已同步登录凭证"
         }
     }
 

@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-// MARK: - SwiftData 持久化实体（严格对齐报告 4.1 节，并扩展书源可用性与延迟检测持久化字段）
+// MARK: - SwiftData 持久化实体（含「书架」与「最近播放」分离标识及书源测速字段）
 
 @Model
 final class Book {
@@ -12,6 +12,8 @@ final class Book {
     var author: String
     var cover: String
     var intro: String
+    /// 是否由用户主动加入「书架」（false 表示仅保存在「最近播放」历史记录中）
+    var inShelf: Bool = true
     var addedAt: Date
     var categoryID: String?
     var lastChapterID: String?
@@ -33,6 +35,7 @@ final class Book {
         author: String = "",
         cover: String = "",
         intro: String = "",
+        inShelf: Bool = true,
         addedAt: Date = .now,
         categoryID: String? = nil,
         lastChapterID: String? = nil,
@@ -53,6 +56,7 @@ final class Book {
         self.author = author
         self.cover = cover
         self.intro = intro
+        self.inShelf = inShelf
         self.addedAt = addedAt
         self.categoryID = categoryID
         self.lastChapterID = lastChapterID
@@ -78,6 +82,53 @@ final class Book {
             intro: intro
         )
     }
+
+    /// 格式化收听进度位置（如 08:42）
+    var formattedPositionText: String {
+        guard lastPositionMs > 0 else { return "00:00" }
+        let totalSec = max(0, lastPositionMs / 1000)
+        let h = totalSec / 3600
+        let m = (totalSec % 3600) / 60
+        let s = totalSec % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%02d:%02d", m, s)
+    }
+
+    /// 格式化最后播放时间点（支持相对时间与日期时间展示）
+    var formattedLastPlayedAtText: String {
+        guard let playedAt = lastPlayedAt else { return "尚未播放" }
+        let interval = Date.now.timeIntervalSince(playedAt)
+        if interval < 60 {
+            return "刚刚"
+        } else if interval < 3600 {
+            return "\(Int(interval / 60))分钟前"
+        } else if Calendar.current.isDateInToday(playedAt) {
+            let f = DateFormatter()
+            f.dateFormat = "今天 HH:mm"
+            return f.string(from: playedAt)
+        } else if Calendar.current.isDateInYesterday(playedAt) {
+            let f = DateFormatter()
+            f.dateFormat = "昨天 HH:mm"
+            return f.string(from: playedAt)
+        } else {
+            let f = DateFormatter()
+            f.dateFormat = "MM-dd HH:mm"
+            return f.string(from: playedAt)
+        }
+    }
+
+    /// 汇总展示最后播放章节与进度时间
+    var playbackProgressSummary: String {
+        if let chapter = lastChapterTitle, !chapter.isEmpty {
+            if lastPositionMs > 0 {
+                return "\(chapter) · \(formattedPositionText)"
+            }
+            return chapter
+        }
+        return "尚未收听"
+    }
 }
 
 @Model
@@ -90,35 +141,6 @@ final class ShelfCategory {
         self.id = id
         self.name = name
         self.order = order
-    }
-}
-
-@Model
-final class Bookmark {
-    @Attribute(.unique) var id: String
-    var bookID: String
-    var chapterID: String
-    var chapterTitle: String
-    var positionMs: Int
-    var note: String
-    var createdAt: Date
-
-    init(
-        id: String = UUID().uuidString,
-        bookID: String,
-        chapterID: String,
-        chapterTitle: String,
-        positionMs: Int,
-        note: String = "",
-        createdAt: Date = .now
-    ) {
-        self.id = id
-        self.bookID = bookID
-        self.chapterID = chapterID
-        self.chapterTitle = chapterTitle
-        self.positionMs = positionMs
-        self.note = note
-        self.createdAt = createdAt
     }
 }
 
@@ -337,6 +359,20 @@ enum AppTab: Int, CaseIterable, Hashable {
         case .search: return "magnifyingglass"
         case .shelf: return "books.vertical"
         case .settings: return "gearshape"
+        }
+    }
+}
+
+/// 书架页顶部切换子页：「我的书架」与「最近播放」
+enum ShelfSectionMode: String, CaseIterable, Identifiable {
+    case shelf = "shelf"
+    case recent = "recent"
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .shelf: return "我的书架"
+        case .recent: return "最近播放"
         }
     }
 }

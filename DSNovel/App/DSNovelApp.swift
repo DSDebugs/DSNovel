@@ -10,10 +10,10 @@ struct DSNovelApp: App {
     @State private var toastManager = ToastManager.shared
 
     init() {
+        CookieSync.bootstrap()
         let schema = Schema([
             Book.self,
             ShelfCategory.self,
-            Bookmark.self,
             DownloadItem.self,
             PluginRecord.self,
             PluginGroup.self,
@@ -35,6 +35,7 @@ struct DSNovelApp: App {
                     let context = modelContainer.mainContext
                     player.modelContext = context
                     downloadManager.modelContext = context
+                    _ = await CookieSync.pullFromWebView()
                     await PluginRuntime.shared.reloadInstalledPackages()
                     autoResumeIfNeeded(context: context)
                 }

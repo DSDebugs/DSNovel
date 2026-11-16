@@ -42,6 +42,10 @@ struct ParsedSourceMeta: Hashable, Sendable {
     var multipleEpisodePages: Bool
     var enabledByDefault: Bool
     var loginURL: String
+    var loginDesktop: Bool = false
+    var loginScript: String = ""
+    var loginAltURL: String = ""
+    var hasCheckLogin: Bool = false
     var hasSearchVerification: Bool
     var searchVerificationDesktop: Bool
     var searchDelaySeconds: Int
@@ -390,6 +394,53 @@ actor PluginRuntime {
         try? ensureRoute(for: sourceID)?.meta
     }
 
+    /// 获取书源登录元数据（供 WebAuthSheet 自动应用 loginDesktop、loginScript 与备用登录地址）
+    func sourceLoginMeta(sourceID: String) -> (
+        loginURL: String,
+        siteURL: String,
+        loginDesktop: Bool,
+        loginScript: String,
+        loginAltURL: String,
+        hasCheckLogin: Bool
+    )? {
+        guard let meta = try? ensureRoute(for: sourceID)?.meta else { return nil }
+        return (
+            loginURL: meta.loginURL,
+            siteURL: meta.url,
+            loginDesktop: meta.loginDesktop,
+            loginScript: meta.loginScript,
+            loginAltURL: meta.loginAltURL,
+            hasCheckLogin: meta.hasCheckLogin
+        )
+    }
+
+    /// 调用书源的 checkLogin() 校验登录状态并返回账号昵称/状态说明（对齐 ssts JsSource.checkLogin）
+    func checkLogin(sourceID: String) async throws -> String {
+        guard let route = try ensureRoute(for: sourceID),
+              route.meta.methods.contains("checkLogin") else {
+            return ""
+        }
+        let jsonStr = try await invokeMethod(
+            sourceID: sourceID,
+            method: "checkLogin",
+            args: [],
+            timeoutSec: 10.0
+        )
+        if let data = jsonStr.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) {
+            if let str = obj as? String {
+                return str
+            }
+            if let b = obj as? Bool {
+                return b ? "已登录" : ""
+            }
+            if let dict = obj as? [String: Any] {
+                return Self.stringValue(dict["name"]) ?? Self.stringValue(dict["nickname"]) ?? "已登录"
+            }
+        }
+        return jsonStr.trimmingCharacters(in: CharacterSet(charactersIn: "\" \n\r\t"))
+    }
+
     // MARK: - 书源可用性及延迟检测（支持单源点击检测与批量并发检测）
 
     func checkSourceHealth(sourceID: String) async -> SourceHealthCheckResult {
@@ -701,6 +752,7 @@ actor PluginRuntime {
         return try? decodeBookDetail(from: jsonStr, sourceID: sourceID, bookURL: bookURL)
     }
 
+    /// 解析章节播放流地址与请求头（100% 对齐 ssts JsSource.audio + Player.resolveAsset）
     func resolvePlayURL(sourceID: String, episodeURL: String) async throws -> PlayStreamInfo {
         guard let route = try ensureRoute(for: sourceID) else {
             throw PluginError.parseFailed("未找到书源: \(sourceID)")
@@ -708,50 +760,110 @@ actor PluginRuntime {
 
         var urlString = ""
         var headers: [String: String] = [:]
+        var explicitKind: StreamKind?
 
         // McpGuide.md 第 2/3 节：不写 audio 方法时，表示章节地址本身就是音频地址
         if !route.meta.methods.contains("audio") {
             urlString = episodeURL
         } else {
-            let jsonStr = try await invokeMethod(sourceID: sourceID, method: "audio", args: [episodeURL])
-            guard let data = jsonStr.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) else {
-                throw PluginError.parseFailed("未能解析音频播放地址")
-            }
-            if let str = obj as? String {
-                urlString = str
-            } else if let dict = obj as? [String: Any] {
-                urlString = Self.stringValue(dict["url"]) ?? ""
-                if let rawHeaders = dict["headers"] as? [String: Any] {
-                    for (k, v) in rawHeaders {
-                        if let s = Self.stringValue(v) {
-                            headers[k] = s
+            let jsonStr = try await invokeMethod(
+                sourceID: sourceID,
+                method: "audio",
+                args: [episodeURL],
+                timeoutSec: 25.0
+            )
+            let trimmed = jsonStr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let data = trimmed.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) {
+                if let str = obj as? String {
+                    urlString = str
+                } else if let dict = obj as? [String: Any] {
+                    urlString = Self.stringValue(dict["url"])
+                        ?? Self.stringValue(dict["audioUrl"])
+                        ?? Self.stringValue(dict["playUrl"])
+                        ?? Self.stringValue(dict["src"])
+                        ?? ""
+                    if let rawHeaders = (dict["headers"] ?? dict["header"]) as? [String: Any] {
+                        for (k, v) in rawHeaders {
+                            if let s = Self.stringValue(v), !s.isEmpty {
+                                headers[k] = s
+                            }
+                        }
+                    }
+                    if (dict["isLive"] as? Bool) == true {
+                        explicitKind = .live
+                    } else if let kStr = Self.stringValue(dict["kind"] ?? dict["type"])?.lowercased() {
+                        if kStr.contains("hls") || kStr.contains("m3u8") {
+                            explicitKind = .hls
+                        } else if kStr.contains("live") {
+                            explicitKind = .live
                         }
                     }
                 }
+            } else if trimmed.hasPrefix("http") || trimmed.hasPrefix("//") || trimmed.hasPrefix("/") {
+                urlString = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
             }
         }
 
+        urlString = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !urlString.isEmpty else {
             throw PluginError.parseFailed("没有解析到音频地址")
         }
 
-        // 若插件实现了 audioHeaders(audioUrl) 且当前未指定自定义头，补充请求头（McpGuide.md 第 5 节）
+        // 将协议相对路径 // 或站内相对路径 / 解析为完整绝对地址
+        let baseForRelative = episodeURL.lowercased().hasPrefix("http") ? episodeURL : route.meta.url
+        if let resolvedURL = JsHostBridge.makeRequestURL(from: urlString, relativeTo: baseForRelative) {
+            urlString = resolvedURL.absoluteString
+        }
+
+        // 若插件实现了 audioHeaders(audioUrl)，合并其返回的请求头（McpGuide.md 第 5 节）
         if route.meta.methods.contains("audioHeaders") {
-            if let hJson = try? await invokeMethod(sourceID: sourceID, method: "audioHeaders", args: [urlString], timeoutSec: 8.0),
+            if let hJson = try? await invokeMethod(
+                sourceID: sourceID,
+                method: "audioHeaders",
+                args: [urlString],
+                timeoutSec: 8.0
+            ),
                let hData = hJson.data(using: .utf8),
                let rawH = try? JSONSerialization.jsonObject(with: hData) as? [String: Any] {
                 for (k, v) in rawH where headers[k] == nil {
-                    if let s = Self.stringValue(v) {
+                    if let s = Self.stringValue(v), !s.isEmpty {
                         headers[k] = s
                     }
                 }
             }
         }
 
+        // 提取并移除内部提示头 X-Media-Type（对齐 ssts Player.resolveAsset）
+        var mediaTypeHint: String?
+        for key in Array(headers.keys) where key.lowercased() == "x-media-type" {
+            mediaTypeHint = headers.removeValue(forKey: key)?.lowercased()
+        }
+
+        // 确保 User-Agent 与跨子域 Cookie 自动注入到播放请求头中
+        let hasUA = headers.keys.contains { $0.lowercased() == "user-agent" }
+        if !hasUA {
+            headers["User-Agent"] = JsHostBridge.mobileUA
+        }
+        let hasCookie = headers.keys.contains { $0.lowercased() == "cookie" }
+        if !hasCookie, let targetURL = JsHostBridge.makeRequestURL(from: urlString) {
+            let cookieStr = CookieSync.cookieHeader(for: targetURL)
+            if !cookieStr.isEmpty {
+                headers["Cookie"] = cookieStr
+            }
+        }
+
         let lower = urlString.lowercased()
-        let isHLSHeader = headers["X-Media-Type"]?.lowercased() == "hls"
-        let kind: StreamKind = (isHLSHeader || lower.contains(".m3u8")) ? .hls : .onDemand
+        let kind: StreamKind
+        if let explicitKind {
+            kind = explicitKind
+        } else if mediaTypeHint == "live" {
+            kind = .live
+        } else if mediaTypeHint == "hls" || lower.contains(".m3u8") {
+            kind = .hls
+        } else {
+            kind = .onDemand
+        }
         return PlayStreamInfo(url: urlString, headers: headers, kind: kind)
     }
 
@@ -831,7 +943,8 @@ actor PluginRuntime {
                             sourceID: sourceID,
                             loginURL: loginURL,
                             siteURL: siteURL,
-                            hasSearchVerification: hasVerify
+                            hasSearchVerification: hasVerify,
+                            method: method
                         )
                         gate.resume(with: .failure(mapped))
                         return
@@ -858,7 +971,8 @@ actor PluginRuntime {
                         sourceID: sourceID,
                         loginURL: loginURL,
                         siteURL: siteURL,
-                        hasSearchVerification: hasVerify
+                        hasSearchVerification: hasVerify,
+                        method: method
                     )
                     gate.resume(with: .failure(mapped))
                     return
@@ -877,12 +991,30 @@ actor PluginRuntime {
         sourceID: String,
         loginURL: String,
         siteURL: String,
-        hasSearchVerification: Bool = false
+        hasSearchVerification: Bool = false,
+        method: String = ""
     ) -> PluginError {
-        if excMsg.contains("401") || excMsg.contains("登录") {
-            return .needLogin(sourceID: sourceID, loginURL: loginURL.isEmpty ? siteURL : loginURL)
+        let targetAuthURL = loginURL.isEmpty ? siteURL : loginURL
+        let explicitNeedLogin = excMsg.contains("401")
+            || excMsg.contains("请先登录")
+            || excMsg.contains("需要登录")
+            || excMsg.contains("未登录")
+            || excMsg.contains("请登录")
+            || excMsg.contains("登录已过期")
+            || excMsg.contains("登录后")
+
+        if explicitNeedLogin {
+            return .needLogin(sourceID: sourceID, loginURL: targetAuthURL)
         }
-        if excMsg.contains("403") || excMsg.contains("503") || excMsg.contains("验证") || excMsg.lowercased().contains("captcha") || hasSearchVerification {
+        if excMsg.contains("登录") && !CookieSync.hasCookies(for: targetAuthURL) {
+            return .needLogin(sourceID: sourceID, loginURL: targetAuthURL)
+        }
+        let isVerifyError = excMsg.contains("403")
+            || excMsg.contains("503")
+            || excMsg.contains("验证")
+            || excMsg.lowercased().contains("captcha")
+            || (hasSearchVerification && method == "search")
+        if isVerifyError {
             return .needVerify(sourceID: sourceID, verifyURL: siteURL)
         }
         if excMsg.contains("429") {
@@ -1146,6 +1278,10 @@ actor PluginRuntime {
             let multipleEpisodePages = (dict["multipleEpisodePages"] as? Bool) ?? false
             let enabledByDefault = (dict["enabledByDefault"] as? Bool) ?? true
             let loginURL = stringValue(dict["loginUrl"]) ?? ""
+            let loginDesktop = (dict["loginDesktop"] as? Bool) ?? false
+            let loginScript = stringValue(dict["loginScript"]) ?? ""
+            let loginAltURL = stringValue(dict["loginAltUrl"]) ?? ""
+            let hasCheckLogin = methods.contains("checkLogin")
             let hasSearchVerification = methods.contains("searchVerificationUrl")
             let searchVerificationDesktop = (dict["searchVerificationDesktop"] as? Bool) ?? false
             let searchDelaySeconds = intValue(dict["searchDelaySeconds"]) ?? 0
@@ -1175,6 +1311,10 @@ actor PluginRuntime {
                 multipleEpisodePages: multipleEpisodePages,
                 enabledByDefault: enabledByDefault,
                 loginURL: loginURL,
+                loginDesktop: loginDesktop,
+                loginScript: loginScript,
+                loginAltURL: loginAltURL,
+                hasCheckLogin: hasCheckLogin,
                 hasSearchVerification: hasSearchVerification,
                 searchVerificationDesktop: searchVerificationDesktop,
                 searchDelaySeconds: searchDelaySeconds,
@@ -1323,8 +1463,10 @@ actor PluginRuntime {
         }
         function __invoke(index, name, argsJson) {
           var src = __sources[index];
-          if (!src || typeof src[name] !== 'function') return null;
-          var r = src[name].apply(src, JSON.parse(argsJson));
+          if (!src) return null;
+          var f = src[name];
+          if (typeof f !== 'function') return null;
+          var r = f.apply(src, JSON.parse(argsJson));
           return (r === undefined || r === null) ? null : JSON.stringify(r);
         }
         """

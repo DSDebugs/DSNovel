@@ -29,19 +29,37 @@ struct MiniPlayerBar: View {
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
-                            Text(book.title)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            if case .failed(let errMsg) = player.state {
+                                Text(errMsg)
+                                    .font(.caption2)
+                                    .foregroundStyle(.red)
+                                    .lineLimit(1)
+                            } else if player.state == .buffering {
+                                Text("正在缓冲音频… · \(book.title)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            } else {
+                                Text(book.title)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                         }
                         Spacer()
 
                         GlassButton {
                             player.togglePlayPause()
                         } label: {
-                            Image(systemName: player.state == .playing ? "pause.fill" : "play.fill")
-                                .font(.title3)
-                                .frame(width: 36, height: 36)
+                            if player.state == .buffering {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: 36, height: 36)
+                            } else {
+                                Image(systemName: player.state == .playing ? "pause.fill" : "play.fill")
+                                    .font(.title3)
+                                    .frame(width: 36, height: 36)
+                            }
                         }
                         .accessibilityLabel(player.state == .playing ? "暂停" : "播放")
 
@@ -86,10 +104,12 @@ private struct MiniPlayerProgressLine: View {
     }
 }
 
-/// 全屏播放页（5.5 节）：封面主色静态渐变、单个 GlassEffectContainer 主控制组、独立时钟进度条与完整次级控制行
+/// 全屏播放页（5.5 节）：封面主色静态渐变、单个 GlassEffectContainer 主控制组、独立时钟进度条与次级控制行（已完整移除书签并支持一键加入书架与就地网页登录）
 struct PlayerFullScreenView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Query private var allBooks: [Book]
+    @Query private var plugins: [PluginRecord]
 
     private var player = PlayerEngine.shared
     private var settings = AppSettingsStore.shared
@@ -98,8 +118,16 @@ struct PlayerFullScreenView: View {
     @State private var showSkipSheet = false
     @State private var showChapterSheet = false
     @State private var showVolumeSheet = false
-    @State private var showBookmarkAlert = false
-    @State private var bookmarkNote = ""
+    @State private var authSession: WebAuthSessionRequest?
+
+    private var currentBookRecord: Book? {
+        guard let bookID = player.currentBook?.id else { return nil }
+        return allBooks.first(where: { $0.id == bookID })
+    }
+
+    private var isInShelf: Bool {
+        currentBookRecord?.inShelf == true
+    }
 
     var body: some View {
         ZStack {
@@ -174,7 +202,7 @@ struct PlayerFullScreenView: View {
                 }
                 .padding(.horizontal, DSSpacing.xl)
 
-                // 行内错误提示（4.3 节）
+                // 行内错误提示（支持就地打开网页登录/验证并在完成后自动重播）
                 if case .failed(let msg) = player.state {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -183,8 +211,33 @@ struct PlayerFullScreenView: View {
                             .font(.caption)
                             .foregroundStyle(.white)
                             .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if let pErr = player.lastPluginError {
+                            switch pErr {
+                            case .needLogin(_, let loginURL):
+                                Button("去登录") {
+                                    openAuthForCurrentSource(url: loginURL, isLogin: true)
+                                }
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(Color.white.opacity(0.24)))
+                                .foregroundStyle(.white)
+                            case .needVerify(_, let verifyURL):
+                                Button("去验证") {
+                                    openAuthForCurrentSource(url: verifyURL, isLogin: false)
+                                }
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(Color.white.opacity(0.24)))
+                                .foregroundStyle(.white)
+                            default:
+                                EmptyView()
+                            }
+                        }
                         Button("重试") {
-                            player.togglePlayPause()
+                            player.retryCurrentChapter()
                         }
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.white)
@@ -244,7 +297,7 @@ struct PlayerFullScreenView: View {
                     .padding(.vertical, 14)
                 }
 
-                // 次级控制行（纯图标，系统样式 - 5.5 节）
+                // 次级控制行（纯图标，系统样式 - 已移除书签并替换为「加入书架 / 已在书架」快捷开关）
                 secondaryControlRow
                     .padding(.horizontal, DSSpacing.xl)
                     .padding(.bottom, DSSpacing.lg)
@@ -261,14 +314,26 @@ struct PlayerFullScreenView: View {
         .sheet(isPresented: $showVolumeSheet) {
             volumeAndChannelSheet
         }
-        .alert("添加收听书签", isPresented: $showBookmarkAlert) {
-            TextField("书签备注（可跳过）", text: $bookmarkNote)
-            Button("取消", role: .cancel) { bookmarkNote = "" }
-            Button("添加") {
-                saveCurrentBookmark()
-                bookmarkNote = ""
-            }
+        .sheet(item: $authSession) { session in
+            WebAuthSheet(session: session)
         }
+    }
+
+    private func openAuthForCurrentSource(url: String, isLogin: Bool) {
+        guard let book = player.currentBook else { return }
+        let plugin = plugins.first(where: { $0.id == book.sourceID })
+        let fallback = plugin?.loginURL.isEmpty == false ? (plugin?.loginURL ?? "") : (plugin?.siteURL ?? book.bookURL)
+        authSession = WebAuthSessionRequest(
+            sourceID: book.sourceID,
+            title: "\(isLogin ? "登录" : "安全验证") · \(plugin?.name ?? book.sourceID)",
+            initialURL: url.isEmpty ? fallback : url,
+            expectedCookieName: nil,
+            onCompleted: {
+                plugin?.loggedIn = true
+                try? modelContext.save()
+                player.retryCurrentChapter()
+            }
+        )
     }
 
     private var sleepStatusBadgeText: String {
@@ -357,21 +422,21 @@ struct PlayerFullScreenView: View {
             }
             .accessibilityLabel("跳过片头片尾")
 
-            // 4. 添加书签
+            // 4. 加入书架 / 已在书架（替代原书签按钮，方便收听过程中一键收藏到书架）
             Button {
                 ToastManager.shared.triggerHaptic(.medium)
-                showBookmarkAlert = true
+                toggleCurrentBookShelfState()
             } label: {
                 VStack(spacing: 4) {
-                    Image(systemName: "bookmark")
+                    Image(systemName: isInShelf ? "checkmark.circle.fill" : "plus.square.on.square")
                         .font(.body)
-                    Text("书签")
+                    Text(isInShelf ? "已在书架" : "加书架")
                         .font(.caption2)
                 }
                 .foregroundStyle(.white.opacity(0.88))
                 .frame(maxWidth: .infinity)
             }
-            .accessibilityLabel("添加书签")
+            .accessibilityLabel(isInShelf ? "已在书架" : "加入书架")
 
             // 5. 章节列表
             Button {
@@ -402,6 +467,45 @@ struct PlayerFullScreenView: View {
                 .frame(maxWidth: .infinity)
             }
             .accessibilityLabel("音量与音频通道")
+        }
+    }
+
+    private func toggleCurrentBookShelfState() {
+        guard let book = player.currentBook else { return }
+        if let existing = currentBookRecord {
+            existing.inShelf.toggle()
+            if existing.inShelf {
+                existing.addedAt = .now
+                ToastManager.shared.show("已加入书架")
+            } else {
+                existing.isPinned = false
+                existing.categoryID = nil
+                ToastManager.shared.show("已移出书架（保留在最近播放）")
+            }
+            try? modelContext.save()
+        } else {
+            let newBook = Book(
+                id: book.id,
+                sourceID: book.sourceID,
+                bookURL: book.bookURL,
+                title: book.title,
+                author: book.author,
+                cover: book.cover,
+                intro: book.intro,
+                inShelf: true,
+                addedAt: .now,
+                lastChapterID: player.currentChapter?.id,
+                lastChapterTitle: player.currentChapter?.title,
+                lastPositionMs: Int(player.clock.currentTimeSec * 1000),
+                lastPlayedAt: .now,
+                volume: player.bookVolume,
+                skipIntroSec: player.skipIntroSec,
+                skipOutroSec: player.skipOutroSec,
+                speed: player.speed
+            )
+            modelContext.insert(newBook)
+            try? modelContext.save()
+            ToastManager.shared.show("已加入书架")
         }
     }
 
@@ -520,20 +624,6 @@ struct PlayerFullScreenView: View {
             }
         }
         .presentationDetents([.medium])
-    }
-
-    private func saveCurrentBookmark() {
-        guard let book = player.currentBook, let ch = player.currentChapter else { return }
-        let bm = Bookmark(
-            bookID: book.id,
-            chapterID: ch.id,
-            chapterTitle: ch.title,
-            positionMs: Int(player.clock.currentTimeSec * 1000),
-            note: bookmarkNote
-        )
-        modelContext.insert(bm)
-        try? modelContext.save()
-        ToastManager.shared.show("已添加书签")
     }
 }
 

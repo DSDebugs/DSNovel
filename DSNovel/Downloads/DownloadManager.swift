@@ -24,7 +24,7 @@ final class DownloadManager {
     init() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let wifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.isOnWiFi = wifi
             }
         }
@@ -112,6 +112,14 @@ final class DownloadManager {
         try? ctx.save()
     }
 
+    /// 清理所有预缓存音频与封面图片缓存（保留手动离线下载的章节）
+    func clearTemporaryCaches() {
+        clearPrecacheOnly()
+        Task {
+            await CoverImagePipeline.shared.clearCache()
+        }
+    }
+
     func removeDownloads(forBookID bookID: String) {
         guard let ctx = modelContext else { return }
         let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.bookID == bookID })
@@ -133,12 +141,7 @@ final class DownloadManager {
         return items.reduce(0) { $0 + $1.bytes }
     }
 
-    /// 清理临时/预缓存音频文件（设置页「清理临时缓存」调用）
-    func clearTemporaryCaches() {
-        clearPrecacheOnly()
-    }
-
-    /// 预缓存与临时缓存占用字节数（设置页缓存统计调用）
+    /// 计算预缓存音频与封面缓存总字节数（供设置页「清理临时缓存」展示）
     func totalPrecacheAndTempBytes() -> Int64 {
         guard let ctx = modelContext else { return 0 }
         let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.kind == "precache" && $0.state == "completed" })
@@ -172,7 +175,7 @@ final class DownloadManager {
     private func executeDownload(for item: DownloadItem) async {
         do {
             let stream = try await PluginRuntime.shared.resolvePlayURL(sourceID: item.sourceID, episodeURL: item.chapterID)
-            guard let url = URL(string: stream.url) else {
+            guard let url = JsHostBridge.makeRequestURL(from: stream.url, relativeTo: item.chapterID) else {
                 throw PluginError.parseFailed("无效音频地址")
             }
             var req = URLRequest(url: url, timeoutInterval: 30)
@@ -184,8 +187,9 @@ final class DownloadManager {
                 throw URLError(.badServerResponse)
             }
 
-            let safeBookDir = item.bookID.replacingOccurrences(of: "[^a-zA-Z0-9_-]", with: "_", options: .regularExpression)
-            let safeChapFile = String(item.chapterID.hashValue) + ".m4a"
+            let ext = Self.inferAudioExtension(url: url, mimeType: http.mimeType)
+            let safeBookDir = JsHostBridge.md5Hex(item.bookID)
+            let safeChapFile = "\(JsHostBridge.md5Hex(item.chapterID)).\(ext)"
             let relPath = "\(safeBookDir)/\(safeChapFile)"
             let destDir = downloadsRootDirectory.appendingPathComponent(safeBookDir, isDirectory: true)
             try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
@@ -206,5 +210,21 @@ final class DownloadManager {
             }
             try? modelContext?.save()
         }
+    }
+
+    private static func inferAudioExtension(url: URL, mimeType: String?) -> String {
+        let pathExt = url.pathExtension.lowercased()
+        if ["mp3", "m4a", "aac", "wav", "flac", "ogg", "mp4"].contains(pathExt) {
+            return pathExt
+        }
+        if let mime = mimeType?.lowercased() {
+            if mime.contains("mpeg") || mime.contains("mp3") { return "mp3" }
+            if mime.contains("mp4") || mime.contains("m4a") { return "m4a" }
+            if mime.contains("aac") { return "aac" }
+            if mime.contains("wav") { return "wav" }
+            if mime.contains("flac") { return "flac" }
+            if mime.contains("ogg") { return "ogg" }
+        }
+        return "mp3"
     }
 }

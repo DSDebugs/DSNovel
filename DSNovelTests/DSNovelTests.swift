@@ -220,4 +220,42 @@ final class DSNovelTests: XCTestCase {
             // 预期失败
         }
     }
+
+    /// 12. 跨子域 Cookie 共享（如在 passport.ximalaya.com 登录，在 mobwsa.ximalaya.com 读取 Cookie）
+    func testCrossSubdomainCookieSync() {
+        let cookieProps: [HTTPCookiePropertyKey: Any] = [
+            .name: "1&_token",
+            .value: "test_token_123",
+            .domain: "passport.ximalaya.com",
+            .path: "/",
+            .secure: "TRUE"
+        ]
+        guard let cookie = HTTPCookie(properties: cookieProps) else {
+            XCTFail("构造测试 Cookie 失败")
+            return
+        }
+        CookieSync.storeCookie(cookie)
+        let apiURL = URL(string: "https://mobwsa.ximalaya.com/mobile/v1/album")!
+        let header = CookieSync.cookieHeader(for: apiURL)
+        XCTAssertTrue(header.contains("1&_token=test_token_123"))
+    }
+
+    /// 13. 校验「书架」与「最近播放」分离模型及最后播放章节/时间格式化
+    func testShelfAndRecentPlaySeparationAndFormatting() {
+        let historyOnlyBook = Book(
+            id: "src::https://example.com/1",
+            sourceID: "src",
+            bookURL: "https://example.com/1",
+            title: "仅播放未加书架",
+            inShelf: false,
+            lastChapterID: "ep1",
+            lastChapterTitle: "第1集 初入江湖",
+            lastPositionMs: 125_000,
+            lastPlayedAt: .now
+        )
+        XCTAssertFalse(historyOnlyBook.inShelf)
+        XCTAssertNotNil(historyOnlyBook.lastPlayedAt)
+        XCTAssertEqual(historyOnlyBook.formattedPositionText, "02:05")
+        XCTAssertEqual(historyOnlyBook.playbackProgressSummary, "第1集 初入江湖 · 02:05")
+    }
 }

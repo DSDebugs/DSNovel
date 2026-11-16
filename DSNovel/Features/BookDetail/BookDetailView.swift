@@ -25,6 +25,7 @@ final class BookDetailViewModel {
     var isLoading: Bool = false
     var isLoadingRest: Bool = false
     var errorMessage: String?
+    var pluginError: PluginError?
     var isAscending: Bool = true
     var selectedSegmentIndex: Int = 0 // 0 表示当前第 1 段（1-50），-1 表示全部
 
@@ -88,6 +89,7 @@ final class BookDetailViewModel {
         isLoading = chapters.isEmpty
         isLoadingRest = false
         errorMessage = nil
+        pluginError = nil
 
         // 2. 若已有缓存章节且插件支持增量更新 updateEpisodes，优先尝试增量拉取
         if !forceRefresh, !chapters.isEmpty {
@@ -143,6 +145,11 @@ final class BookDetailViewModel {
                 // 书源正常响应但没有任何章节：记为无法播放，今后搜索/发现不再展示
                 UnplayableBookStore.shared.mark(bookID)
             }
+        } catch let pErr as PluginError {
+            if chapters.isEmpty {
+                pluginError = pErr
+                errorMessage = pErr.localizedDescription
+            }
         } catch {
             if chapters.isEmpty {
                 errorMessage = error.localizedDescription
@@ -169,27 +176,24 @@ final class BookDetailViewModel {
         chapters = []
         selectedSegmentIndex = 0
         await loadBookDetails(forceRefresh: true)
-        ToastManager.shared.show("已切换至新听书源")
+        ToastManager.shared.show("已切换至新书源")
     }
 }
 
-/// 书籍详情页（5.4 节）：1–50 章节分段、正序/倒序、区间下载、书签跳转、一键换源与来源跳转
+/// 书籍详情页（5.4 节）：1–50 章节分段、正序/倒序、区间下载、一键换源、来源跳转及就地登录/验证（已彻底移除书签并严格分离「加入书架」与「最近播放」）
 struct BookDetailView: View {
     let onJumpToDiscoverSource: (String) -> Void
 
     @Environment(\.modelContext) private var modelContext
-    @Query private var shelfBooks: [Book]
+    @Query private var allBooks: [Book]
     @Query private var plugins: [PluginRecord]
     @Query private var downloads: [DownloadItem]
-    @Query(sort: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]) private var allBookmarks: [Bookmark]
 
     @State private var viewModel: BookDetailViewModel
     @State private var isIntroExpanded = false
     @State private var showRangeDownloadSheet = false
-    @State private var showBookmarksSheet = false
     @State private var showSwitchSourceSheet = false
-    @State private var bookmarkTargetChapter: ChapterDTO?
-    @State private var bookmarkNoteText = ""
+    @State private var authSession: WebAuthSessionRequest?
 
     private var player = PlayerEngine.shared
 
@@ -198,16 +202,22 @@ struct BookDetailView: View {
         self.onJumpToDiscoverSource = onJumpToDiscoverSource
     }
 
+    /// 书籍在数据库中的记录（无论是「书架」还是「最近播放」均共用同一条记录，保存最后播放章节与时间）
     private var savedBook: Book? {
-        shelfBooks.first(where: { $0.id == viewModel.activeBook.id })
+        allBooks.first(where: { $0.id == viewModel.activeBook.id })
+    }
+
+    /// 严格判断该书是否由用户主动加入了「书架」
+    private var isInShelf: Bool {
+        savedBook?.inShelf == true
+    }
+
+    private var currentPlugin: PluginRecord? {
+        plugins.first(where: { $0.id == viewModel.activeBook.sourceID })
     }
 
     private var sourceName: String {
-        plugins.first(where: { $0.id == viewModel.activeBook.sourceID })?.name ?? viewModel.activeBook.sourceID
-    }
-
-    private var bookBookmarks: [Bookmark] {
-        allBookmarks.filter { $0.bookID == viewModel.activeBook.id }
+        currentPlugin?.name ?? viewModel.activeBook.sourceID
     }
 
     var body: some View {
@@ -220,24 +230,11 @@ struct BookDetailView: View {
             .sheet(isPresented: $showRangeDownloadSheet) {
                 rangeDownloadSheetView
             }
-            .sheet(isPresented: $showBookmarksSheet) {
-                bookmarksSheetView
-            }
             .sheet(isPresented: $showSwitchSourceSheet) {
                 switchSourceSheetView
             }
-            .alert("添加书签备注", isPresented: Binding(
-                get: { bookmarkTargetChapter != nil },
-                set: { if !$0 { bookmarkTargetChapter = nil } }
-            )) {
-                TextField("可选备注", text: $bookmarkNoteText)
-                Button("取消", role: .cancel) {
-                    bookmarkTargetChapter = nil
-                    bookmarkNoteText = ""
-                }
-                Button("保存") {
-                    saveChapterBookmark()
-                }
+            .sheet(item: $authSession) { session in
+                WebAuthSheet(session: session)
             }
     }
 
@@ -246,6 +243,8 @@ struct BookDetailView: View {
             Section {
                 headerBlock
                 actionRow
+                lastPlayedProgressBanner
+                playbackFailureBanner
                 if savedBook?.sourceUnavailable == true {
                     HStack {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -272,10 +271,33 @@ struct BookDetailView: View {
                         Text(err)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        Button("重试") {
-                            Task { await viewModel.loadBookDetails(forceRefresh: true) }
+                            .multilineTextAlignment(.center)
+                        HStack(spacing: 12) {
+                            if let pErr = viewModel.pluginError {
+                                switch pErr {
+                                case .needLogin(_, let loginURL):
+                                    Button("去登录书源账号") {
+                                        openAuthSheet(initialURL: loginURL, isLogin: true) {
+                                            Task { await viewModel.loadBookDetails(forceRefresh: true) }
+                                        }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                case .needVerify(_, let verifyURL):
+                                    Button("去完成安全验证") {
+                                        openAuthSheet(initialURL: verifyURL, isLogin: false) {
+                                            Task { await viewModel.loadBookDetails(forceRefresh: true) }
+                                        }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                default:
+                                    EmptyView()
+                                }
+                            }
+                            Button("重试") {
+                                Task { await viewModel.loadBookDetails(forceRefresh: true) }
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.borderedProminent)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 20)
@@ -290,23 +312,6 @@ struct BookDetailView: View {
         }
         .listStyle(.plain)
         .background(DSColor.contentBackground)
-    }
-
-    private func saveChapterBookmark() {
-        if let ch = bookmarkTargetChapter {
-            let bm = Bookmark(
-                bookID: viewModel.activeBook.id,
-                chapterID: ch.id,
-                chapterTitle: ch.title,
-                positionMs: Int(player.clock.currentTimeSec * 1000),
-                note: bookmarkNoteText
-            )
-            modelContext.insert(bm)
-            try? modelContext.save()
-            ToastManager.shared.show("已添加书签")
-        }
-        bookmarkTargetChapter = nil
-        bookmarkNoteText = ""
     }
 
     private var headerBlock: some View {
@@ -333,7 +338,7 @@ struct BookDetailView: View {
                         if plugins.contains(where: { $0.id == viewModel.activeBook.sourceID }) {
                             onJumpToDiscoverSource(viewModel.activeBook.sourceID)
                         } else {
-                            ToastManager.shared.show("该听书源已被移除")
+                            ToastManager.shared.show("该书源已被移除")
                         }
                     } label: {
                         HStack(spacing: 4) {
@@ -374,7 +379,7 @@ struct BookDetailView: View {
         HStack(spacing: 10) {
             Button {
                 guard !viewModel.chapters.isEmpty else { return }
-                ensureBookInShelfIfPlaying()
+                // 点击开始/继续收听仅记录到「最近播放」（若已在书架则同步更新书架进度），绝不强行把未收藏书籍塞入书架
                 let startChap = viewModel.chapters.first(where: { $0.id == savedBook?.lastChapterID }) ?? viewModel.chapters[0]
                 let pos = savedBook?.lastPositionMs ?? 0
                 player.startPlayback(
@@ -398,8 +403,8 @@ struct BookDetailView: View {
                 toggleShelfMembership()
             } label: {
                 Label(
-                    savedBook != nil ? "已在书架" : "加入书架",
-                    systemImage: savedBook != nil ? "checkmark" : "plus"
+                    isInShelf ? "已在书架" : "加入书架",
+                    systemImage: isInShelf ? "checkmark" : "plus"
                 )
                 .font(.subheadline)
             }
@@ -419,15 +424,19 @@ struct BookDetailView: View {
                 }
 
                 Button {
-                    showBookmarksSheet = true
-                } label: {
-                    Label("书签（\(bookBookmarks.count)）", systemImage: "bookmark")
-                }
-
-                Button {
                     showSwitchSourceSheet = true
                 } label: {
                     Label("换源（\(viewModel.alternatives.count)）", systemImage: "arrow.triangle.2.circlepath")
+                }
+
+                if let plugin = currentPlugin, (!plugin.loginURL.isEmpty || plugin.requiresLogin) {
+                    Button {
+                        openAuthSheet(initialURL: plugin.loginURL.isEmpty ? plugin.siteURL : plugin.loginURL, isLogin: true) {
+                            Task { await viewModel.loadBookDetails(forceRefresh: true) }
+                        }
+                    } label: {
+                        Label("书源网页登录", systemImage: "person.badge.key")
+                    }
                 }
 
                 Button {
@@ -444,6 +453,111 @@ struct BookDetailView: View {
             .accessibilityLabel("更多操作")
         }
         .padding(.top, 4)
+    }
+
+    /// 展示本书最后播放章节、播放进度时间点与最后播放时间
+    @ViewBuilder
+    private var lastPlayedProgressBanner: some View {
+        if let record = savedBook, let lastChap = record.lastChapterTitle, !lastChap.isEmpty {
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(DSColor.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("上次听到：\(lastChap)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("播放进度 \(record.formattedPositionText) · \(record.formattedLastPlayedAtText)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let targetIndex = viewModel.chapters.firstIndex(where: { $0.id == record.lastChapterID }) {
+                    Button("定位章节") {
+                        let targetSegment = targetIndex / 50
+                        viewModel.selectedSegmentIndex = targetSegment
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(DSColor.primary)
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(DSColor.cardSurface)
+            )
+        }
+    }
+
+    /// 若当前正在播放本书且遇到登录/验证或网络错误，直接在详情页展示一键「去登录 / 重试」横幅
+    @ViewBuilder
+    private var playbackFailureBanner: some View {
+        if player.currentBookID == viewModel.activeBook.id,
+           case .failed(let msg) = player.state {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Spacer()
+                if let pErr = player.lastPluginError {
+                    switch pErr {
+                    case .needLogin(_, let loginURL):
+                        Button("去登录") {
+                            openAuthSheet(initialURL: loginURL, isLogin: true) {
+                                player.retryCurrentChapter()
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.borderedProminent)
+                    case .needVerify(_, let verifyURL):
+                        Button("去验证") {
+                            openAuthSheet(initialURL: verifyURL, isLogin: false) {
+                                player.retryCurrentChapter()
+                            }
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.borderedProminent)
+                    default:
+                        EmptyView()
+                    }
+                }
+                Button("重试") {
+                    player.retryCurrentChapter()
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.bordered)
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.orange.opacity(0.12))
+            )
+        }
+    }
+
+    private func openAuthSheet(initialURL: String, isLogin: Bool, onDone: @escaping () -> Void) {
+        let plugin = currentPlugin
+        let fallback = plugin?.loginURL.isEmpty == false ? (plugin?.loginURL ?? "") : (plugin?.siteURL ?? viewModel.activeBook.bookURL)
+        let targetURL = initialURL.isEmpty ? fallback : initialURL
+        authSession = WebAuthSessionRequest(
+            sourceID: viewModel.activeBook.sourceID,
+            title: "\(isLogin ? "登录" : "安全验证") · \(sourceName)",
+            initialURL: targetURL,
+            expectedCookieName: nil,
+            onCompleted: {
+                plugin?.loggedIn = true
+                if plugin?.healthState == .needAuth {
+                    plugin?.lastCheckStatus = SourceHealthState.healthy.rawValue
+                    plugin?.lastCheckMessage = "已完成登录/验证"
+                }
+                try? modelContext.save()
+                onDone()
+            }
+        )
     }
 
     private var chapterSectionHeader: some View {
@@ -520,18 +634,31 @@ struct BookDetailView: View {
         let isCurrent = player.currentBookID == viewModel.activeBook.id && player.currentChapter?.id == chapter.id
         let itemID = "\(viewModel.activeBook.id)::\(chapter.id)"
         let isDownloaded = downloads.contains { $0.id == itemID && $0.state == "completed" }
-        let isListened = savedBook?.lastChapterID == chapter.id
+        let isLastListened = savedBook?.lastChapterID == chapter.id
 
         return HStack(spacing: 10) {
             if isCurrent {
-                Image(systemName: "waveform")
+                Image(systemName: player.state == .playing ? "waveform" : "speaker.wave.2.fill")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(DSColor.primary)
+            } else if isLastListened {
+                Image(systemName: "clock")
+                    .font(.caption2)
+                    .foregroundStyle(DSColor.primary)
             }
-            Text(chapter.title)
-                .font(.subheadline.weight(isCurrent ? .semibold : .regular))
-                .foregroundStyle(isCurrent ? DSColor.primary : (isListened ? .secondary : .primary))
-                .lineLimit(1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(chapter.title)
+                    .font(.subheadline.weight((isCurrent || isLastListened) ? .semibold : .regular))
+                    .foregroundStyle((isCurrent || isLastListened) ? DSColor.primary : .primary)
+                    .lineLimit(1)
+
+                if isLastListened, let rec = savedBook, rec.lastPositionMs > 0 {
+                    Text("上次播至 \(rec.formattedPositionText) · \(rec.formattedLastPlayedAtText)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
 
             Spacer()
 
@@ -549,12 +676,12 @@ struct BookDetailView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            ensureBookInShelfIfPlaying()
+            let resumePos = (savedBook?.lastChapterID == chapter.id) ? (savedBook?.lastPositionMs ?? 0) : 0
             player.startPlayback(
                 book: viewModel.activeBook,
                 chapters: viewModel.chapters,
                 startChapter: chapter,
-                initialPositionMs: 0
+                initialPositionMs: resumePos
             )
         }
         .contextMenu {
@@ -573,12 +700,6 @@ struct BookDetailView: View {
                 }
             } label: {
                 Label("从此章开始下载", systemImage: "arrow.down.to.line")
-            }
-
-            Button {
-                bookmarkTargetChapter = chapter
-            } label: {
-                Label("加书签", systemImage: "bookmark")
             }
         }
     }
@@ -609,65 +730,6 @@ struct BookDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { showRangeDownloadSheet = false }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private var bookmarksSheetView: some View {
-        NavigationStack {
-            List {
-                if bookBookmarks.isEmpty {
-                    ContentUnavailableView(
-                        "暂无书签",
-                        systemImage: "bookmark",
-                        description: Text("在播放界面或长按章节可添加带备注的收听书签")
-                    )
-                } else {
-                    ForEach(bookBookmarks) { bm in
-                        Button {
-                            if let ch = viewModel.chapters.first(where: { $0.id == bm.chapterID }) {
-                                player.startPlayback(
-                                    book: viewModel.activeBook,
-                                    chapters: viewModel.chapters,
-                                    startChapter: ch,
-                                    initialPositionMs: bm.positionMs
-                                )
-                                showBookmarksSheet = false
-                            }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(bm.chapterTitle)
-                                        .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    Text(PlaybackClock.formatSeconds(Double(bm.positionMs) / 1000.0))
-                                        .font(.caption.monospacedDigit())
-                                        .foregroundStyle(DSColor.primary)
-                                }
-                                if !bm.note.isEmpty {
-                                    Text(bm.note)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                    .onDelete { indexSet in
-                        for idx in indexSet {
-                            modelContext.delete(bookBookmarks[idx])
-                        }
-                        try? modelContext.save()
-                    }
-                }
-            }
-            .navigationTitle("本书书签")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { showBookmarksSheet = false }
                 }
             }
         }
@@ -706,7 +768,7 @@ struct BookDetailView: View {
                     }
                 }
             }
-            .navigationTitle("切换听书源")
+            .navigationTitle("切换书源")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -717,11 +779,27 @@ struct BookDetailView: View {
         .presentationDetents([.medium])
     }
 
+    /// 切换「书架」归属状态：
+    /// - 只有点击「加入书架」才会使 `inShelf = true`；
+    /// - 点击「已在书架」移除时，若该书有播放历史（`lastPlayedAt != nil`），仅将 `inShelf` 置为 `false` 保留在「最近播放」中。
     private func toggleShelfMembership() {
         if let existing = savedBook {
-            modelContext.delete(existing)
-            try? modelContext.save()
-            ToastManager.shared.show("已从书架移除")
+            if existing.inShelf {
+                if existing.lastPlayedAt != nil {
+                    existing.inShelf = false
+                    existing.isPinned = false
+                    existing.categoryID = nil
+                } else {
+                    modelContext.delete(existing)
+                }
+                try? modelContext.save()
+                ToastManager.shared.show("已从书架移除")
+            } else {
+                existing.inShelf = true
+                existing.addedAt = .now
+                try? modelContext.save()
+                ToastManager.shared.show("已加入书架")
+            }
         } else {
             let newBook = Book(
                 id: viewModel.activeBook.id,
@@ -731,6 +809,8 @@ struct BookDetailView: View {
                 author: viewModel.activeBook.author,
                 cover: viewModel.activeBook.cover,
                 intro: viewModel.activeBook.intro,
+                inShelf: true,
+                addedAt: .now,
                 skipIntroSec: AppSettingsStore.shared.defaultSkipIntroSec,
                 skipOutroSec: AppSettingsStore.shared.defaultSkipOutroSec,
                 speed: AppSettingsStore.shared.defaultSpeed
@@ -739,23 +819,5 @@ struct BookDetailView: View {
             try? modelContext.save()
             ToastManager.shared.show("已加入书架")
         }
-    }
-
-    private func ensureBookInShelfIfPlaying() {
-        guard savedBook == nil else { return }
-        let newBook = Book(
-            id: viewModel.activeBook.id,
-            sourceID: viewModel.activeBook.sourceID,
-            bookURL: viewModel.activeBook.bookURL,
-            title: viewModel.activeBook.title,
-            author: viewModel.activeBook.author,
-            cover: viewModel.activeBook.cover,
-            intro: viewModel.activeBook.intro,
-            skipIntroSec: AppSettingsStore.shared.defaultSkipIntroSec,
-            skipOutroSec: AppSettingsStore.shared.defaultSkipOutroSec,
-            speed: AppSettingsStore.shared.defaultSpeed
-        )
-        modelContext.insert(newBook)
-        try? modelContext.save()
     }
 }
