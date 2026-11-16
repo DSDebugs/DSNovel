@@ -7,6 +7,10 @@ struct MiniPlayerBar: View {
     let onTapExpand: () -> Void
     private var player = PlayerEngine.shared
 
+    init(onTapExpand: @escaping () -> Void) {
+        self.onTapExpand = onTapExpand
+    }
+
     var body: some View {
         if let book = player.currentBook, let chapter = player.currentChapter {
             GlassEffectContainer(cornerRadius: 20) {
