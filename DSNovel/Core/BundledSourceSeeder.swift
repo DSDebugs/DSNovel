@@ -15,7 +15,7 @@ import SwiftData
 ///   不改动 JS 运行时与插件协议。
 enum BundledSourceSeeder {
     /// 换了内置书源包内容时，把版本号 +1 即可让老用户重新安装一次
-    private static let seededKey = "bundled.sources.seeded.ShunAudiobookPro.v1"
+    private static let seededKey = "bundled.sources.seeded.ShunAudiobookPro.v2"
     private static let resourceName = "ShunAudiobookPro-v5.6"
     private static let resourceExt = "zip"
 
@@ -110,11 +110,21 @@ enum BundledSourceSeeder {
                 modelContext.insert(record)
             }
         }
+        // 内置包升级后，移除本包下已不再提供的旧源记录（例如从内置源中剔除的书源），
+        // 避免书源管理里残留无法路由/调用的幽灵条目。只清理同 packageID，绝不误伤用户自导入的源。
+        let validIDs = Set(metas.map(\.id))
+        for stale in existingPlugins where stale.packageID == preview.packageID && !validIDs.contains(stale.id) {
+            modelContext.delete(stale)
+        }
+
         try? modelContext.save()
 
-        if AppSettingsStore.shared.currentDiscoverSourceID.isEmpty,
+        let settings = AppSettingsStore.shared
+        let currentDiscover = settings.currentDiscoverSourceID
+        // 当前发现源为空、或指向已被移除的旧源时，回退到第一个可用的发现源
+        if (currentDiscover.isEmpty || !validIDs.contains(currentDiscover)),
            let firstDiscover = metas.first(where: { $0.discoverable && $0.enabledByDefault }) {
-            AppSettingsStore.shared.currentDiscoverSourceID = firstDiscover.id
+            settings.currentDiscoverSourceID = firstDiscover.id
         }
     }
 }
