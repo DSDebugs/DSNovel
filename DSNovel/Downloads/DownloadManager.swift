@@ -133,19 +133,6 @@ final class DownloadManager {
         return items.reduce(0) { $0 + $1.bytes }
     }
 
-    /// 清理临时/预缓存音频文件（设置页「清理临时缓存」调用）
-    func clearTemporaryCaches() {
-        clearPrecacheOnly()
-    }
-
-    /// 预缓存与临时缓存占用字节数（设置页缓存统计调用）
-    func totalPrecacheAndTempBytes() -> Int64 {
-        guard let ctx = modelContext else { return 0 }
-        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.kind == "precache" && $0.state == "completed" })
-        let items = (try? ctx.fetch(desc)) ?? []
-        return items.reduce(0) { $0 + $1.bytes }
-    }
-
     private func pumpQueue() {
         guard let ctx = modelContext else { return }
         if AppSettingsStore.shared.wifiOnlyDownload && !isOnWiFi {

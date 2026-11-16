@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import JavaScriptCore
 
 enum PluginError: LocalizedError, Equatable, Sendable {
@@ -80,7 +81,7 @@ final class PackageContextPool: @unchecked Sendable {
     private let condition = NSCondition()
     private var idleContexts: [JSContext] = []
     private var activeCount: Int = 0
-    private let maxPoolSize: Int = 12
+    private let maxPoolSize: Int = 6
     private var isInvalidated: Bool = false
     var lastUsedAt: Date = .now
 
@@ -143,7 +144,7 @@ final class PackageContextPool: @unchecked Sendable {
         condition.lock()
         activeCount = max(0, activeCount - 1)
         lastUsedAt = .now
-        if !discard && !isInvalidated && idleContexts.count < 6 {
+        if !discard && !isInvalidated && idleContexts.count < 4 {
             idleContexts.append(ctx)
         }
         condition.broadcast()
@@ -188,8 +189,8 @@ actor PluginRuntime {
         attributes: .concurrent
     )
 
-    /// 推荐默认在线书源合集地址（方便无书源或书源管理页一键导入）
-    static let defaultOnlineSourcesURL = "https://gitee.com/whykan/ssxz/raw/master/Sources-v5.6.zip"
+    /// 是否已经从磁盘扫描过已安装书源包（避免路由未命中时反复全量重建 JSContext）
+    private var hasScannedDisk = false
 
     private var activePools: [String: PackageContextPool] = [:]
     private var sourceRouting: [String: (packageID: String, sourceIndex: Int, meta: ParsedSourceMeta)] = [:]
@@ -205,7 +206,19 @@ actor PluginRuntime {
     // MARK: - 插件包解析与导入预览（4.2.1 & 4.2.7）
 
     func prepareImportPreview(from zipData: Data) throws -> PluginImportPreview {
-        let files = try ZIPArchiveReader.extractAll(from: zipData)
+        guard !zipData.isEmpty else {
+            throw PluginError.parseFailed("文件为空，请确认选择的是书源包")
+        }
+        let files: [String: Data]
+        if zipData.starts(with: [0x50, 0x4B]) {
+            files = try ZIPArchiveReader.extractAll(from: zipData)
+        } else if let text = String(data: zipData, encoding: .utf8), text.contains("registerSource") {
+            // 直接导入单个 .js 书源脚本
+            files = ["source.js": zipData]
+        } else {
+            throw PluginError.parseFailed("不是有效的书源包：请选择 .zip 书源包或包含 registerSource 的 .js 脚本")
+        }
+
         let manifest: PluginPackageManifest
         if let manifestData = files["manifest.json"],
            let decoded = try? JSONDecoder().decode(PluginPackageManifest.self, from: manifestData) {
@@ -216,8 +229,12 @@ actor PluginRuntime {
             guard !jsFiles.isEmpty else {
                 throw PluginError.parseFailed("插件包里没有找到脚本（需要 manifest.json 或 .js 文件）")
             }
+            // 用脚本内容摘要生成唯一包名，避免不同书源包都叫 ImportedPlugin 而互相覆盖
+            var hasher = SHA256()
+            for name in jsFiles { hasher.update(data: files[name] ?? Data()) }
+            let digest = hasher.finalize().prefix(4).map { String(format: "%02x", $0) }.joined()
             manifest = PluginPackageManifest(
-                name: "ImportedPlugin",
+                name: "Imported-\(digest)",
                 version: "1.0.0",
                 author: nil,
                 description: nil,
@@ -284,6 +301,8 @@ actor PluginRuntime {
         if let oldPool = activePools.removeValue(forKey: preview.packageID) {
             oldPool.invalidate()
         }
+        // 清除该包旧版本遗留的路由（新版本已删除的书源不应继续可调用）
+        sourceRouting = sourceRouting.filter { $0.value.packageID != preview.packageID }
         for meta in preview.sources {
             sourceRouting[meta.id] = (preview.packageID, meta.index, meta)
         }
@@ -313,6 +332,7 @@ actor PluginRuntime {
         }
         activePools.removeAll()
         sourceRouting.removeAll()
+        hasScannedDisk = true
         try? FileManager.default.removeItem(at: pluginsRootDirectory)
         try? FileManager.default.createDirectory(at: pluginsRootDirectory, withIntermediateDirectories: true)
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -320,12 +340,17 @@ actor PluginRuntime {
     }
 
     func reloadInstalledPackages() {
+        hasScannedDisk = true
         guard let dirs = try? FileManager.default.contentsOfDirectory(
             at: pluginsRootDirectory,
             includingPropertiesForKeys: nil
         ) else { return }
 
         for dir in dirs where dir.hasDirectoryPath {
+            let pkgID = dir.lastPathComponent
+            // 已加载的书源包不再重复创建 JSContext（原实现每次路由未命中都会全量重建）
+            if activePools[pkgID] != nil { continue }
+
             let manifestURL = dir.appendingPathComponent("manifest.json")
             guard let manifestData = try? Data(contentsOf: manifestURL),
                   let manifest = try? JSONDecoder().decode(PluginPackageManifest.self, from: manifestData) else {
@@ -339,7 +364,6 @@ actor PluginRuntime {
                     files[clean] = d
                 }
             }
-            let pkgID = dir.lastPathComponent
             if let (ctx, metas) = try? Self.createIsolatedContext(packageID: pkgID, manifest: manifest, scriptFiles: files) {
                 activePools[pkgID] = PackageContextPool(
                     packageID: pkgID,
@@ -557,7 +581,7 @@ actor PluginRuntime {
 
     // MARK: - 统一源协议调用
 
-    func search(sourceID: String, keyword: String, page: Int, timeoutSec: Double = 12.0) async throws -> DiscoverPageDTO {
+    func search(sourceID: String, keyword: String, page: Int, timeoutSec: Double = 8.0) async throws -> DiscoverPageDTO {
         try await invokeSearchWithTimeout(sourceID: sourceID, keyword: keyword, page: page, timeoutSec: timeoutSec)
     }
 
@@ -916,6 +940,8 @@ actor PluginRuntime {
                 intro = !rawIntro.isEmpty ? rawIntro : rawStatus
             }
 
+            // 注意：prelude.js 的 int() 在字段缺失时返回 0，因此列表里的 chapterCount == 0 只代表「未知」，
+            // 不能据此过滤；是否可播放以 UnplayableBookStore（详情页确认无章节）为准。
             let chapterCount = Self.intValue(b["chapterCount"]) ?? 0
             let ref = BookRef(
                 sourceID: sourceID,
@@ -926,6 +952,7 @@ actor PluginRuntime {
                 intro: intro,
                 chapterCount: chapterCount
             )
+            if UnplayableBookStore.shared.contains(ref.id) { continue }
             if !seenIDs.contains(ref.id) {
                 seenIDs.insert(ref.id)
                 books.append(ref)
@@ -1023,6 +1050,8 @@ actor PluginRuntime {
         if let route = sourceRouting[sourceID] {
             return route
         }
+        // 仅在尚未扫描过磁盘时才重建；已扫描仍未命中说明书源已被删除，直接返回 nil
+        guard !hasScannedDisk else { return nil }
         reloadInstalledPackages()
         return sourceRouting[sourceID]
     }

@@ -31,6 +31,8 @@ final class DiscoverViewModel {
     var isInSourceSearching: Bool = false
 
     private var sessionCache: [String: (sections: [DiscoverSectionDTO], items: [BookRef], nextURL: String?)] = [:]
+    /// 每个书源的分类菜单缓存：切换书源时先秒出分类，只需再请求一次列表（原先每次都要两次串行请求）
+    private var sectionsCache: [String: [DiscoverSectionDTO]] = [:]
     private var loadTask: Task<Void, Never>?
     private var loadMoreTask: Task<Void, Never>?
     private var requestGeneration: UInt64 = 0
@@ -55,6 +57,10 @@ final class DiscoverViewModel {
     }
 
     func switchSourceIfNeeded(to sourceID: String) {
+        // 同一书源且正在加载或已有内容：不重复请求（菜单切换与 .task(id:) 会连续触发两次）
+        if activeSourceID == sourceID && (isLoading || !items.isEmpty) && currentError == nil {
+            return
+        }
         if activeSourceID != sourceID {
             loadTask?.cancel()
             loadMoreTask?.cancel()
@@ -127,9 +133,10 @@ final class DiscoverViewModel {
         requestGeneration &+= 1
         let currentGen = requestGeneration
 
+        // 同步置位，保证紧随其后的重复调用能识别「正在加载」而不会重复发起请求
+        isLoading = true
+        currentError = nil
         loadTask = Task {
-            isLoading = true
-            currentError = nil
             do {
                 if isInSourceSearching && !inSourceSearchKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
                     let pageDTO = try await PluginRuntime.shared.search(
@@ -143,10 +150,16 @@ final class DiscoverViewModel {
                     totalPage = pageDTO.totalPage ?? 1
                     nextPageURL = nil
                 } else {
+                    if sections.isEmpty, !forceRefresh, let cachedSections = sectionsCache[sourceID], !cachedSections.isEmpty {
+                        sections = cachedSections
+                        if !sections.indices.contains(selectedSectionIndex) { selectedSectionIndex = 0 }
+                        if let sec = activeSection, !sec.tabs.indices.contains(selectedTabIndex) { selectedTabIndex = 0 }
+                    }
                     if sections.isEmpty || forceRefresh {
                         let loadedSections = try await PluginRuntime.shared.discoverSections(sourceID: sourceID)
                         guard !Task.isCancelled, currentGen == requestGeneration else { return }
                         sections = loadedSections
+                        if !loadedSections.isEmpty { sectionsCache[sourceID] = loadedSections }
                         if !sections.indices.contains(selectedSectionIndex) {
                             selectedSectionIndex = 0
                         }

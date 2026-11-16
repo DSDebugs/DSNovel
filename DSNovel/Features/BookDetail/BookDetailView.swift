@@ -137,8 +137,11 @@ final class BookDetailViewModel {
             if !fullDetail.chapters.isEmpty {
                 chapters = fullDetail.chapters
                 ChapterCacheStore.saveChapters(fullDetail.chapters, for: bookID)
+                UnplayableBookStore.shared.unmark(bookID)
             } else if chapters.isEmpty {
                 errorMessage = "没有获取到章节"
+                // 书源正常响应但没有任何章节：记为无法播放，今后搜索/发现不再展示
+                UnplayableBookStore.shared.mark(bookID)
             }
         } catch {
             if chapters.isEmpty {

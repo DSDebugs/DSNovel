@@ -182,4 +182,42 @@ final class DSNovelTests: XCTestCase {
         XCTAssertEqual(loaded?.count, 2)
         XCTAssertEqual(loaded?.first?.title, "第1集 序幕")
     }
+
+    /// 9. 搜索结果相关度排序：精确 > 前缀 > 包含 > 其他
+    func testSearchRelevanceRanking() {
+        XCTAssertEqual(SearchViewModel.relevance(title: "三体", keyword: "三体"), 3)
+        XCTAssertEqual(SearchViewModel.relevance(title: "三体全集", keyword: "三体"), 2)
+        XCTAssertEqual(SearchViewModel.relevance(title: "刘慈欣三体", keyword: "三体"), 1)
+        XCTAssertEqual(SearchViewModel.relevance(title: "鬼吹灯", keyword: "三体"), 0)
+        XCTAssertEqual(SearchViewModel.relevance(title: "三体", keyword: "  "), 0)
+    }
+
+    /// 10. 「无法播放」黑名单：标记、命中、取消标记
+    func testUnplayableBookStore() {
+        let store = UnplayableBookStore.shared
+        let id = "test_src::https://example.com/unplayable/\(UUID().uuidString)"
+        XCTAssertFalse(store.contains(id))
+        store.mark(id)
+        XCTAssertTrue(store.contains(id))
+        store.unmark(id)
+        XCTAssertFalse(store.contains(id))
+    }
+
+    /// 11. 支持直接导入单个 .js；无 manifest 的不同书源包不会因同名而互相覆盖；非书源文件被拒绝
+    func testImportSingleScriptAndUniquePackageID() async throws {
+        func script(_ id: String) -> Data {
+            Data("registerSource({ id: '\(id)', name: '\(id)', url: 'https://example.com', search: function (k, p) { return JSON.stringify({ books: [] }); } });".utf8)
+        }
+        let p1 = try await PluginRuntime.shared.prepareImportPreview(from: script("a_src"))
+        let p2 = try await PluginRuntime.shared.prepareImportPreview(from: script("b_src"))
+        XCTAssertNotEqual(p1.packageID, p2.packageID)
+        XCTAssertEqual(p1.sources.first?.id, "a_src")
+
+        do {
+            _ = try await PluginRuntime.shared.prepareImportPreview(from: Data("hello".utf8))
+            XCTFail("非书源文件应当导入失败")
+        } catch {
+            // 预期失败
+        }
+    }
 }
