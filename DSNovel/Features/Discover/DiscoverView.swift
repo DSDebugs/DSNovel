@@ -129,8 +129,16 @@ struct DiscoverView: View {
     let onNavigateToImportPlugins: () -> Void
     let onSelectBook: (BookRef) -> Void
 
-    @Query(sort: [SortDescriptor(\.order)]) private var plugins: [PluginRecord]
-    @Query(sort: [SortDescriptor(\.order)]) private var groups: [PluginGroup]
+    @Query(sort: [SortDescriptor(\PluginRecord.order)]) private var plugins: [PluginRecord]
+    @Query(sort: [SortDescriptor(\PluginGroup.order)]) private var groups: [PluginGroup]
+
+    init(
+        onNavigateToImportPlugins: @escaping () -> Void,
+        onSelectBook: @escaping (BookRef) -> Void
+    ) {
+        self.onNavigateToImportPlugins = onNavigateToImportPlugins
+        self.onSelectBook = onSelectBook
+    }
     @State private var viewModel = DiscoverViewModel()
     @State private var settings = AppSettingsStore.shared
     @State private var authSession: WebAuthSessionRequest?
@@ -373,7 +381,8 @@ struct DiscoverView: View {
             if viewModel.sections.count > 1 {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(Array(viewModel.sections.enumerated()), id: \.offset) { idx, sec in
+                        ForEach(viewModel.sections.indices, id: \.self) { idx in
+                            let sec = viewModel.sections[idx]
                             let selected = idx == viewModel.selectedSectionIndex
                             Button {
                                 viewModel.selectedSectionIndex = idx
@@ -402,7 +411,8 @@ struct DiscoverView: View {
             if let sec = viewModel.activeSection, !sec.tabs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(Array(sec.tabs.enumerated()), id: \.offset) { idx, tab in
+                        ForEach(sec.tabs.indices, id: \.self) { idx in
+                            let tab = sec.tabs[idx]
                             let selected = idx == viewModel.selectedTabIndex
                             Button {
                                 viewModel.selectedTabIndex = idx

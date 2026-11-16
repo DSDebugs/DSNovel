@@ -34,7 +34,7 @@ final class DownloadManager {
     func localFileURL(bookID: String, chapterID: String) -> URL? {
         guard let ctx = modelContext else { return nil }
         let itemID = "\(bookID)::\(chapterID)"
-        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate { $0.id == itemID })
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.id == itemID })
         guard let item = try? ctx.fetch(desc).first,
               item.state == "completed",
               !item.localPath.isEmpty else {
@@ -55,7 +55,7 @@ final class DownloadManager {
         guard let ctx = modelContext else { return }
         for ch in chapters {
             let itemID = "\(book.id)::\(ch.id)"
-            let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate { $0.id == itemID })
+            let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.id == itemID })
             if let existing = try? ctx.fetch(desc).first {
                 if kind == "manual" && existing.kind == "precache" {
                     existing.kind = "manual"
@@ -88,7 +88,7 @@ final class DownloadManager {
     func cleanupPrecacheIfNeeded(bookID: String, chapterID: String) {
         guard let ctx = modelContext else { return }
         let itemID = "\(bookID)::\(chapterID)"
-        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate { $0.id == itemID })
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.id == itemID })
         guard let item = try? ctx.fetch(desc).first, item.kind == "precache" else { return }
         if !item.localPath.isEmpty {
             let fileURL = downloadsRootDirectory.appendingPathComponent(item.localPath)
@@ -100,7 +100,7 @@ final class DownloadManager {
 
     func clearPrecacheOnly() {
         guard let ctx = modelContext else { return }
-        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate { $0.kind == "precache" })
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.kind == "precache" })
         guard let items = try? ctx.fetch(desc) else { return }
         for item in items {
             if !item.localPath.isEmpty {
@@ -114,7 +114,7 @@ final class DownloadManager {
 
     func removeDownloads(forBookID bookID: String) {
         guard let ctx = modelContext else { return }
-        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate { $0.bookID == bookID })
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.bookID == bookID })
         guard let items = try? ctx.fetch(desc) else { return }
         for item in items {
             if !item.localPath.isEmpty {
@@ -128,7 +128,7 @@ final class DownloadManager {
 
     func totalManualDownloadedBytes() -> Int64 {
         guard let ctx = modelContext else { return 0 }
-        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate { $0.kind == "manual" && $0.state == "completed" })
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.kind == "manual" && $0.state == "completed" })
         let items = (try? ctx.fetch(desc)) ?? []
         return items.reduce(0) { $0 + $1.bytes }
     }
@@ -140,8 +140,8 @@ final class DownloadManager {
         }
         while activeTasksCount < maxConcurrent {
             let desc = FetchDescriptor<DownloadItem>(
-                predicate: #Predicate { $0.state == "queued" },
-                sortBy: [SortDescriptor(\.createdAt)]
+                predicate: #Predicate<DownloadItem> { $0.state == "queued" },
+                sortBy: [SortDescriptor(\DownloadItem.createdAt)]
             )
             guard let nextItem = try? ctx.fetch(desc).first else { break }
             nextItem.state = "downloading"

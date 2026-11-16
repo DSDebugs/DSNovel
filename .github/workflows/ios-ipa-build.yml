@@ -80,9 +80,9 @@ jobs:
             2>&1 | tee build/xcodebuild-test.log
 
       # pipefail + tee：日志实时输出并留存，xcodebuild 失败时步骤仍正确失败。
-      # 源码 project.yml 标注 SWIFT_VERSION 6.0；Swift 6 严格语言模式下出现多处
-      # actor-isolated / Sendable / key path 推断连锁报错。这里仅在命令行覆盖为
-      # Swift 5 语言模式（并发检查更宽松），保持上传的源码文件原样不动。
+      # 显式锁定 SWIFT_VERSION=5.0（与 project.yml 一致，命令行优先级更高），
+      # 避免工程配置漂移回 Swift 6 严格语言模式触发 actor-isolated / Sendable
+      # 等连锁报错；此处只加编译参数，不改动任何源码文件。
       - name: Build Release App (unsigned)
         run: |
           set -euo pipefail

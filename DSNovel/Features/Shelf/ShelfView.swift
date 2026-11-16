@@ -8,8 +8,18 @@ struct ShelfView: View {
     let onOpenDownloads: () -> Void
 
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\.addedAt, order: .reverse)]) private var books: [Book]
-    @Query(sort: [SortDescriptor(\.order)]) private var categories: [ShelfCategory]
+    @Query(sort: [SortDescriptor(\Book.addedAt, order: .reverse)]) private var books: [Book]
+    @Query(sort: [SortDescriptor(\ShelfCategory.order)]) private var categories: [ShelfCategory]
+
+    init(
+        onSwitchToDiscover: @escaping () -> Void,
+        onSelectBook: @escaping (BookRef) -> Void,
+        onOpenDownloads: @escaping () -> Void
+    ) {
+        self.onSwitchToDiscover = onSwitchToDiscover
+        self.onSelectBook = onSelectBook
+        self.onOpenDownloads = onOpenDownloads
+    }
 
     @State private var selectedCategoryID: String? = nil
     @State private var isEditingSelection = false
@@ -50,132 +60,152 @@ struct ShelfView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            Group {
-                if books.isEmpty {
-                    ContentUnavailableView {
-                        Label("书架还是空的，去发现页看看", systemImage: "books.vertical")
-                    } description: {
-                        Text("收藏喜欢的有声书后，会自动记住每一集的收听位置与倍速设置")
-                    } actions: {
-                        Button("去发现页") {
-                            onSwitchToDiscover()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                } else {
-                    VStack(spacing: 0) {
-                        if let recent = mostRecentBook {
-                            continueListeningCard(for: recent)
-                        }
-                        categoryCapsuleStrip
-                        shelfCollectionBody
-                    }
+        shelfMainStack
+            .navigationTitle("书架")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    shelfTrailingToolbarItems
                 }
             }
-            .background(DSColor.contentBackground)
+            .alert("新建书架分类", isPresented: $showNewCategoryAlert) {
+                TextField("分类名称", text: $newCategoryName)
+                Button("取消", role: .cancel) { newCategoryName = "" }
+                Button("创建") {
+                    createNewCategory()
+                }
+            }
+            .confirmationDialog("移动选中书籍到分类", isPresented: $showMoveCategoryDialog) {
+                Button("全部（取消分类）") {
+                    moveSelectedBooks(to: nil)
+                }
+                ForEach(categories) { cat in
+                    Button(cat.name) {
+                        moveSelectedBooks(to: cat.id)
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            }
+            .sheet(isPresented: $showCategoryManageSheet) {
+                CategoryManageSheet()
+            }
+    }
+
+    private var shelfMainStack: some View {
+        ZStack(alignment: .bottom) {
+            shelfPrimaryContent
+                .background(DSColor.contentBackground)
 
             // 书架编辑模式下的底部操作栏（书架页唯一的玻璃元素，符合 5.2 节步骤 4）
             if isEditingSelection && !selectedBookIDs.isEmpty {
-                GlassFloatingBar {
-                    GlassButton {
-                        showMoveCategoryDialog = true
-                    } label: {
-                        Label("移动(\(selectedBookIDs.count))", systemImage: "folder")
-                            .font(.subheadline.weight(.medium))
-                    }
-
-                    GlassButton {
-                        batchDownloadSelected()
-                    } label: {
-                        Label("下载", systemImage: "arrow.down.circle")
-                            .font(.subheadline.weight(.medium))
-                    }
-
-                    GlassButton {
-                        batchDeleteSelected()
-                    } label: {
-                        Label("删除", systemImage: "trash")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.red)
-                    }
-                }
+                shelfEditingFloatingBar
             }
         }
-        .navigationTitle("书架")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    settings.shelfLayout = settings.shelfLayout == .grid ? .list : .grid
-                } label: {
-                    Image(systemName: settings.shelfLayout == .grid ? "list.bullet" : "square.grid.2x2")
+    }
+
+    @ViewBuilder
+    private var shelfPrimaryContent: some View {
+        if books.isEmpty {
+            ContentUnavailableView {
+                Label("书架还是空的，去发现页看看", systemImage: "books.vertical")
+            } description: {
+                Text("收藏喜欢的有声书后，会自动记住每一集的收听位置与倍速设置")
+            } actions: {
+                Button("去发现页") {
+                    onSwitchToDiscover()
                 }
-                .accessibilityLabel(settings.shelfLayout == .grid ? "切换为列表" : "切换为网格")
-
-                Menu {
-                    Picker("排序方式", selection: Bindable(settings).shelfSort) {
-                        ForEach(ShelfSortOrder.allCases) { order in
-                            Text(order.title).tag(order)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "arrow.up.arrow.down")
+                .buttonStyle(.borderedProminent)
+            }
+        } else {
+            VStack(spacing: 0) {
+                if let recent = mostRecentBook {
+                    continueListeningCard(for: recent)
                 }
-                .accessibilityLabel("排序方式")
-
-                Menu {
-                    Button {
-                        isEditingSelection.toggle()
-                        selectedBookIDs.removeAll()
-                    } label: {
-                        Label(isEditingSelection ? "完成编辑" : "批量编辑", systemImage: "checkmark.circle")
-                    }
-
-                    Button {
-                        showCategoryManageSheet = true
-                    } label: {
-                        Label("分类管理", systemImage: "folder.badge.gearshape")
-                    }
-
-                    Button {
-                        onOpenDownloads()
-                    } label: {
-                        Label("下载管理", systemImage: "arrow.down.circle")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .accessibilityLabel("更多操作")
+                categoryCapsuleStrip
+                shelfCollectionBody
             }
         }
-        .alert("新建书架分类", isPresented: $showNewCategoryAlert) {
-            TextField("分类名称", text: $newCategoryName)
-            Button("取消", role: .cancel) { newCategoryName = "" }
-            Button("创建") {
-                let trimmed = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    let cat = ShelfCategory(name: trimmed, order: categories.count)
-                    modelContext.insert(cat)
-                    try? modelContext.save()
+    }
+
+    private var shelfEditingFloatingBar: some View {
+        GlassFloatingBar {
+            GlassButton {
+                showMoveCategoryDialog = true
+            } label: {
+                Label("移动(\(selectedBookIDs.count))", systemImage: "folder")
+                    .font(.subheadline.weight(.medium))
+            }
+
+            GlassButton {
+                batchDownloadSelected()
+            } label: {
+                Label("下载", systemImage: "arrow.down.circle")
+                    .font(.subheadline.weight(.medium))
+            }
+
+            GlassButton {
+                batchDeleteSelected()
+            } label: {
+                Label("删除", systemImage: "trash")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var shelfTrailingToolbarItems: some View {
+        Button {
+            settings.shelfLayout = settings.shelfLayout == .grid ? .list : .grid
+        } label: {
+            Image(systemName: settings.shelfLayout == .grid ? "list.bullet" : "square.grid.2x2")
+        }
+        .accessibilityLabel(settings.shelfLayout == .grid ? "切换为列表" : "切换为网格")
+
+        Menu {
+            Picker("排序方式", selection: Bindable(settings).shelfSort) {
+                ForEach(ShelfSortOrder.allCases) { order in
+                    Text(order.title).tag(order)
                 }
-                newCategoryName = ""
             }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
         }
-        .confirmationDialog("移动选中书籍到分类", isPresented: $showMoveCategoryDialog) {
-            Button("全部（取消分类）") {
-                moveSelectedBooks(to: nil)
+        .accessibilityLabel("排序方式")
+
+        Menu {
+            Button {
+                isEditingSelection.toggle()
+                selectedBookIDs.removeAll()
+            } label: {
+                Label(isEditingSelection ? "完成编辑" : "批量编辑", systemImage: "checkmark.circle")
             }
-            ForEach(categories) { cat in
-                Button(cat.name) {
-                    moveSelectedBooks(to: cat.id)
-                }
+
+            Button {
+                showCategoryManageSheet = true
+            } label: {
+                Label("分类管理", systemImage: "folder.badge.gearshape")
             }
-            Button("取消", role: .cancel) {}
+
+            Button {
+                onOpenDownloads()
+            } label: {
+                Label("下载管理", systemImage: "arrow.down.circle")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
-        .sheet(isPresented: $showCategoryManageSheet) {
-            CategoryManageSheet()
+        .accessibilityLabel("更多操作")
+    }
+
+    private func createNewCategory() {
+        let trimmed = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            let cat = ShelfCategory(name: trimmed, order: categories.count)
+            modelContext.insert(cat)
+            try? modelContext.save()
         }
+        newCategoryName = ""
     }
 
     private func continueListeningCard(for book: Book) -> some View {
@@ -511,7 +541,9 @@ struct ShelfView: View {
 struct CategoryManageSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\.order)]) private var categories: [ShelfCategory]
+    @Query(sort: [SortDescriptor(\ShelfCategory.order)]) private var categories: [ShelfCategory]
+
+    init() {}
     @Query private var books: [Book]
 
     var body: some View {
@@ -556,16 +588,29 @@ struct CategoryManageSheet: View {
 
 struct DownloadManageView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\.createdAt, order: .reverse)]) private var items: [DownloadItem]
+    @Query(sort: [SortDescriptor(\DownloadItem.createdAt, order: .reverse)]) private var items: [DownloadItem]
+
+    init() {}
 
     private var manualItems: [DownloadItem] {
         items.filter { $0.kind == "manual" }
     }
 
-    private var groupedByBook: [(bookID: String, bookTitle: String, chapters: [DownloadItem])] {
+    private struct DownloadedBookGroup: Identifiable {
+        var id: String { bookID }
+        let bookID: String
+        let bookTitle: String
+        let chapters: [DownloadItem]
+    }
+
+    private var groupedByBook: [DownloadedBookGroup] {
         let dict = Dictionary(grouping: manualItems, by: \.bookID)
         return dict.map { key, val in
-            (key, val.first?.bookTitle ?? "未知书籍", val)
+            DownloadedBookGroup(
+                bookID: key,
+                bookTitle: val.first?.bookTitle ?? "未知书籍",
+                chapters: val
+            )
         }.sorted { $0.bookTitle < $1.bookTitle }
     }
 
@@ -578,7 +623,7 @@ struct DownloadManageView: View {
                     description: Text("在书籍详情页选择章节或区间即可离线下载")
                 )
             } else {
-                ForEach(groupedByBook, id: \.bookID) { group in
+                ForEach(groupedByBook) { group in
                     Section {
                         ForEach(group.chapters) { item in
                             HStack {

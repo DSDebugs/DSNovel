@@ -25,7 +25,7 @@ import JavaScriptCore
     let innerHTML: String
     let baseURL: String
     weak var parentNode: JsElement?
-    private(set) var childNodes: [JsElement] = []
+    var childNodes: [JsElement] = []
     private let isNullElement: Bool
 
     init(
@@ -303,7 +303,7 @@ enum HTMLTokenizer {
             }
             let tagName = ns.substring(with: match.range(at: 1)).lowercased()
             let attrRaw = ns.substring(with: match.range(at: 2))
-            let selfClosingSlash = ! ns.substring(with: match.range(at: 3)).isEmpty
+            let selfClosingSlash = !ns.substring(with: match.range(at: 3)).isEmpty
             let attrs = parseAttributes(attrRaw)
             let afterOpenTag = match.range.location + match.range.length
 

@@ -8,9 +8,13 @@ struct SettingsView: View {
     @Binding var path: [Route]
 
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\.order)]) private var plugins: [PluginRecord]
+    @Query(sort: [SortDescriptor(\PluginRecord.order)]) private var plugins: [PluginRecord]
     @Query private var books: [Book]
     @Query private var histories: [SearchHistory]
+
+    init(path: Binding<[Route]>) {
+        self._path = path
+    }
 
     @State private var settings = AppSettingsStore.shared
     @State private var coverCacheBytes: Int64 = 0
@@ -23,195 +27,11 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            // 1. 听书源（插件）——置顶摘要卡片行（5.6 节第 1 组）
-            Section {
-                NavigationLink(value: Route.pluginManager) {
-                    if plugins.isEmpty {
-                        HStack(spacing: 12) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(DSColor.primary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("导入听书源")
-                                    .font(.headline)
-                                    .foregroundStyle(DSColor.primary)
-                                Text("从本地 .zip 文件或网址导入听书源插件包")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    } else {
-                        HStack(spacing: 12) {
-                            Image(systemName: "puzzlepiece.extension.fill")
-                                .font(.title3)
-                                .foregroundStyle(DSColor.primary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("听书源管理")
-                                    .font(.body.weight(.medium))
-                                Text("已安装 \(plugins.count) 个源 · \(loginRequiredCount) 个需要登录")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-            } header: {
-                Text("听书源")
-            }
-
-            // 2. 播放（5.6 节第 2 组）
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Picker("播放通道", selection: Bindable(settings).audioChannel) {
-                        ForEach(AudioChannelMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    Text(settings.audioChannel.subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Picker("默认倍速", selection: Bindable(settings).defaultSpeed) {
-                    ForEach([0.75, 1.0, 1.25, 1.5, 2.0, 3.0], id: \.self) { spd in
-                        Text(String(format: "%.2gx", spd)).tag(spd)
-                    }
-                }
-
-                Toggle(isOn: Bindable(settings).sleepFadeOutEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("睡眠定时结束前渐弱")
-                        Text("最后 30 秒线性降低音量后暂停")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Toggle(isOn: Bindable(settings).autoResumeOnLaunch) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("打开 App 后自动继续播放")
-                        Text("启动时自动恢复上次收听的书籍与进度")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Picker("预缓存后续集数", selection: Bindable(settings).precacheCount) {
-                    Text("关").tag(0)
-                    Text("1 集").tag(1)
-                    Text("2 集").tag(2)
-                    Text("3 集").tag(3)
-                    Text("5 集").tag(5)
-                }
-
-                Toggle(isOn: Bindable(settings).rememberBookVolume) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("记住每本书的音量")
-                        Text("为不同音量的有声书分别保存独立音量")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                NavigationLink(value: Route.skipSettings) {
-                    HStack {
-                        Text("默认跳过片头/片尾")
-                        Spacer()
-                        Text("片头 \(settings.defaultSkipIntroSec)s · 片尾 \(settings.defaultSkipOutroSec)s")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("播放")
-            }
-
-            // 3. 界面（5.6 节第 3 组）
-            Section {
-                Picker("发现页默认布局", selection: Bindable(settings).discoverLayout) {
-                    ForEach(DiscoverLayoutStyle.allCases) { style in
-                        Text(style.title).tag(style)
-                    }
-                }
-
-                Picker("外观", selection: Bindable(settings).appearanceMode) {
-                    ForEach(AppAppearanceMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-
-                Toggle(isOn: Bindable(settings).hapticsEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("触感反馈")
-                        Text("添加书签与关键操作时提供轻触震动反馈")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } header: {
-                Text("界面")
-            }
-
-            // 4. 下载与存储（5.6 节第 4 组）
-            Section {
-                Toggle(isOn: Bindable(settings).wifiOnlyDownload) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("仅 Wi-Fi 下载")
-                        Text("使用蜂窝移动网络时不执行离线下载与预缓存")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                HStack {
-                    Text("已下载占用")
-                    Spacer()
-                    let dlBytes = DownloadManager.shared.totalManualDownloadedBytes()
-                    Text(ByteCountFormatter.string(fromByteCount: dlBytes, countStyle: .file))
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack {
-                    Text("封面缓存占用")
-                    Spacer()
-                    Text(ByteCountFormatter.string(fromByteCount: coverCacheBytes, countStyle: .file))
-                        .foregroundStyle(.secondary)
-                }
-
-                Button("清理缓存") {
-                    Task {
-                        await CoverImagePipeline.shared.clearCache()
-                        DownloadManager.shared.clearPrecacheOnly()
-                        ChapterCacheStore.clearAll()
-                        coverCacheBytes = await CoverImagePipeline.shared.diskUsageBytes()
-                        ToastManager.shared.show("已清理封面缓存与预缓存")
-                    }
-                }
-
-                NavigationLink("下载管理", value: Route.downloadManager)
-            } header: {
-                Text("下载与存储")
-            }
-
-            // 5. 数据（5.6 节第 5 组：破坏性操作集中在最底部，红色文字，二次确认）
-            Section {
-                Button(role: .destructive) {
-                    showClearHistoryConfirm = true
-                } label: {
-                    Text("清除播放记录")
-                }
-
-                Button(role: .destructive) {
-                    showResetSettingsConfirm = true
-                } label: {
-                    Text("重置所有设置")
-                }
-            } header: {
-                Text("数据")
-            }
+            pluginSummarySection
+            playbackSettingsSection
+            interfaceSettingsSection
+            downloadStorageSection
+            dataResetSection
         }
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
@@ -240,6 +60,201 @@ struct SettingsView: View {
             Button("取消", role: .cancel) {}
         }
     }
+
+    private var pluginSummarySection: some View {
+        Section {
+            NavigationLink(value: Route.pluginManager) {
+                if plugins.isEmpty {
+                    HStack(spacing: 12) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(DSColor.primary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("导入听书源")
+                                .font(.headline)
+                                .foregroundStyle(DSColor.primary)
+                            Text("从本地 .zip 文件或网址导入听书源插件包")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } else {
+                    HStack(spacing: 12) {
+                        Image(systemName: "puzzlepiece.extension.fill")
+                            .font(.title3)
+                            .foregroundStyle(DSColor.primary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("听书源管理")
+                                .font(.body.weight(.medium))
+                            Text("已安装 \(plugins.count) 个源 · \(loginRequiredCount) 个需要登录")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        } header: {
+            Text("听书源")
+        }
+    }
+
+    private var playbackSettingsSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Picker("播放通道", selection: Bindable(settings).audioChannel) {
+                    ForEach(AudioChannelMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.audioChannel.subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Picker("默认倍速", selection: Bindable(settings).defaultSpeed) {
+                ForEach([0.75, 1.0, 1.25, 1.5, 2.0, 3.0], id: \.self) { spd in
+                    Text(String(format: "%.2gx", spd)).tag(spd)
+                }
+            }
+
+            Toggle(isOn: Bindable(settings).sleepFadeOutEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("睡眠定时结束前渐弱")
+                    Text("最后 30 秒线性降低音量后暂停")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Toggle(isOn: Bindable(settings).autoResumeOnLaunch) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("打开 App 后自动继续播放")
+                    Text("启动时自动恢复上次收听的书籍与进度")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Picker("预缓存后续集数", selection: Bindable(settings).precacheCount) {
+                Text("关").tag(0)
+                Text("1 集").tag(1)
+                Text("2 集").tag(2)
+                Text("3 集").tag(3)
+                Text("5 集").tag(5)
+            }
+
+            Toggle(isOn: Bindable(settings).rememberBookVolume) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("记住每本书的音量")
+                    Text("为不同音量的有声书分别保存独立音量")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            NavigationLink(value: Route.skipSettings) {
+                HStack {
+                    Text("默认跳过片头/片尾")
+                    Spacer()
+                    Text("片头 \(settings.defaultSkipIntroSec)s · 片尾 \(settings.defaultSkipOutroSec)s")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("播放")
+        }
+    }
+
+    private var interfaceSettingsSection: some View {
+        Section {
+            Picker("发现页默认布局", selection: Bindable(settings).discoverLayout) {
+                ForEach(DiscoverLayoutStyle.allCases) { style in
+                    Text(style.title).tag(style)
+                }
+            }
+
+            Picker("外观", selection: Bindable(settings).appearanceMode) {
+                ForEach(AppAppearanceMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+
+            Toggle(isOn: Bindable(settings).hapticsEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("触感反馈")
+                    Text("添加书签与关键操作时提供轻触震动反馈")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("界面")
+        }
+    }
+
+    private var downloadStorageSection: some View {
+        Section {
+            Toggle(isOn: Bindable(settings).wifiOnlyDownload) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("仅 Wi-Fi 下载")
+                    Text("使用蜂窝移动网络时不执行离线下载与预缓存")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Text("已下载占用")
+                Spacer()
+                let dlBytes = DownloadManager.shared.totalManualDownloadedBytes()
+                Text(ByteCountFormatter.string(fromByteCount: dlBytes, countStyle: .file))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text("封面缓存占用")
+                Spacer()
+                Text(ByteCountFormatter.string(fromByteCount: coverCacheBytes, countStyle: .file))
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("清理缓存") {
+                Task {
+                    await CoverImagePipeline.shared.clearCache()
+                    DownloadManager.shared.clearPrecacheOnly()
+                    ChapterCacheStore.clearAll()
+                    coverCacheBytes = await CoverImagePipeline.shared.diskUsageBytes()
+                    ToastManager.shared.show("已清理封面缓存与预缓存")
+                }
+            }
+
+            NavigationLink("下载管理", value: Route.downloadManager)
+        } header: {
+            Text("下载与存储")
+        }
+    }
+
+    private var dataResetSection: some View {
+        Section {
+            Button(role: .destructive) {
+                showClearHistoryConfirm = true
+            } label: {
+                Text("清除播放记录")
+            }
+
+            Button(role: .destructive) {
+                showResetSettingsConfirm = true
+            } label: {
+                Text("重置所有设置")
+            }
+        } header: {
+            Text("数据")
+        }
+    }
 }
 
 struct DefaultSkipSettingsView: View {
@@ -260,9 +275,11 @@ struct DefaultSkipSettingsView: View {
 /// 插件管理二级页（5.7 节）：文件/网址导入预览、置顶区、可折叠分组、源详情与登录验证
 struct PluginManagerView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\.order)]) private var plugins: [PluginRecord]
-    @Query(sort: [SortDescriptor(\.order)]) private var groups: [PluginGroup]
+    @Query(sort: [SortDescriptor(\PluginRecord.order)]) private var plugins: [PluginRecord]
+    @Query(sort: [SortDescriptor(\PluginGroup.order)]) private var groups: [PluginGroup]
     @Query private var shelfBooks: [Book]
+
+    init() {}
 
     @State private var showFileImporter = false
     @State private var showURLImportAlert = false
@@ -660,7 +677,12 @@ struct SourceDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\.order)]) private var groups: [PluginGroup]
+    @Query(sort: [SortDescriptor(\PluginGroup.order)]) private var groups: [PluginGroup]
+
+    init(plugin: PluginRecord, onDelete: @escaping () -> Void) {
+        self.plugin = plugin
+        self.onDelete = onDelete
+    }
     @State private var showDeleteConfirm = false
     @State private var authSession: WebAuthSessionRequest?
 

@@ -111,7 +111,7 @@ struct BookDetailView: View {
     @Query private var shelfBooks: [Book]
     @Query private var plugins: [PluginRecord]
     @Query private var downloads: [DownloadItem]
-    @Query(sort: [SortDescriptor(\.createdAt, order: .reverse)]) private var allBookmarks: [Bookmark]
+    @Query(sort: [SortDescriptor(\Bookmark.createdAt, order: .reverse)]) private var allBookmarks: [Bookmark]
 
     @State private var viewModel: BookDetailViewModel
     @State private var isIntroExpanded = false
@@ -141,6 +141,37 @@ struct BookDetailView: View {
     }
 
     var body: some View {
+        detailListContent
+            .navigationTitle(viewModel.activeBook.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .task(id: viewModel.activeBook.id) {
+                await viewModel.loadBookDetails()
+            }
+        .sheet(isPresented: $showRangeDownloadSheet) {
+            rangeDownloadSheetView
+        }
+        .sheet(isPresented: $showBookmarksSheet) {
+            bookmarksSheetView
+        }
+        .sheet(isPresented: $showSwitchSourceSheet) {
+            switchSourceSheetView
+        }
+        .alert("添加书签备注", isPresented: Binding(
+            get: { bookmarkTargetChapter != nil },
+            set: { if !$0 { bookmarkTargetChapter = nil } }
+        )) {
+            TextField("可选备注", text: $bookmarkNoteText)
+            Button("取消", role: .cancel) {
+                bookmarkTargetChapter = nil
+                bookmarkNoteText = ""
+            }
+            Button("保存") {
+                saveChapterBookmark()
+            }
+        }
+    }
+
+    private var detailListContent: some View {
         List {
             Section {
                 headerBlock
@@ -189,46 +220,23 @@ struct BookDetailView: View {
         }
         .listStyle(.plain)
         .background(DSColor.contentBackground)
-        .navigationTitle(viewModel.activeBook.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .task(id: viewModel.activeBook.id) {
-            await viewModel.loadBookDetails()
+    }
+
+    private func saveChapterBookmark() {
+        if let ch = bookmarkTargetChapter {
+            let bm = Bookmark(
+                bookID: viewModel.activeBook.id,
+                chapterID: ch.id,
+                chapterTitle: ch.title,
+                positionMs: Int(player.clock.currentTimeSec * 1000),
+                note: bookmarkNoteText
+            )
+            modelContext.insert(bm)
+            try? modelContext.save()
+            ToastManager.shared.show("已添加书签")
         }
-        .sheet(isPresented: $showRangeDownloadSheet) {
-            rangeDownloadSheetView
-        }
-        .sheet(isPresented: $showBookmarksSheet) {
-            bookmarksSheetView
-        }
-        .sheet(isPresented: $showSwitchSourceSheet) {
-            switchSourceSheetView
-        }
-        .alert("添加书签备注", isPresented: Binding(
-            get: { bookmarkTargetChapter != nil },
-            set: { if !$0 { bookmarkTargetChapter = nil } }
-        )) {
-            TextField("可选备注", text: $bookmarkNoteText)
-            Button("取消", role: .cancel) {
-                bookmarkTargetChapter = nil
-                bookmarkNoteText = ""
-            }
-            Button("保存") {
-                if let ch = bookmarkTargetChapter {
-                    let bm = Bookmark(
-                        bookID: viewModel.activeBook.id,
-                        chapterID: ch.id,
-                        chapterTitle: ch.title,
-                        positionMs: Int(player.clock.currentTimeSec * 1000),
-                        note: bookmarkNoteText
-                    )
-                    modelContext.insert(bm)
-                    try? modelContext.save()
-                    ToastManager.shared.show("已添加书签")
-                }
-                bookmarkTargetChapter = nil
-                bookmarkNoteText = ""
-            }
-        }
+        bookmarkTargetChapter = nil
+        bookmarkNoteText = ""
     }
 
     private var headerBlock: some View {
@@ -398,7 +406,8 @@ struct BookDetailView: View {
                         }
                         .buttonStyle(.plain)
 
-                        ForEach(Array(viewModel.segments.enumerated()), id: \.offset) { idx, seg in
+                        ForEach(viewModel.segments.indices, id: \.self) { idx in
+                            let seg = viewModel.segments[idx]
                             let active = viewModel.selectedSegmentIndex == idx
                             Button {
                                 viewModel.selectedSegmentIndex = idx

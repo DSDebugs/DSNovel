@@ -453,7 +453,7 @@ final class PlayerEngine {
             bookVolume = 1.0
             return
         }
-        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == bookID })
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
         if let saved = try? ctx.fetch(descriptor).first {
             speed = saved.speed > 0 ? saved.speed : settings.defaultSpeed
             skipIntroSec = saved.skipIntroSec >= 0 ? saved.skipIntroSec : settings.defaultSkipIntroSec
@@ -469,7 +469,7 @@ final class PlayerEngine {
 
     func saveBookAudioSettings() {
         guard let ctx = modelContext, let bookID = currentBook?.id else { return }
-        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == bookID })
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
         if let saved = try? ctx.fetch(descriptor).first {
             saved.speed = speed
             saved.volume = bookVolume
@@ -482,7 +482,7 @@ final class PlayerEngine {
     func persistProgressNow() {
         guard let ctx = modelContext, let book = currentBook, let chapter = currentChapter else { return }
         let bookID = book.id
-        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == bookID })
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
         if let saved = try? ctx.fetch(descriptor).first {
             saved.lastChapterID = chapter.id
             saved.lastChapterTitle = chapter.title
@@ -497,34 +497,35 @@ final class PlayerEngine {
     private func configureRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in
-            self?.resume()
+            Task { @MainActor in self?.resume() }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            self?.pause()
+            Task { @MainActor in self?.pause() }
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
-            self?.playNextChapter()
+            Task { @MainActor in self?.playNextChapter() }
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
-            self?.playPreviousChapter()
+            Task { @MainActor in self?.playPreviousChapter() }
             return .success
         }
         center.skipForwardCommand.preferredIntervals = [30]
         center.skipForwardCommand.addTarget { [weak self] _ in
-            self?.skipForward(30)
+            Task { @MainActor in self?.skipForward(30) }
             return .success
         }
         center.skipBackwardCommand.preferredIntervals = [15]
         center.skipBackwardCommand.addTarget { [weak self] _ in
-            self?.skipBackward(15)
+            Task { @MainActor in self?.skipBackward(15) }
             return .success
         }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let posEvent = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            self?.seek(to: posEvent.positionTime)
+            let targetTime = posEvent.positionTime
+            Task { @MainActor in self?.seek(to: targetTime) }
             return .success
         }
     }
@@ -534,7 +535,7 @@ final class PlayerEngine {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
-        var info: [String: Any] = [
+        let info: [String: Any] = [
             MPMediaItemPropertyTitle: chapter.title,
             MPMediaItemPropertyArtist: book.title,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: clock.currentTimeSec,

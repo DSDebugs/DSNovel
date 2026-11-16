@@ -46,8 +46,8 @@ struct DSNovelApp: App {
     private func autoResumeIfNeeded(context: ModelContext) {
         guard settings.autoResumeOnLaunch, player.currentBook == nil else { return }
         var desc = FetchDescriptor<Book>(
-            predicate: #Predicate { $0.lastPlayedAt != nil },
-            sortBy: [SortDescriptor(\.lastPlayedAt, order: .reverse)]
+            predicate: #Predicate<Book> { $0.lastPlayedAt != nil },
+            sortBy: [SortDescriptor(\Book.lastPlayedAt, order: .reverse)]
         )
         desc.fetchLimit = 1
         guard let lastBook = try? context.fetch(desc).first,

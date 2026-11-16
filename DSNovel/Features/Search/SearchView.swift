@@ -136,9 +136,13 @@ struct SearchView: View {
     let onSelectMergedItem: (MergedSearchItem) -> Void
 
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\.order)]) private var plugins: [PluginRecord]
-    @Query(sort: [SortDescriptor(\.order)]) private var groups: [PluginGroup]
-    @Query(sort: [SortDescriptor(\.updatedAt, order: .reverse)]) private var histories: [SearchHistory]
+    @Query(sort: [SortDescriptor(\PluginRecord.order)]) private var plugins: [PluginRecord]
+    @Query(sort: [SortDescriptor(\PluginGroup.order)]) private var groups: [PluginGroup]
+    @Query(sort: [SortDescriptor(\SearchHistory.updatedAt, order: .reverse)]) private var histories: [SearchHistory]
+
+    init(onSelectMergedItem: @escaping (MergedSearchItem) -> Void) {
+        self.onSelectMergedItem = onSelectMergedItem
+    }
 
     @State private var viewModel = SearchViewModel()
     @State private var showFailedDetails = false
