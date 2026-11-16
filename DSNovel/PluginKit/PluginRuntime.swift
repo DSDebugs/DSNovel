@@ -2,6 +2,12 @@ import Foundation
 import CryptoKit
 import JavaScriptCore
 
+enum SourceLoginVerifyResult: Sendable, Equatable {
+    case verified(nickname: String)
+    case notLoggedIn(reason: String)
+    case noCheckMethod
+}
+
 enum PluginError: LocalizedError, Equatable, Sendable {
     case needLogin(sourceID: String, loginURL: String)
     case needVerify(sourceID: String, verifyURL: String)
@@ -216,7 +222,7 @@ actor PluginRuntime {
         let files: [String: Data]
         if zipData.starts(with: [0x50, 0x4B]) {
             files = try ZIPArchiveReader.extractAll(from: zipData)
-        } else if let text = String(data: zipData, encoding: .utf8), text.contains("registerSource") {
+        } else if let text = Self.decodeScriptText(zipData), text.contains("registerSource") {
             // 直接导入单个 .js 书源脚本
             files = ["source.js": zipData]
         } else {
@@ -439,6 +445,30 @@ actor PluginRuntime {
             }
         }
         return jsonStr.trimmingCharacters(in: CharacterSet(charactersIn: "\" \n\r\t"))
+    }
+
+    /// 严格校验单个书源的真实登录状态：优先调用书源脚本的 checkLogin()，杜绝将站点匿名访客 Set-Cookie 误判为已登录
+    func verifyLoginStatus(sourceID: String) async -> SourceLoginVerifyResult {
+        guard let route = try? ensureRoute(for: sourceID) else {
+            return .noCheckMethod
+        }
+        guard route.meta.methods.contains("checkLogin") else {
+            return .noCheckMethod
+        }
+        do {
+            let nick = try await checkLogin(sourceID: sourceID)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !nick.isEmpty && nick != "null" && nick != "undefined" && nick != "false" {
+                CookieSync.setVerifiedLogin(sourceID: sourceID, nickname: nick)
+                return .verified(nickname: nick)
+            } else {
+                CookieSync.setVerifiedLogin(sourceID: sourceID, nickname: nil)
+                return .notLoggedIn(reason: "未登录")
+            }
+        } catch {
+            CookieSync.setVerifiedLogin(sourceID: sourceID, nickname: nil)
+            return .notLoggedIn(reason: error.localizedDescription)
+        }
     }
 
     // MARK: - 书源可用性及延迟检测（支持单源点击检测与批量并发检测）
@@ -999,6 +1029,9 @@ actor PluginRuntime {
             || excMsg.contains("请先登录")
             || excMsg.contains("需要登录")
             || excMsg.contains("未登录")
+            || excMsg.contains("没有登录")
+            || excMsg.contains("尚未登录")
+            || excMsg.contains("登录失效")
             || excMsg.contains("请登录")
             || excMsg.contains("登录已过期")
             || excMsg.contains("登录后")
@@ -1006,7 +1039,7 @@ actor PluginRuntime {
         if explicitNeedLogin {
             return .needLogin(sourceID: sourceID, loginURL: targetAuthURL)
         }
-        if excMsg.contains("登录") && !CookieSync.hasCookies(for: targetAuthURL) {
+        if excMsg.contains("登录") && !CookieSync.isSourceLoggedIn(sourceID) {
             return .needLogin(sourceID: sourceID, loginURL: targetAuthURL)
         }
         let isVerifyError = excMsg.contains("403")
@@ -1061,8 +1094,9 @@ actor PluginRuntime {
                 cover = JsElement.resolveAbsoluteURL(raw: cover, baseURL: siteURL)
             }
 
-            let rawIntro = (Self.stringValue(b["intro"]) ?? Self.stringValue(b["description"]) ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawIntro = HTMLTokenizer.stripTagsAndDecodeEntities(
+                Self.stringValue(b["intro"]) ?? Self.stringValue(b["description"]) ?? ""
+            )
             let rawStatus = (Self.stringValue(b["status"]) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let intro: String
@@ -1124,7 +1158,8 @@ actor PluginRuntime {
         } else if coverURL.hasPrefix("/") && !baseForRelative.isEmpty {
             coverURL = JsElement.resolveAbsoluteURL(raw: coverURL, baseURL: baseForRelative)
         }
-        let intro = Self.stringValue(dict["intro"]) ?? Self.stringValue(dict["description"]) ?? ""
+        let rawIntro = Self.stringValue(dict["intro"]) ?? Self.stringValue(dict["description"]) ?? ""
+        let intro = HTMLTokenizer.stripTagsAndDecodeEntities(rawIntro)
         let status = Self.stringValue(dict["status"]) ?? ""
 
         let rawEpisodes = (dict["episodes"] as? [[String: Any]]) ?? []
@@ -1247,7 +1282,7 @@ actor PluginRuntime {
         for scriptName in manifest.scripts {
             let cleanName = (scriptName as NSString).lastPathComponent
             guard let scriptData = scriptFiles[scriptName] ?? scriptFiles[cleanName],
-                  let scriptText = String(data: scriptData, encoding: .utf8) else {
+                  let scriptText = Self.decodeScriptText(scriptData) else {
                 throw PluginError.parseFailed("脚本不存在或文件名无效：\(cleanName)")
             }
             ctx.evaluateScript(scriptText, withSourceURL: URL(string: "plugin://\(packageID)/\(cleanName)"))
@@ -1333,6 +1368,21 @@ actor PluginRuntime {
                 activePools.removeValue(forKey: pkgID)
             }
         }
+    }
+
+    /// 脚本文本解码：兼容 UTF-8（含 BOM）、UTF-16 与 GB18030（国内书源脚本常见），避免「文件不是有效书源」的误判
+    nonisolated static func decodeScriptText(_ data: Data) -> String? {
+        if data.starts(with: [0xEF, 0xBB, 0xBF]) {
+            return String(data: data.dropFirst(3), encoding: .utf8)
+        }
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
+            return String(data: data, encoding: .utf16)
+        }
+        if let text = String(data: data, encoding: .utf8) { return text }
+        let gb18030 = CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        )
+        return String(data: data, encoding: String.Encoding(rawValue: gb18030))
     }
 
     nonisolated static func loadPreludeScript() -> String {

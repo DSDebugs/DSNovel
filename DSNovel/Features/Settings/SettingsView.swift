@@ -505,12 +505,18 @@ struct PluginDetailAndCheckSheet: View {
             }
 
             HStack {
-                Label("网页登录凭证", systemImage: plugin.loggedIn ? "checkmark.shield.fill" : "key.fill")
+                Label("账号登录状态", systemImage: plugin.loggedIn ? "checkmark.shield.fill" : "key.fill")
                     .foregroundStyle(plugin.loggedIn ? .green : .primary)
                 Spacer()
-                Text(loginStatusNote.isEmpty ? (plugin.loggedIn ? "已同步 Cookie" : "未登录") : loginStatusNote)
-                    .font(.caption)
-                    .foregroundStyle(plugin.loggedIn ? .green : .secondary)
+                Text(
+                    loginStatusNote.isEmpty
+                        ? (plugin.loggedIn
+                            ? (CookieSync.verifiedNickname(for: plugin.id).map { "已登录 (\($0))" } ?? "已登录")
+                            : "未登录")
+                        : loginStatusNote
+                )
+                .font(.caption)
+                .foregroundStyle(plugin.loggedIn ? .green : .secondary)
             }
 
             Button {
@@ -520,6 +526,23 @@ struct PluginDetailAndCheckSheet: View {
                     plugin.loggedIn ? "重新打开网页登录 / 刷新验证" : "打开网页登录 / 验证码验证",
                     systemImage: "person.badge.key"
                 )
+            }
+
+            if plugin.loggedIn {
+                Button(role: .destructive) {
+                    Task {
+                        await CookieSync.clearCookies(
+                            for: [plugin.loginURL, plugin.siteURL],
+                            sourceID: plugin.id
+                        )
+                        plugin.loggedIn = false
+                        loginStatusNote = "未登录"
+                        try? modelContext.save()
+                        ToastManager.shared.show("已退出「\(plugin.name)」账号登录")
+                    }
+                } label: {
+                    Label("退出登录 / 清除该源登录凭证", systemImage: "person.crop.circle.badge.xmark")
+                }
             }
         }
     }
@@ -536,33 +559,52 @@ struct PluginDetailAndCheckSheet: View {
             initialURL: targetURL,
             expectedCookieName: nil,
             onCompleted: {
-                plugin.loggedIn = true
-                if plugin.healthState == .needAuth {
+                let isLogged = CookieSync.isSourceLoggedIn(plugin.id)
+                plugin.loggedIn = isLogged
+                if isLogged && plugin.healthState == .needAuth {
                     plugin.lastCheckStatus = SourceHealthState.healthy.rawValue
                     plugin.lastCheckMessage = "已完成网页登录"
                 }
                 try? modelContext.save()
                 Task {
                     await refreshLoginState()
-                    onTriggerCheck()
+                    if isLogged {
+                        onTriggerCheck()
+                    }
                 }
             }
         )
     }
 
     private func refreshLoginState() async {
-        let targetURL = plugin.loginURL.isEmpty ? plugin.siteURL : plugin.loginURL
-        let hasCookies = CookieSync.hasCookies(for: targetURL)
-        if hasCookies && !plugin.loggedIn {
-            plugin.loggedIn = true
-            try? modelContext.save()
-        }
-        if let nick = try? await PluginRuntime.shared.checkLogin(sourceID: plugin.id), !nick.isEmpty {
+        let res = await PluginRuntime.shared.verifyLoginStatus(sourceID: plugin.id)
+        switch res {
+        case .verified(let nick):
             loginStatusNote = "已登录 (\(nick))"
-            plugin.loggedIn = true
-            try? modelContext.save()
-        } else if hasCookies {
-            loginStatusNote = "已同步登录凭证"
+            if !plugin.loggedIn {
+                plugin.loggedIn = true
+                try? modelContext.save()
+            }
+        case .notLoggedIn:
+            loginStatusNote = "未登录"
+            if plugin.loggedIn {
+                plugin.loggedIn = false
+                try? modelContext.save()
+            }
+        case .noCheckMethod:
+            if let savedNick = CookieSync.verifiedNickname(for: plugin.id) {
+                loginStatusNote = "已登录 (\(savedNick))"
+                if !plugin.loggedIn {
+                    plugin.loggedIn = true
+                    try? modelContext.save()
+                }
+            } else {
+                loginStatusNote = "未登录"
+                if plugin.loggedIn {
+                    plugin.loggedIn = false
+                    try? modelContext.save()
+                }
+            }
         }
     }
 

@@ -9,6 +9,7 @@ import UIKit
 
 enum CookieSync {
     private static let persistedKey = "PersistedCookies.v1"
+    private static let verifiedLoginsKey = "VerifiedSourceLogins.v1"
     private static let lock = NSLock()
     private static nonisolated(unsafe) var didBootstrap = false
 
@@ -159,10 +160,76 @@ enum CookieSync {
         return matched.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
     }
 
-    /// 判断指定站点/登录地址是否已存有非空 Cookie
+    /// 判断指定站点/登录地址是否已存有非空 Cookie（注意：匿名请求也会产生访客 Set-Cookie，不可直接作为已登录依据）
     static func hasCookies(for urlString: String) -> Bool {
         guard let url = JsHostBridge.makeRequestURL(from: urlString) else { return false }
         return !cookies(for: url).isEmpty
+    }
+
+    /// 获取指定书源已通过真实校验（或用户明确完成授权）的登录昵称/状态
+    static func verifiedNickname(for sourceID: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let map = UserDefaults.standard.dictionary(forKey: verifiedLoginsKey) as? [String: String],
+              let nick = map[sourceID]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !nick.isEmpty else {
+            return nil
+        }
+        return nick
+    }
+
+    /// 判断指定书源是否已通过真实登录校验
+    static func isSourceLoggedIn(_ sourceID: String) -> Bool {
+        verifiedNickname(for: sourceID) != nil
+    }
+
+    /// 记录或清除指定书源的真实登录状态（每个书源按 sourceID 独立隔离，绝不因其他站点匿名 Cookie 串扰）
+    static func setVerifiedLogin(sourceID: String, nickname: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        var map = (UserDefaults.standard.dictionary(forKey: verifiedLoginsKey) as? [String: String]) ?? [:]
+        if let nick = nickname?.trimmingCharacters(in: .whitespacesAndNewlines), !nick.isEmpty {
+            map[sourceID] = nick
+        } else {
+            map.removeValue(forKey: sourceID)
+        }
+        UserDefaults.standard.set(map, forKey: verifiedLoginsKey)
+    }
+
+    /// 退出指定书源登录并清除其对应根域名的全部 Cookie
+    @MainActor
+    static func clearCookies(for urlStrings: [String], sourceID: String) async {
+        setVerifiedLogin(sourceID: sourceID, nickname: nil)
+        let targetRoots: Set<String> = Set(
+            urlStrings.compactMap { raw -> String? in
+                guard let url = JsHostBridge.makeRequestURL(from: raw),
+                      let host = url.host?.lowercased(), !host.isEmpty else { return nil }
+                let root = rootDomain(of: host)
+                return root.isEmpty ? host : root
+            }
+        )
+        guard !targetRoots.isEmpty else { return }
+
+        if let all = HTTPCookieStorage.shared.cookies {
+            for c in all {
+                let cDomain = c.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+                let cRoot = rootDomain(of: cDomain)
+                if targetRoots.contains(cDomain) || targetRoots.contains(cRoot) {
+                    HTTPCookieStorage.shared.deleteCookie(c)
+                }
+            }
+        }
+        persistToDefaults()
+
+        let store = WKWebsiteDataStore.default().httpCookieStore
+        let webCookies = await store.allCookies()
+        for c in webCookies {
+            let cDomain = c.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+            let cRoot = rootDomain(of: cDomain)
+            if targetRoots.contains(cDomain) || targetRoots.contains(cRoot) {
+                await store.deleteCookie(c)
+            }
+        }
     }
 
     /// 将 HTTPCookieStorage 中的 Cookie 推送至 WKWebView
@@ -1079,19 +1146,23 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
         return Date().timeIntervalSince(modDate) * 1000.0
     }
 
-    func base64Decode(_ input: String) -> String {
-        let clean = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let data = Data(base64Encoded: clean, options: .ignoreUnknownCharacters) {
-            return String(data: data, encoding: .utf8) ?? ""
-        }
-        let rem = clean.count % 4
+    /// 兼容标准 Base64 与 URL-Safe Base64（将 '-' 转为 '+'、'_' 转为 '/' 并自动补齐 '=' 填充，100% 对齐 ssts 实现）
+    static func decodeBase64Flexible(_ raw: String) -> Data? {
+        var s = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        guard !s.isEmpty else { return nil }
+        let rem = s.count % 4
         if rem > 0 {
-            let padded = clean + String(repeating: "=", count: 4 - rem)
-            if let data = Data(base64Encoded: padded, options: .ignoreUnknownCharacters) {
-                return String(data: data, encoding: .utf8) ?? ""
-            }
+            s += String(repeating: "=", count: 4 - rem)
         }
-        return ""
+        return Data(base64Encoded: s, options: .ignoreUnknownCharacters)
+    }
+
+    func base64Decode(_ input: String) -> String {
+        guard let data = Self.decodeBase64Flexible(input) else { return "" }
+        return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
     }
 
     func base64Encode(_ input: String) -> String {
@@ -1112,18 +1183,29 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// AES-ECB 解密（支持喜马拉雅等站点的 URL-Safe Base64 无填充密文与 Hex/UTF-8 密钥，100% 对齐 ssts __n_aesEcbDecrypt）
     func aesEcbDecrypt(_ base64Data: String, _ keyHex: String) -> String {
-        let cleanB64 = base64Data.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let cipherData = Data(base64Encoded: cleanB64, options: .ignoreUnknownCharacters),
-              let keyData = Self.dataFromHex(keyHex),
-              [kCCKeySizeAES128, kCCKeySizeAES192, kCCKeySizeAES256].contains(keyData.count) else {
+        guard let cipherData = Self.decodeBase64Flexible(base64Data), !cipherData.isEmpty else {
             return ""
         }
+        let cleanKey = keyHex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyData: Data
+        if let hexKey = Self.dataFromHex(cleanKey),
+           [kCCKeySizeAES128, kCCKeySizeAES192, kCCKeySizeAES256].contains(hexKey.count) {
+            keyData = hexKey
+        } else {
+            let utf8Key = Data(cleanKey.utf8)
+            guard [kCCKeySizeAES128, kCCKeySizeAES192, kCCKeySizeAES256].contains(utf8Key.count) else {
+                return ""
+            }
+            keyData = utf8Key
+        }
+
         let outLength = cipherData.count + kCCBlockSizeAES128
         var outBuffer = [UInt8](repeating: 0, count: outLength)
         var numBytesDecrypted: size_t = 0
 
-        let status = cipherData.withUnsafeBytes { cipherPtr in
+        var status = cipherData.withUnsafeBytes { cipherPtr in
             keyData.withUnsafeBytes { keyPtr in
                 CCCrypt(
                     CCOperation(kCCDecrypt),
@@ -1140,9 +1222,37 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
                 )
             }
         }
-        guard status == kCCSuccess else { return "" }
-        let plainData = Data(outBuffer.prefix(numBytesDecrypted))
-        return String(data: plainData, encoding: .utf8) ?? ""
+
+        // 若站点采用 Zero Padding 而非 PKCS7 Padding，自动回退无填充 ECB 解密并剥离末尾空字节
+        if status != kCCSuccess && cipherData.count % kCCBlockSizeAES128 == 0 {
+            numBytesDecrypted = 0
+            status = cipherData.withUnsafeBytes { cipherPtr in
+                keyData.withUnsafeBytes { keyPtr in
+                    CCCrypt(
+                        CCOperation(kCCDecrypt),
+                        CCAlgorithm(kCCAlgorithmAES),
+                        CCOptions(kCCOptionECBMode),
+                        keyPtr.baseAddress,
+                        keyData.count,
+                        nil,
+                        cipherPtr.baseAddress,
+                        cipherData.count,
+                        &outBuffer,
+                        outLength,
+                        &numBytesDecrypted
+                    )
+                }
+            }
+        }
+
+        guard status == kCCSuccess, numBytesDecrypted > 0 else { return "" }
+        var plainSlice = Array(outBuffer.prefix(numBytesDecrypted))
+        while let last = plainSlice.last, last == 0 || last < 0x20 {
+            plainSlice.removeLast()
+        }
+        let plainData = Data(plainSlice)
+        let str = String(data: plainData, encoding: .utf8) ?? String(decoding: plainData, as: UTF8.self)
+        return str.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func uuid() -> String {

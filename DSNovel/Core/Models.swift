@@ -470,6 +470,22 @@ struct ChapterDTO: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+extension ChapterDTO {
+    /// 插件返回的章节时长单位并不统一（有的给秒，有的给毫秒）。
+    /// 单章超过 10 小时(36000 秒)几乎不可能，此时按毫秒折算；仍不合理则视为未知。
+    /// 仅用于列表展示与起播前的占位时长，真实时长始终以 AVPlayerItem 为准。
+    var normalizedDurationSec: Int? {
+        guard let raw = durationSec, raw > 0 else { return nil }
+        if raw <= 36_000 { return raw }
+        let asSeconds = raw / 1000
+        return (1...36_000).contains(asSeconds) ? asSeconds : nil
+    }
+
+    var hintDurationSec: Double {
+        Double(normalizedDurationSec ?? 0)
+    }
+}
+
 struct BookDetailDTO: Hashable, Codable, Sendable {
     var title: String
     var author: String

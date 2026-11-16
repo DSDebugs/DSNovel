@@ -35,6 +35,7 @@ struct DSNovelApp: App {
                     let context = modelContainer.mainContext
                     player.modelContext = context
                     downloadManager.modelContext = context
+                    downloadManager.recoverInterruptedItems()
                     _ = await CookieSync.pullFromWebView()
                     await PluginRuntime.shared.reloadInstalledPackages()
                     autoResumeIfNeeded(context: context)

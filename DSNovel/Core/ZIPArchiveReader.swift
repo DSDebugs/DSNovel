@@ -6,11 +6,13 @@ enum ZIPArchiveReader {
     enum ZIPError: LocalizedError {
         case invalidArchive
         case decompressionFailed(String)
+        case unsupported(String)
 
         var errorDescription: String? {
             switch self {
             case .invalidArchive: return "无效的 ZIP 插件压缩包"
             case .decompressionFailed(let name): return "解压文件失败: \(name)"
+            case .unsupported(let reason): return "不支持的 ZIP 压缩包：\(reason)"
             }
         }
     }
@@ -32,6 +34,9 @@ enum ZIPArchiveReader {
 
         let totalEntries = Int(readUInt16(bytes, eocdOffset + 10))
         let cdOffset = Int(readUInt32(bytes, eocdOffset + 16))
+        if totalEntries == 0xFFFF || cdOffset == 0xFFFF_FFFF {
+            throw ZIPError.unsupported("ZIP64 格式，请用系统「文件」App 或常规压缩工具重新压缩")
+        }
         guard cdOffset + 46 <= bytes.count else { throw ZIPError.invalidArchive }
 
         var result: [String: Data] = [:]
@@ -43,6 +48,7 @@ enum ZIPArchiveReader {
                   bytes[pos + 2] == 0x01, bytes[pos + 3] == 0x02 else {
                 break
             }
+            let generalFlags = readUInt16(bytes, pos + 8)
             let compressionMethod = readUInt16(bytes, pos + 10)
             let compressedSize = Int(readUInt32(bytes, pos + 20))
             let uncompressedSize = Int(readUInt32(bytes, pos + 24))
@@ -73,6 +79,9 @@ enum ZIPArchiveReader {
             let dataEnd = dataStart + compressedSize
             guard dataEnd <= bytes.count else { continue }
 
+            if generalFlags & 0x1 != 0 {
+                throw ZIPError.unsupported("压缩包已加密，请先解除密码")
+            }
             let payload = Data(bytes[dataStart..<dataEnd])
             if compressionMethod == 0 {
                 result[cleanName] = payload
@@ -82,6 +91,8 @@ enum ZIPArchiveReader {
                 } else {
                     throw ZIPError.decompressionFailed(cleanName)
                 }
+            } else {
+                throw ZIPError.unsupported("文件 \(cleanName) 使用了不支持的压缩方式(\(compressionMethod))，请改用「标准 ZIP/Deflate」重新压缩")
             }
         }
         return result

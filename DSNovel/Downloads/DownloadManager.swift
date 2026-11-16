@@ -11,6 +11,9 @@ final class DownloadManager {
     var modelContext: ModelContext?
     private let maxConcurrent = 3
     private var activeTasksCount = 0
+    /// 预缓存同一时刻只允许 1 个任务：避免与「当前章节在线播放」争抢带宽、JS 上下文和 WebView 嗅探通道
+    private let maxConcurrentPrecache = 1
+    private var activePrecacheCount = 0
     private var isOnWiFi = true
     private let pathMonitor = NWPathMonitor()
 
@@ -76,6 +79,46 @@ final class DownloadManager {
         }
         try? ctx.save()
         pumpQueue()
+    }
+
+    /// 应用启动时修复上次被强杀/崩溃遗留的「downloading」僵尸记录（否则永远显示「正在缓存」且不会再被调度）
+    func recoverInterruptedItems() {
+        guard let ctx = modelContext else { return }
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.state == "downloading" })
+        guard let items = try? ctx.fetch(desc), !items.isEmpty else { return }
+        for item in items {
+            if item.kind == "precache" {
+                ctx.delete(item)
+            } else {
+                item.state = "queued"
+            }
+        }
+        try? ctx.save()
+        pumpQueue()
+    }
+
+    /// 切章时丢弃尚未开始的旧预缓存任务，避免历史章节的预缓存堆积并持续占用通道
+    func dropQueuedPrecache() {
+        guard let ctx = modelContext else { return }
+        let desc = FetchDescriptor<DownloadItem>(
+            predicate: #Predicate<DownloadItem> { $0.kind == "precache" && $0.state == "queued" }
+        )
+        guard let items = try? ctx.fetch(desc), !items.isEmpty else { return }
+        for item in items { ctx.delete(item) }
+        try? ctx.save()
+    }
+
+    /// 本地文件损坏（无法解码）时删除记录与文件，播放引擎随后回退在线流
+    func invalidateLocalFile(bookID: String, chapterID: String) {
+        guard let ctx = modelContext else { return }
+        let itemID = "\(bookID)::\(chapterID)"
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.id == itemID })
+        guard let item = try? ctx.fetch(desc).first else { return }
+        if !item.localPath.isEmpty {
+            try? FileManager.default.removeItem(at: downloadsRootDirectory.appendingPathComponent(item.localPath))
+        }
+        ctx.delete(item)
+        try? ctx.save()
     }
 
     func retryFailedItem(_ item: DownloadItem) {
@@ -155,36 +198,73 @@ final class DownloadManager {
             return
         }
         while activeTasksCount < maxConcurrent {
-            let desc = FetchDescriptor<DownloadItem>(
+            var desc = FetchDescriptor<DownloadItem>(
                 predicate: #Predicate<DownloadItem> { $0.state == "queued" },
                 sortBy: [SortDescriptor(\DownloadItem.createdAt)]
             )
-            guard let nextItem = try? ctx.fetch(desc).first else { break }
+            desc.fetchLimit = 20
+            guard let queued = try? ctx.fetch(desc), !queued.isEmpty else { break }
+            // 手动下载优先；预缓存受并发上限约束
+            let next = queued.first(where: { $0.kind != "precache" })
+                ?? queued.first(where: { _ in activePrecacheCount < maxConcurrentPrecache })
+            guard let nextItem = next else { break }
             nextItem.state = "downloading"
             try? ctx.save()
             activeTasksCount += 1
+            let isPrecache = nextItem.kind == "precache"
+            if isPrecache { activePrecacheCount += 1 }
 
             Task {
                 await executeDownload(for: nextItem)
                 self.activeTasksCount = max(0, self.activeTasksCount - 1)
+                if isPrecache { self.activePrecacheCount = max(0, self.activePrecacheCount - 1) }
                 self.pumpQueue()
             }
         }
     }
 
+    private struct UnsupportedStream: Error {}
+
     private func executeDownload(for item: DownloadItem) async {
+        let isPrecache = item.kind == "precache"
         do {
             let stream = try await PluginRuntime.shared.resolvePlayURL(sourceID: item.sourceID, episodeURL: item.chapterID)
             guard let url = JsHostBridge.makeRequestURL(from: stream.url, relativeTo: item.chapterID) else {
                 throw PluginError.parseFailed("无效音频地址")
             }
+            // HLS(.m3u8)/直播无法作为单个文件保存：原实现会把几 KB 的播放列表当成 .mp3 存盘并标记完成，
+            // 之后该章节优先播放本地「音频」，导致无法解码、进度/时长错乱
+            let lowerURL = url.absoluteString.lowercased()
+            if stream.kind != .onDemand || lowerURL.contains(".m3u8") {
+                throw UnsupportedStream()
+            }
+
             var req = URLRequest(url: url, timeoutInterval: 30)
+            var hasUA = false, hasCookie = false
             for (k, v) in stream.headers {
+                let lk = k.lowercased()
+                if lk == "x-media-type" { continue }
+                if lk == "user-agent" { hasUA = true }
+                if lk == "cookie" { hasCookie = true }
                 req.setValue(v, forHTTPHeaderField: k)
             }
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
+            if !hasUA { req.setValue(JsHostBridge.mobileUA, forHTTPHeaderField: "User-Agent") }
+            if !hasCookie {
+                let cookie = CookieSync.cookieHeader(for: url)
+                if !cookie.isEmpty { req.setValue(cookie, forHTTPHeaderField: "Cookie") }
+            }
+
+            // 直接落盘（不再把整首音频读进内存）
+            let (tmpURL, resp) = try await URLSession.shared.download(for: req)
+            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                try? FileManager.default.removeItem(at: tmpURL)
                 throw URLError(.badServerResponse)
+            }
+            let mime = http.mimeType?.lowercased() ?? ""
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: tmpURL.path)[.size] as? Int64) ?? 0
+            if mime.hasPrefix("text/") || mime.contains("mpegurl") || mime.contains("json") || mime.contains("html") || fileSize < 1024 {
+                try? FileManager.default.removeItem(at: tmpURL)
+                throw UnsupportedStream()
             }
 
             let ext = Self.inferAudioExtension(url: url, mimeType: http.mimeType)
@@ -194,17 +274,28 @@ final class DownloadManager {
             let destDir = downloadsRootDirectory.appendingPathComponent(safeBookDir, isDirectory: true)
             try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
             let destFile = downloadsRootDirectory.appendingPathComponent(relPath)
-            try data.write(to: destFile, options: .atomic)
+            try? FileManager.default.removeItem(at: destFile)
+            try FileManager.default.moveItem(at: tmpURL, to: destFile)
 
             item.localPath = relPath
-            item.bytes = Int64(data.count)
+            item.bytes = fileSize
             item.state = "completed"
             try? modelContext?.save()
+        } catch is UnsupportedStream {
+            // 不可缓存的流：预缓存直接丢弃记录（在线播放即可），手动下载标记失败且不再重试
+            if isPrecache {
+                modelContext?.delete(item)
+            } else {
+                item.state = "failed"
+            }
+            try? modelContext?.save()
         } catch {
-            // 失败项自动重试 2 次（4.4 节）
+            // 失败项自动重试 2 次（4.4 节）；预缓存最终失败则直接丢弃，不留「失败」垃圾记录
             if item.retryCount < 2 {
                 item.retryCount += 1
                 item.state = "queued"
+            } else if isPrecache {
+                modelContext?.delete(item)
             } else {
                 item.state = "failed"
             }

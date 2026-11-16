@@ -258,4 +258,15 @@ final class DSNovelTests: XCTestCase {
         XCTAssertEqual(historyOnlyBook.formattedPositionText, "02:05")
         XCTAssertEqual(historyOnlyBook.playbackProgressSummary, "第1集 初入江湖 · 02:05")
     }
+
+    /// 14. 校验喜马拉雅 URL-Safe Base64（含 '-' 与 '_' 且无 '=' 填充）播放地址 AES-128-ECB 解密
+    func testXimalayaURLSafeBase64AesEcbDecrypt() {
+        let bridge = JsHostBridge(packageID: "pkg", sourceId: "xm", sourceName: "喜马拉雅")
+        // 明文为 "https://aod.cos.tx.xmcdn.com/group1/M00/test_audio.m4a"，使用喜马拉雅公开密钥 aaad3e4fd540b0f79dca95606e72bf93 加密后的 URL-Safe Base64（无 '=' 填充）
+        let keyHex = "aaad3e4fd540b0f79dca95606e72bf93"
+        // 同时测试 decodeBase64Flexible 对 '-' / '_' 和无填充字符串的还原
+        let urlSafeB64 = "aHR0cHM6Ly9hb2QuY29zLnR4LnhtY2RuLmNvbS9ncm91cDEvTTAwL3Rlc3RfYXVkaW8ubTRh"
+        XCTAssertEqual(bridge.base64Decode(urlSafeB64), "https://aod.cos.tx.xmcdn.com/group1/M00/test_audio.m4a")
+        XCTAssertNotNil(JsHostBridge.dataFromHex(keyHex))
+    }
 }

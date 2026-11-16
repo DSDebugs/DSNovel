@@ -11,7 +11,7 @@ struct WebAuthSessionRequest: Identifiable {
     let onCompleted: () -> Void
 }
 
-/// 内嵌 WKWebView 网页登录与安全验证弹层：双向同步 HTTPCookieStorage 与 WKHTTPCookieStore，支持 loginDesktop UA 切换与 loginScript 自动注入
+/// 内嵌 WKWebView 网页登录与安全验证弹层：双向同步 HTTPCookieStorage 与 WKHTTPCookieStore，支持 loginDesktop UA 切换、loginScript 自动注入与按源精准校验登录状态
 struct WebAuthSheet: View {
     let session: WebAuthSessionRequest
     @Environment(\.dismiss) private var dismiss
@@ -42,9 +42,9 @@ struct WebAuthSheet: View {
                         ProgressView()
                             .controlSize(.mini)
                     } else if capturedCookiesCount > 0 {
-                        Text("已同步 \(capturedCookiesCount) 项凭证")
+                        Text("当前站点已同步 \(capturedCookiesCount) 项 Cookie")
                             .font(.caption2)
-                            .foregroundStyle(.green)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.horizontal, DSSpacing.md)
@@ -63,7 +63,7 @@ struct WebAuthSheet: View {
                         self.capturedCookiesCount = cookieCount
                     },
                     onExpectedCookieDetected: {
-                        completeAndDismiss()
+                        finishSession(isCancel: false)
                     }
                 )
             }
@@ -72,8 +72,9 @@ struct WebAuthSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") {
-                        completeAndDismiss()
+                        finishSession(isCancel: true)
                     }
+                    .disabled(isCompleting)
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Menu {
@@ -107,7 +108,7 @@ struct WebAuthSheet: View {
                     .accessibilityLabel("网页登录选项")
 
                     Button("完成") {
-                        completeAndDismiss()
+                        finishSession(isCancel: false)
                     }
                     .fontWeight(.semibold)
                     .disabled(isCompleting)
@@ -130,17 +131,51 @@ struct WebAuthSheet: View {
         }
     }
 
-    private func completeAndDismiss() {
+    private func finishSession(isCancel: Bool) {
         guard !isCompleting else { return }
         isCompleting = true
+        let targetURL = activeTargetURL.isEmpty ? session.initialURL : activeTargetURL
+        let isPureVerify = session.title.contains("验证") && !session.title.contains("登录")
+
         Task { @MainActor in
             _ = await CookieSync.pullFromWebView()
-            if let nickname = try? await PluginRuntime.shared.checkLogin(sourceID: session.sourceID),
-               !nickname.isEmpty {
+            let verifyResult = await PluginRuntime.shared.verifyLoginStatus(sourceID: session.sourceID)
+
+            switch verifyResult {
+            case .verified(let nickname):
+                CookieSync.setVerifiedLogin(sourceID: session.sourceID, nickname: nickname)
                 ToastManager.shared.show("登录成功：\(nickname)")
+                session.onCompleted()
+                dismiss()
+
+            case .notLoggedIn:
+                CookieSync.setVerifiedLogin(sourceID: session.sourceID, nickname: nil)
+                if isCancel {
+                    session.onCompleted()
+                    dismiss()
+                } else if isPureVerify {
+                    ToastManager.shared.show("已完成网页验证")
+                    session.onCompleted()
+                    dismiss()
+                } else {
+                    ToastManager.shared.show("尚未检测到该书源的登录状态")
+                    session.onCompleted()
+                    dismiss()
+                }
+
+            case .noCheckMethod:
+                // 对未定义 checkLogin() 的书源（如懒人听书），仅在用户主动点击「完成」且该站点已有 Cookie 时标记为该源已登录
+                if !isCancel && CookieSync.hasCookies(for: targetURL) {
+                    if !isPureVerify {
+                        CookieSync.setVerifiedLogin(sourceID: session.sourceID, nickname: "已授权")
+                        ToastManager.shared.show("已保存当前书源登录凭证")
+                    } else {
+                        ToastManager.shared.show("已完成网页验证")
+                    }
+                }
+                session.onCompleted()
+                dismiss()
             }
-            session.onCompleted()
-            dismiss()
         }
     }
 }
@@ -235,8 +270,14 @@ private struct WebAuthViewRepresentable: UIViewRepresentable {
             let currentURL = webView.url?.absoluteString ?? parent.urlString
             let expectedName = parent.expectedCookieName
             Task { @MainActor in
-                let count = await CookieSync.pullFromWebView()
-                self.parent.onStateChange(currentURL, !isFinished, count)
+                _ = await CookieSync.pullFromWebView()
+                let domainCookieCount: Int
+                if let targetURL = JsHostBridge.makeRequestURL(from: currentURL) {
+                    domainCookieCount = CookieSync.cookies(for: targetURL).count
+                } else {
+                    domainCookieCount = 0
+                }
+                self.parent.onStateChange(currentURL, !isFinished, domainCookieCount)
                 if let expected = expectedName, !expected.isEmpty, !self.didTriggerCompletion {
                     if let targetURL = JsHostBridge.makeRequestURL(from: currentURL),
                        CookieSync.cookies(for: targetURL).contains(where: { $0.name == expected && !$0.value.isEmpty }) {

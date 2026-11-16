@@ -118,6 +118,17 @@ final class PlayerEngine {
     private var pendingSeekSec: Double?
     private var lastPersistedTime: TimeInterval = 0
     private var hasRetriedCurrentChapter = false
+    /// 当前 AVPlayerItem 是否已 readyToPlay 且属于「当前章节」。
+    /// 未就绪前（解析播放地址、缓冲中）绝不允许周期观察者用播放器上一条音频的时间/时长污染进度时钟与数据库。
+    private var isCurrentItemReady = false
+    /// 当前章节对应的 AVPlayerItem，用于周期观察者校验时间来源
+    private var loadedItem: AVPlayerItem?
+    /// 章节列表缓存签名：同一本书、同一份章节队列只落盘一次，避免每次保存进度都重新编码+压缩整本章节目录
+    private var savedQueueSignature: String?
+    private var precacheTask: Task<Void, Never>?
+    /// 当前章节正在播放本地文件但文件损坏时，强制改走在线流
+    private var bypassLocalChapterID: String?
+    private var isPlayingLocalFile = false
     var modelContext: ModelContext?
 
     init() {
@@ -136,6 +147,7 @@ final class PlayerEngine {
         initialPositionMs: Int = 0
     ) {
         loadTask?.cancel()
+        precacheTask?.cancel()
         playbackGeneration &+= 1
         let gen = playbackGeneration
 
@@ -149,16 +161,32 @@ final class PlayerEngine {
         let startSec = initialPositionMs > 0
             ? Double(initialPositionMs) / 1000.0
             : Double(max(0, skipIntroSec))
+        // 先摘掉上一条音频：否则解析新章节播放地址期间，周期观察者会把「上一章/上一本书」的时间写进新章节
+        detachCurrentItem(startSec: startSec)
         clock.currentTimeSec = startSec
-        clock.durationSec = Double(startChapter.durationSec ?? 0)
+        clock.durationSec = startChapter.hintDurationSec
         // 立即记录到「最近播放」（及已加入书架书籍的最后播放章节与时间）
         persistProgressNow(positionMsOverride: Int(startSec * 1000))
 
         loadTask = Task {
             await loadAndPlay(chapter: startChapter, initialPositionMs: initialPositionMs, generation: gen)
-            guard !Task.isCancelled, gen == playbackGeneration else { return }
-            await precacheUpcomingChapters()
         }
+    }
+
+    /// 摘除当前播放项并重置所有与「旧音频」相关的状态
+    private func detachCurrentItem(startSec: Double) {
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
+        timeControlObservation?.invalidate()
+        timeControlObservation = nil
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        loadedItem = nil
+        isCurrentItemReady = false
+        isPlayingLocalFile = false
+        pendingSeekSec = startSec > 0.5 ? startSec : nil
+        lastPersistedTime = startSec
+        state = .buffering
     }
 
     func togglePlayPause() {
@@ -183,11 +211,13 @@ final class PlayerEngine {
     func retryCurrentChapter() {
         guard let ch = currentChapter else { return }
         loadTask?.cancel()
+        precacheTask?.cancel()
         playbackGeneration &+= 1
         let gen = playbackGeneration
         hasRetriedCurrentChapter = false
         lastPluginError = nil
         let resumeMs = Int(clock.currentTimeSec * 1000)
+        detachCurrentItem(startSec: Double(resumeMs) / 1000.0)
         loadTask = Task {
             await loadAndPlay(chapter: ch, initialPositionMs: resumeMs, generation: gen)
         }
@@ -212,7 +242,7 @@ final class PlayerEngine {
     func seek(to seconds: Double) {
         let clamped = max(0, seconds)
         clock.currentTimeSec = clamped
-        guard let item = player.currentItem, item.status == .readyToPlay else {
+        guard isCurrentItemReady, let item = player.currentItem, item.status == .readyToPlay else {
             pendingSeekSec = clamped
             persistProgressNow(positionMsOverride: Int(clamped * 1000))
             return
@@ -246,19 +276,20 @@ final class PlayerEngine {
         }
         let nextCh = chapterQueue[idx + 1]
         loadTask?.cancel()
+        precacheTask?.cancel()
         playbackGeneration &+= 1
         let gen = playbackGeneration
         currentChapter = nextCh
         lastPluginError = nil
         hasRetriedCurrentChapter = false
-        clock.currentTimeSec = Double(max(0, skipIntroSec))
-        clock.durationSec = Double(nextCh.durationSec ?? 0)
+        let startSec = Double(max(0, skipIntroSec))
+        detachCurrentItem(startSec: startSec)
+        clock.currentTimeSec = startSec
+        clock.durationSec = nextCh.hintDurationSec
         persistProgressNow(positionMsOverride: max(0, skipIntroSec * 1000))
 
         loadTask = Task {
             await loadAndPlay(chapter: nextCh, initialPositionMs: 0, generation: gen)
-            guard !Task.isCancelled, gen == playbackGeneration else { return }
-            await precacheUpcomingChapters()
         }
     }
 
@@ -271,13 +302,16 @@ final class PlayerEngine {
         }
         let prevCh = chapterQueue[idx - 1]
         loadTask?.cancel()
+        precacheTask?.cancel()
         playbackGeneration &+= 1
         let gen = playbackGeneration
         currentChapter = prevCh
         lastPluginError = nil
         hasRetriedCurrentChapter = false
-        clock.currentTimeSec = Double(max(0, skipIntroSec))
-        clock.durationSec = Double(prevCh.durationSec ?? 0)
+        let startSec = Double(max(0, skipIntroSec))
+        detachCurrentItem(startSec: startSec)
+        clock.currentTimeSec = startSec
+        clock.durationSec = prevCh.hintDurationSec
         persistProgressNow(positionMsOverride: max(0, skipIntroSec * 1000))
 
         loadTask = Task {
@@ -379,20 +413,16 @@ final class PlayerEngine {
 
     private func loadAndPlay(chapter: ChapterDTO, initialPositionMs: Int, generation: UInt64) async {
         guard let book = currentBook, generation == playbackGeneration else { return }
-        itemStatusObservation?.invalidate()
-        itemStatusObservation = nil
-        timeControlObservation?.invalidate()
-        timeControlObservation = nil
-        player.pause()
-
-        state = .buffering
-        lastPluginError = nil
         let startSec = initialPositionMs > 0
             ? Double(initialPositionMs) / 1000.0
             : Double(max(0, skipIntroSec))
-        pendingSeekSec = startSec > 0.5 ? startSec : nil
+        // 重试路径同样需要先摘除旧播放项、重置「就绪」标记与待跳转位置
+        detachCurrentItem(startSec: startSec)
+
+        state = .buffering
+        lastPluginError = nil
         clock.currentTimeSec = startSec
-        clock.durationSec = Double(chapter.durationSec ?? 0)
+        clock.durationSec = chapter.hintDurationSec
         configureAudioSession()
 
         do {
@@ -400,8 +430,11 @@ final class PlayerEngine {
             var headers: [String: String] = [:]
             var streamKind: StreamKind = .onDemand
 
-            if let localURL = DownloadManager.shared.localFileURL(bookID: book.id, chapterID: chapter.id) {
+            var usingLocal = false
+            if bypassLocalChapterID != chapter.id,
+               let localURL = DownloadManager.shared.localFileURL(bookID: book.id, chapterID: chapter.id) {
                 playURL = localURL
+                usingLocal = true
             } else {
                 let stream = try await PluginRuntime.shared.resolvePlayURL(sourceID: book.sourceID, episodeURL: chapter.url)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
@@ -420,6 +453,8 @@ final class PlayerEngine {
             item.audioTimePitchAlgorithm = .timeDomain // 人声倍速更自然（4.3 节）
             item.preferredForwardBufferDuration = 15
 
+            loadedItem = item
+            isPlayingLocalFile = usingLocal
             observePlayerItem(item, chapter: chapter, initialPositionMs: initialPositionMs, generation: generation)
             player.replaceCurrentItem(with: item)
             player.volume = Float(bookVolume)
@@ -457,21 +492,30 @@ final class PlayerEngine {
     ) {
         itemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] observedItem, _ in
             let itemStatus = observedItem.status
+            let itemID = ObjectIdentifier(observedItem)
             let itemDurationSec = observedItem.duration.seconds
             let itemErrorDesc = observedItem.error?.localizedDescription
             Task { @MainActor [weak self] in
-                guard let self, generation == self.playbackGeneration else { return }
+                // 仅处理「当前章节」的播放项，过期项的状态回调一律丢弃
+                guard let self, generation == self.playbackGeneration,
+                      let loaded = self.loadedItem, ObjectIdentifier(loaded) == itemID else { return }
                 switch itemStatus {
                 case .readyToPlay:
+                    guard !self.isCurrentItemReady else { return }
+                    self.isCurrentItemReady = true
                     if itemDurationSec.isFinite && itemDurationSec > 0 {
                         self.clock.durationSec = itemDurationSec
                     }
+                    self.schedulePrecache(generation: generation)
                     if let seekSec = self.pendingSeekSec, seekSec > 0 {
-                        self.pendingSeekSec = nil
+                        // 保持 pendingSeekSec 直到 seek 完成：期间周期观察者不得改写进度时钟
+                        self.clock.currentTimeSec = seekSec
                         let target = CMTime(seconds: seekSec, preferredTimescale: 600)
                         self.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                             Task { @MainActor [weak self] in
                                 guard let self, generation == self.playbackGeneration else { return }
+                                self.pendingSeekSec = nil
+                                self.lastPersistedTime = seekSec
                                 self.configureAudioSession()
                                 self.player.volume = Float(self.bookVolume)
                                 self.player.playImmediately(atRate: Float(self.speed))
@@ -481,6 +525,7 @@ final class PlayerEngine {
                             }
                         }
                     } else {
+                        self.pendingSeekSec = nil
                         self.configureAudioSession()
                         self.player.volume = Float(self.bookVolume)
                         self.player.playImmediately(atRate: Float(self.speed))
@@ -490,7 +535,16 @@ final class PlayerEngine {
                     }
                 case .failed:
                     let errMsg = itemErrorDesc ?? "音频流加载失败"
-                    if !self.hasRetriedCurrentChapter {
+                    if self.isPlayingLocalFile, let book = self.currentBook {
+                        // 本地（预缓存/下载）文件损坏：删除记录并改走在线流，不消耗重试次数
+                        DownloadManager.shared.invalidateLocalFile(bookID: book.id, chapterID: chapter.id)
+                        self.bypassLocalChapterID = chapter.id
+                        await self.loadAndPlay(
+                            chapter: chapter,
+                            initialPositionMs: Int(self.clock.currentTimeSec * 1000),
+                            generation: generation
+                        )
+                    } else if !self.hasRetriedCurrentChapter {
                         self.hasRetriedCurrentChapter = true
                         await self.loadAndPlay(
                             chapter: chapter,
@@ -532,12 +586,32 @@ final class PlayerEngine {
         }
     }
 
+    /// 预缓存必须让位于「当前章节起播」：等当前章节稳定播放 8 秒后才开始，且切章即取消。
+    /// 原实现在点击章节的同一时刻就解析后续章节地址并整文件下载，抢占带宽、JS 上下文与 WebView 嗅探通道（全局串行），
+    /// 这正是「选章加载非常缓慢、一直在缓存」的主因之一。
+    private func schedulePrecache(generation: UInt64) {
+        precacheTask?.cancel()
+        guard AppSettingsStore.shared.precacheCount > 0 else { return }
+        precacheTask = Task { [weak self] in
+            var waited = 0
+            while waited < 120 {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled, generation == self.playbackGeneration else { return }
+                if self.state == .playing, self.isCurrentItemReady, self.clock.currentTimeSec >= 8 { break }
+                waited += 1
+            }
+            guard let self, !Task.isCancelled, generation == self.playbackGeneration, waited < 120 else { return }
+            await self.precacheUpcomingChapters()
+        }
+    }
+
     private func precacheUpcomingChapters() async {
         let count = AppSettingsStore.shared.precacheCount
         guard count > 0, let book = currentBook, let current = currentChapter,
               let idx = chapterQueue.firstIndex(where: { $0.id == current.id }) else {
             return
         }
+        DownloadManager.shared.dropQueuedPrecache()
         let endIdx = min(chapterQueue.count, idx + 1 + count)
         guard idx + 1 < endIdx else { return }
         let upcoming = Array(chapterQueue[(idx + 1)..<endIdx])
@@ -556,20 +630,23 @@ final class PlayerEngine {
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
             Task { @MainActor in
-                guard self.pendingSeekSec == nil else { return }
+                // 只接受「当前章节、已就绪」播放项的时间：切章/解析地址/待跳转期间，播放器仍可能回报上一条音频的时间，
+                // 此前正是它把旧时间写进新章节的时钟与 lastPositionMs，造成新书首次选章时进度时间混乱。
+                guard self.isCurrentItemReady, self.pendingSeekSec == nil,
+                      let item = self.player.currentItem, item === self.loadedItem else { return }
                 let sec = time.seconds
                 guard sec.isFinite && sec >= 0 else { return }
                 self.clock.currentTimeSec = sec
 
-                if let item = self.player.currentItem {
-                    let dur = item.duration.seconds
-                    if dur.isFinite && dur > 0 {
-                        self.clock.durationSec = dur
-                        // 片尾跳过检测
-                        if self.skipOutroSec > 0 && sec >= max(1, dur - Double(self.skipOutroSec)) {
-                            self.handleChapterFinished()
-                            return
-                        }
+                let dur = item.duration.seconds
+                if dur.isFinite && dur > 0 {
+                    self.clock.durationSec = dur
+                    // 片尾跳过检测（章节比跳过时长还短时不触发）
+                    if self.skipOutroSec > 0,
+                       dur > Double(self.skipOutroSec) + 1,
+                       sec >= dur - Double(self.skipOutroSec) {
+                        self.handleChapterFinished()
+                        return
                     }
                 }
 
@@ -737,8 +814,19 @@ final class PlayerEngine {
             ctx.insert(historyBook)
             try? ctx.save()
         }
-        if !chapterQueue.isEmpty {
-            ChapterCacheStore.saveChapters(chapterQueue, for: book.id)
+        saveChapterQueueIfNeeded(for: book.id)
+    }
+
+    /// 章节目录缓存：同一本书同一份队列只编码+压缩一次，并放到后台线程。
+    /// 原实现每次保存进度（每 5 秒、每次 seek/暂停/切章）都在主线程重新序列化整本章节目录，章节越多越卡。
+    private func saveChapterQueueIfNeeded(for bookID: String) {
+        guard !chapterQueue.isEmpty else { return }
+        let signature = "\(bookID)#\(chapterQueue.count)#\(chapterQueue.first?.id ?? "")#\(chapterQueue.last?.id ?? "")"
+        guard signature != savedQueueSignature else { return }
+        savedQueueSignature = signature
+        let queue = chapterQueue
+        Task.detached(priority: .utility) {
+            ChapterCacheStore.saveChapters(queue, for: bookID)
         }
     }
 

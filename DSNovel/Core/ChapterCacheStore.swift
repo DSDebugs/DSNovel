@@ -33,6 +33,14 @@ enum ChapterCacheStore {
         return try? JSONDecoder().decode([ChapterDTO].self, from: jsonData)
     }
 
+    /// 缓存文件的年龄（秒）；不存在返回 nil。用于「近期刚拉取过就不再整本重拉」
+    static func cacheAge(for bookID: String) -> TimeInterval? {
+        let url = fileURL(for: bookID)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let modified = attrs[.modificationDate] as? Date else { return nil }
+        return Date().timeIntervalSince(modified)
+    }
+
     static func clearAll() {
         try? FileManager.default.removeItem(at: cacheDirectory)
         _ = cacheDirectory

@@ -32,8 +32,6 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
 
-      # 不硬编码 /Applications/Xcode.app —— hosted runner 上 Xcode 路径随镜像变化，
-      # 直接用 runner 默认 Xcode 即可；xcodegen 缺失时才按需安装。
       - name: Environment Diagnostics
         run: |
           set -euo pipefail
@@ -55,9 +53,8 @@ jobs:
           echo "=== schemes ==="
           xcodebuild -list -project DSNovel.xcodeproj
 
-      # 默认关闭：模拟器测试会额外消耗 10× macOS 分钟，且 DSNovelTests 曾触发
-      # "Multiple commands produce DSNovel.swiftmodule"。需要时在 Actions 手动勾选。
-      # 用 simctl JSON 解析取第一个可用 iPhone，避免依赖具体机型名。
+      # 默认关闭：模拟器测试额外消耗 10× macOS 分钟，且曾触发
+      # "Multiple commands produce DSNovel.swiftmodule"。需要时手动勾选。
       - name: Unit Tests (opt-in, skipped by default)
         if: ${{ inputs.run_tests == true }}
         run: |
@@ -80,9 +77,7 @@ jobs:
             2>&1 | tee build/xcodebuild-test.log
 
       # pipefail + tee：日志实时输出并留存，xcodebuild 失败时步骤仍正确失败。
-      # 显式锁定 SWIFT_VERSION=5.0（与 project.yml 一致，命令行优先级更高），
-      # 避免工程配置漂移回 Swift 6 严格语言模式触发 actor-isolated / Sendable
-      # 等连锁报错；此处只加编译参数，不改动任何源码文件。
+      # 显式锁定 SWIFT_VERSION=5.0，避免 Swift 6 严格并发连锁报错。
       - name: Build Release App (unsigned)
         run: |
           set -euo pipefail
@@ -100,7 +95,10 @@ jobs:
             SWIFT_VERSION=5.0 \
             2>&1 | tee build/xcodebuild.log
 
-      - name: Package Unsigned IPA
+      # ===== 版本号：把构建号写进 app，并让 IPA 文件名带版本号，便于与旧包区分 =====
+      # MARKETING_VERSION 取自 Info.plist（1.0.0），BUILD_NUMBER 用 GitHub run_number，
+      # 每次构建自动 +1，天然唯一。未签名包改 Info.plist 无需重签。
+      - name: Stamp version & Package Unsigned IPA
         run: |
           set -euo pipefail
           APP_PATH="$(find build/DerivedData/Build/Products/Release-iphoneos -name 'DSNovel.app' -type d | head -n 1)"
@@ -108,7 +106,15 @@ jobs:
             echo "::error::DSNovel.app not found under Release-iphoneos"
             exit 1
           fi
-          echo "APP_PATH=$APP_PATH"
+
+          MARKETING_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")"
+          BUILD_NUMBER="${{ github.run_number }}"
+          echo "MARKETING_VERSION=$MARKETING_VERSION  BUILD_NUMBER=$BUILD_NUMBER"
+
+          # 将构建号写入 app 内部 Info.plist（安装后「设置-关于」可见版本 = 1.0.0(b<num>)）
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Info.plist"
+          VERSION_TAG="v${MARKETING_VERSION}-b${BUILD_NUMBER}"
+
           echo "=== .app contents (verify bundled resources) ==="
           ls -la "$APP_PATH"
           for f in Info.plist Assets.car PkgInfo prelude.js PrivacyInfo.xcprivacy; do
@@ -118,15 +124,16 @@ jobs:
               echo "::warning::Missing bundled resource: $f"
             fi
           done
+
           rm -rf build/ipa
           mkdir -p build/ipa/Payload
           cp -R "$APP_PATH" build/ipa/Payload/DSNovel.app
           cd build/ipa
-          zip -qry ../../DSNovel-unsigned.ipa Payload
+          zip -qry "../../DSNovel-${VERSION_TAG}.ipa" Payload
           cd ../..
-          ls -lh DSNovel-unsigned.ipa
+          echo "VERSION_TAG=$VERSION_TAG" >> "$GITHUB_ENV"
+          ls -lh DSNovel-${VERSION_TAG}.ipa
 
-      # 构建失败也上传日志，便于在不查看源码的前提下定位问题。
       - name: Upload Build Log (troubleshooting)
         if: always()
         uses: actions/upload-artifact@v4
@@ -141,7 +148,7 @@ jobs:
       - name: Upload Unsigned IPA
         uses: actions/upload-artifact@v4
         with:
-          name: DSNovel-unsigned-${{ github.run_number }}
-          path: DSNovel-unsigned.ipa
+          name: DSNovel-${{ env.VERSION_TAG }}
+          path: DSNovel-*.ipa
           if-no-files-found: error
           retention-days: 7

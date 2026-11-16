@@ -169,7 +169,7 @@ struct PluginManagerView: View {
         .toolbar { toolbarContent }
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [UTType.zip, UTType.javaScript, UTType.archive, UTType.data],
+            allowedContentTypes: Self.importContentTypes,
             allowsMultipleSelection: false
         ) { result in
             handleFileImport(result)
@@ -228,24 +228,65 @@ struct PluginManagerView: View {
         }
         .task {
             _ = await CookieSync.pullFromWebView()
-            syncPluginCookieFlags()
+            await reconcilePluginLoginStates()
         }
         .onDisappear {
             batchCheckTask?.cancel()
         }
     }
 
-    private func syncPluginCookieFlags() {
+    /// 精确对齐每个书源的真实登录状态：绝不将网络检测/搜索产生的站点匿名访客 Cookie 误判为已登录，并自动清理历史误标状态
+    private func reconcilePluginLoginStates() async {
         var changed = false
+        var verifyTargets: [String] = []
+
         for p in plugins {
-            let target = p.loginURL.isEmpty ? p.siteURL : p.loginURL
-            if !target.isEmpty, CookieSync.hasCookies(for: target), !p.loggedIn {
-                p.loggedIn = true
-                changed = true
+            if !p.requiresLogin && p.loginURL.isEmpty {
+                if p.loggedIn {
+                    p.loggedIn = false
+                    changed = true
+                }
+                continue
+            }
+
+            let isVerified = CookieSync.isSourceLoggedIn(p.id)
+            if isVerified {
+                if !p.loggedIn {
+                    p.loggedIn = true
+                    changed = true
+                }
+                verifyTargets.append(p.id)
+            } else if p.loggedIn {
+                // 对此前被匿名 Cookie 误标为 loggedIn = true 的书源，立即调用 checkLogin() 复核真实登录态（保留喜马拉雅等真实已登录源，清除其余误标源）
+                verifyTargets.append(p.id)
             }
         }
         if changed {
             try? modelContext.save()
+        }
+
+        for sid in verifyTargets {
+            let res = await PluginRuntime.shared.verifyLoginStatus(sourceID: sid)
+            if let rec = record(for: sid) {
+                switch res {
+                case .verified:
+                    if !rec.loggedIn {
+                        rec.loggedIn = true
+                        try? modelContext.save()
+                    }
+                case .notLoggedIn:
+                    if rec.loggedIn {
+                        rec.loggedIn = false
+                        try? modelContext.save()
+                    }
+                case .noCheckMethod:
+                    let shouldBeLoggedIn = CookieSync.isSourceLoggedIn(sid)
+                    if rec.loggedIn != shouldBeLoggedIn {
+                        rec.loggedIn = shouldBeLoggedIn
+                        try? modelContext.save()
+                    }
+                }
+            }
         }
     }
 
@@ -637,7 +678,7 @@ struct PluginManagerView: View {
             expectedCookieName: nil,
             onCompleted: {
                 if let record = record(for: sid) {
-                    record.loggedIn = true
+                    record.loggedIn = CookieSync.isSourceLoggedIn(sid)
                     try? modelContext.save()
                     Task { await checkSinglePlugin(record) }
                 }
@@ -931,29 +972,63 @@ struct PluginManagerView: View {
     }
 
     // MARK: - 导入处理
+
+    /// 文件选择器允许的类型：.zip / .js 以及兜底的任意数据（部分来源的文件没有正确的 UTI，需要 .data 兜底才可选）
+    private static let importContentTypes: [UTType] = {
+        var types: [UTType] = [.zip, .javaScript, .json, .plainText, .sourceCode, .archive, .data]
+        if let js = UTType(filenameExtension: "js") { types.append(js) }
+        if let zip = UTType(filenameExtension: "zip") { types.append(zip) }
+        return types
+    }()
+
+    /// 在后台线程读取用户选择的文件：持有安全作用域 + NSFileCoordinator 协调读取（iCloud 云端占位文件会先被下载）。
+    /// 原实现在主线程同步 Data(contentsOf:) 且没有协调，iCloud/第三方文件提供者的文件读取会失败或卡住界面。
+    private nonisolated static func readPickedFile(_ url: URL) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+            var coordinationError: NSError?
+            var readResult: Result<Data, Error> = .failure(CocoaError(.fileReadUnknown))
+            NSFileCoordinator(filePresenter: nil).coordinate(
+                readingItemAt: url,
+                options: [.withoutChanges],
+                error: &coordinationError
+            ) { readableURL in
+                readResult = Result { try Data(contentsOf: readableURL, options: .mappedIfSafe) }
+            }
+            if let coordinationError { throw coordinationError }
+            return try readResult.get()
+        }.value
+    }
+
+    /// 文件选择器收起动画未结束时立刻弹出 sheet/alert，会被系统静默丢弃（表现为「选了文件没有任何反应」）。
+    private func waitForPickerDismissal() async {
+        try? await Task.sleep(for: .milliseconds(500))
+    }
+
     private func handleFileImport(_ result: Result<[URL], Error>) {
         switch result {
+        case .failure(let error):
+            Task { @MainActor in
+                await waitForPickerDismissal()
+                errorAlertMessage = "选择文件失败：\(error.localizedDescription)"
+            }
         case .success(let urls):
             guard let url = urls.first else { return }
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer {
-                if accessed { url.stopAccessingSecurityScopedResource() }
-            }
-            do {
-                let data = try Data(contentsOf: url)
-                Task {
-                    do {
-                        let preview = try await PluginRuntime.shared.prepareImportPreview(from: data)
-                        self.activeSheet = .importPreview(preview)
-                    } catch {
-                        self.errorAlertMessage = error.localizedDescription
-                    }
+            isImporting = true
+            Task { @MainActor in
+                defer { isImporting = false }
+                do {
+                    let data = try await Self.readPickedFile(url)
+                    let preview = try await PluginRuntime.shared.prepareImportPreview(from: data)
+                    await waitForPickerDismissal()
+                    activeSheet = .importPreview(preview)
+                } catch {
+                    await waitForPickerDismissal()
+                    errorAlertMessage = "导入失败：\(error.localizedDescription)"
                 }
-            } catch {
-                errorAlertMessage = "读取书源包失败：\(error.localizedDescription)"
             }
-        case .failure(let error):
-            errorAlertMessage = error.localizedDescription
         }
     }
 
@@ -1021,8 +1096,7 @@ struct PluginManagerView: View {
                 targetGroupID = nil
             }
 
-            let targetLoginCheckURL = meta.loginURL.isEmpty ? meta.url : meta.loginURL
-            let alreadyHasCookies = CookieSync.hasCookies(for: targetLoginCheckURL)
+            let isVerifiedLoggedIn = CookieSync.isSourceLoggedIn(meta.id)
 
             if let existing = plugins.first(where: { $0.id == meta.id }) {
                 existing.packageID = preview.packageID
@@ -1035,7 +1109,7 @@ struct PluginManagerView: View {
                 existing.discoverable = meta.discoverable
                 existing.requiresLogin = !meta.loginURL.isEmpty
                 existing.loginURL = meta.loginURL
-                if alreadyHasCookies { existing.loggedIn = true }
+                existing.loggedIn = isVerifiedLoggedIn
                 if existing.groupID == nil {
                     existing.groupID = targetGroupID
                 }
@@ -1056,7 +1130,7 @@ struct PluginManagerView: View {
                     discoverable: meta.discoverable,
                     requiresLogin: !meta.loginURL.isEmpty,
                     loginURL: meta.loginURL,
-                    loggedIn: alreadyHasCookies
+                    loggedIn: isVerifiedLoggedIn
                 )
                 nextPluginOrder += 1
                 modelContext.insert(record)

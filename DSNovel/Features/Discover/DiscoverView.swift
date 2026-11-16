@@ -619,7 +619,7 @@ struct DiscoverView: View {
                             initialURL: loginURL.isEmpty ? plugin.siteURL : loginURL,
                             expectedCookieName: nil,
                             onCompleted: {
-                                plugin.loggedIn = true
+                                plugin.loggedIn = CookieSync.isSourceLoggedIn(plugin.id)
                                 viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
                             }
                         )

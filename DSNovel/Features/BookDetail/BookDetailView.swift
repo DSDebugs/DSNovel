@@ -91,6 +91,13 @@ final class BookDetailViewModel {
         errorMessage = nil
         pluginError = nil
 
+        // 1.5 缓存足够新鲜（10 分钟内）就直接使用，不再整本重拉：
+        // 原实现每次打开详情页都会在后台发起 loadFullPages=true 的全量请求（最长 45 秒），长期占用 JS 上下文，拖慢随后选章播放
+        if !forceRefresh, !chapters.isEmpty,
+           let age = ChapterCacheStore.cacheAge(for: bookID), age < 600 {
+            return
+        }
+
         // 2. 若已有缓存章节且插件支持增量更新 updateEpisodes，优先尝试增量拉取
         if !forceRefresh, !chapters.isEmpty {
             if let updated = try? await PluginRuntime.shared.updateEpisodes(
@@ -212,6 +219,11 @@ struct BookDetailView: View {
         savedBook?.inShelf == true
     }
 
+    /// 已完成下载的条目 ID 集合：每次 body 只算一次（原实现每一行都遍历整个 downloads 数组，O(行数×下载数)）
+    private var downloadedItemIDs: Set<String> {
+        Set(downloads.lazy.filter { $0.state == "completed" }.map(\.id))
+    }
+
     private var currentPlugin: PluginRecord? {
         plugins.first(where: { $0.id == viewModel.activeBook.sourceID })
     }
@@ -302,8 +314,9 @@ struct BookDetailView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 20)
                 } else {
+                    let doneIDs = downloadedItemIDs
                     ForEach(viewModel.displayedChapters) { chapter in
-                        chapterRow(for: chapter)
+                        chapterRow(for: chapter, downloadedIDs: doneIDs)
                     }
                 }
             } header: {
@@ -363,8 +376,9 @@ struct BookDetailView: View {
                 }
             }
 
-            if !viewModel.activeBook.intro.isEmpty {
-                Text(viewModel.activeBook.intro)
+            let cleanIntro = HTMLTokenizer.stripTagsAndDecodeEntities(viewModel.activeBook.intro)
+            if !cleanIntro.isEmpty {
+                Text(cleanIntro)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(isIntroExpanded ? nil : 3)
@@ -549,10 +563,13 @@ struct BookDetailView: View {
             initialURL: targetURL,
             expectedCookieName: nil,
             onCompleted: {
-                plugin?.loggedIn = true
-                if plugin?.healthState == .needAuth {
+                let isLogged = CookieSync.isSourceLoggedIn(viewModel.activeBook.sourceID)
+                if isLogin {
+                    plugin?.loggedIn = isLogged
+                }
+                if (isLogged || !isLogin), plugin?.healthState == .needAuth {
                     plugin?.lastCheckStatus = SourceHealthState.healthy.rawValue
-                    plugin?.lastCheckMessage = "已完成登录/验证"
+                    plugin?.lastCheckMessage = isLogin ? "已完成登录" : "已完成安全验证"
                 }
                 try? modelContext.save()
                 onDone()
@@ -630,10 +647,10 @@ struct BookDetailView: View {
         .background(DSColor.contentBackground)
     }
 
-    private func chapterRow(for chapter: ChapterDTO) -> some View {
+    private func chapterRow(for chapter: ChapterDTO, downloadedIDs: Set<String>) -> some View {
         let isCurrent = player.currentBookID == viewModel.activeBook.id && player.currentChapter?.id == chapter.id
         let itemID = "\(viewModel.activeBook.id)::\(chapter.id)"
-        let isDownloaded = downloads.contains { $0.id == itemID && $0.state == "completed" }
+        let isDownloaded = downloadedIDs.contains(itemID)
         let isLastListened = savedBook?.lastChapterID == chapter.id
 
         return HStack(spacing: 10) {
@@ -662,7 +679,7 @@ struct BookDetailView: View {
 
             Spacer()
 
-            if let dur = chapter.durationSec, dur > 0 {
+            if let dur = chapter.normalizedDurationSec {
                 Text(PlaybackClock.formatSeconds(Double(dur)))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
