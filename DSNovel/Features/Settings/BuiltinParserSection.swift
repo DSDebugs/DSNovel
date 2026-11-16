@@ -6,9 +6,12 @@ import UIKit
 //
 // 交互约束（按需求确定）：
 // - 无论是否配置脚本，本分区**不输出任何提示**：没有空态引导文案、没有徽标、没有 Toast、没有红点。
-//   未配置时只是一个中性空位（"解析脚本：未安装" + 一个「编辑脚本」入口控件）。
+//   未配置时只是一个中性空位（"解析脚本：未安装" + 一个「编辑脚本」导航入口）。
 // - 全 App 唯一的内置解析提示出口是「VIP 章节报错」时的跳转按钮（见 PlayerViews / BookDetailView）。
 // - 只有「保存/校验失败」与「用户主动点自检失败」会出声（属错误反馈，不是提示）。
+// - 注意：由于父视图 PluginDetailAndCheckSheet 本身是一个 Sheet 且包含 NavigationStack，
+//   所有二级页面（编辑脚本、查看日志）一律采用 NavigationLink 推入当前导航栈，
+//   绝不在 Section 行视图上叠加嵌套 .sheet，避免 iOS Form/Sheet 焦点更新触发父级 Sheet 误关！
 
 struct BuiltinParserSection: View {
     @Environment(\.modelContext) private var modelContext
@@ -17,14 +20,8 @@ struct BuiltinParserSection: View {
 
     let plugin: PluginRecord
 
-    @State private var showEditorSheet = false
-    @State private var editorInitialText: String = ""
-    @State private var editorInitialFileName: String = "ximalaya_parser.js"
-    @State private var isSavingScript = false
-    @State private var pendingPreview: BuiltinParserPreview?
     @State private var errorAlertMessage: String?
     @State private var statusNote: String = ""
-    @State private var showLogSheet = false
     @State private var showDeleteConfirm = false
     @State private var strategy: BuiltinParserStrategy = .fallback
     @State private var configValues: [String: String] = [:]
@@ -59,37 +56,12 @@ struct BuiltinParserSection: View {
             } else {
                 // 中性空位：只有状态与编辑入口，没有任何引导性文案
                 LabeledContent("解析脚本", value: BuiltinParserStrings.notInstalledValue)
-                editScriptButton(title: "编辑脚本")
+                editScriptLink(title: "编辑脚本")
             }
 
             if !statusNote.isEmpty {
                 LabeledContent("最近自检", value: statusNote)
             }
-        }
-        .sheet(isPresented: $showEditorSheet) {
-            BuiltinParserEditorSheet(
-                initialText: editorInitialText,
-                fileName: editorInitialFileName,
-                isInstalled: activeRecord != nil,
-                onCancel: {
-                    showEditorSheet = false
-                },
-                onSave: { scriptText, fileName in
-                    showEditorSheet = false
-                    handleScriptSubmit(scriptText: scriptText, fileName: fileName)
-                }
-            )
-        }
-        .sheet(item: $pendingPreview) { preview in
-            BuiltinParserPreviewSheet(preview: preview) {
-                pendingPreview = nil
-            } onConfirm: {
-                pendingPreview = nil
-                Task { await install(preview: preview) }
-            }
-        }
-        .sheet(isPresented: $showLogSheet) {
-            BuiltinParserLogSheet(parserID: activeRecord?.id ?? "")
         }
         .alert("提示", isPresented: Binding(
             get: { errorAlertMessage != nil },
@@ -153,10 +125,10 @@ struct BuiltinParserSection: View {
             Label("自检", systemImage: "stethoscope")
         }
 
-        editScriptButton(title: "编辑脚本")
+        editScriptLink(title: "编辑脚本")
 
-        Button {
-            showLogSheet = true
+        NavigationLink {
+            BuiltinParserLogView(parserID: record.id)
         } label: {
             Label("查看日志", systemImage: "text.alignleft")
         }
@@ -216,77 +188,28 @@ struct BuiltinParserSection: View {
         }
     }
 
-    private func editScriptButton(title: String) -> some View {
-        Button {
-            if let parser = installedParser,
-               let existingText = BuiltinParserStore.scriptText(for: parser) {
-                editorInitialText = existingText
-                editorInitialFileName = parser.fileName
-            } else {
-                editorInitialText = ""
-                editorInitialFileName = "ximalaya_parser.js"
-            }
-            showEditorSheet = true
+    private func editScriptLink(title: String) -> some View {
+        let currentParser = installedParser
+        let initialText = currentParser.flatMap { BuiltinParserStore.scriptText(for: $0) } ?? ""
+        let initialFileName = currentParser?.fileName ?? "ximalaya_parser.js"
+
+        return NavigationLink {
+            BuiltinParserEditorPage(
+                initialText: initialText,
+                fileName: initialFileName,
+                onInstalled: { parser in
+                    BuiltinParserRegistrySync.upsert(context: modelContext, parser: parser)
+                    strategy = BuiltinParserStrategy.fallback
+                    configValues = [:]
+                    Task { await refreshState() }
+                }
+            )
         } label: {
-            if isSavingScript {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("校验中…")
-                }
-            } else {
-                Label(title, systemImage: "curlybraces.square")
-            }
-        }
-        .disabled(isSavingScript)
-    }
-
-    // MARK: 编辑与保存脚本
-
-    private func handleScriptSubmit(scriptText: String, fileName: String) {
-        let trimmed = scriptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            errorAlertMessage = "脚本内容不能为空，请粘贴内置解析脚本代码"
-            return
-        }
-        isSavingScript = true
-        Task {
-            do {
-                let preview = try await BuiltinParserRuntime.shared.analyze(
-                    scriptText: scriptText,
-                    fileName: fileName.isEmpty ? "ximalaya_parser.js" : fileName
-                )
-                await MainActor.run {
-                    isSavingScript = false
-                }
-                try? await Task.sleep(for: .milliseconds(350))
-                await MainActor.run {
-                    pendingPreview = preview
-                }
-            } catch {
-                await MainActor.run {
-                    isSavingScript = false
-                    errorAlertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                }
-            }
+            Label(title, systemImage: "curlybraces.square")
         }
     }
 
-    private func install(preview: BuiltinParserPreview) async {
-        do {
-            let parser = try await BuiltinParserRuntime.shared.install(preview: preview)
-            await MainActor.run {
-                BuiltinParserRegistrySync.upsert(context: modelContext, parser: parser)
-                strategy = BuiltinParserStrategy.fallback
-                configValues = [:]
-            }
-            await refreshState()
-            // 安装成功不弹任何提示（按需求：内置解析不做提示）
-        } catch {
-            await MainActor.run {
-                errorAlertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-        }
-    }
+    // MARK: 操作
 
     private func deleteParser() async {
         guard let record = activeRecord else { return }
@@ -307,8 +230,13 @@ struct BuiltinParserSection: View {
     private func rollback(parserID: String) async {
         do {
             try BuiltinParserStore.rollbackScript(parserID: parserID)
-            await BuiltinParserRuntime.shared.reload()
-            await MainActor.run { errorAlertMessage = nil }
+            let parsers = await BuiltinParserRuntime.shared.reload()
+            await MainActor.run {
+                if let restored = parsers.first(where: { $0.id == parserID }) {
+                    BuiltinParserRegistrySync.upsert(context: modelContext, parser: restored)
+                }
+                errorAlertMessage = nil
+            }
             await refreshState()
         } catch {
             await MainActor.run {
@@ -369,196 +297,257 @@ struct BuiltinParserSection: View {
     }()
 }
 
-// MARK: - 脚本编辑器弹窗（用户直接粘贴或编辑 JS 脚本内容）
+// MARK: - 脚本编辑器页面（通过 NavigationLink 推入当前详情 Sheet 的导航栈，杜绝嵌套 Sheet 闪退）
 
-struct BuiltinParserEditorSheet: View {
+struct BuiltinParserEditorPage: View {
     let initialText: String
     let fileName: String
-    let isInstalled: Bool
-    let onCancel: () -> Void
-    let onSave: (String, String) -> Void
+    let onInstalled: (InstalledBuiltinParser) -> Void
 
+    @Environment(\.dismiss) private var dismiss
     @State private var scriptText: String = ""
+    @State private var didLoadInitial: Bool = false
+    @State private var isAnalyzing: Bool = false
+    @State private var preview: BuiltinParserPreview?
+    @State private var errorMessage: String?
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    Button {
-                        if let clip = UIPasteboard.general.string, !clip.isEmpty {
-                            scriptText = clip
-                        }
-                    } label: {
-                        Label("从剪贴板粘贴", systemImage: "doc.on.clipboard")
-                            .font(.subheadline.weight(.medium))
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button(role: .destructive) {
-                        scriptText = ""
-                    } label: {
-                        Label("清空", systemImage: "xmark.circle")
-                            .font(.subheadline)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(scriptText.isEmpty)
-
-                    Spacer()
-
-                    Text("\(scriptText.utf8.count) 字节")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color(.secondarySystemBackground))
-
-                Divider()
-
-                ZStack(alignment: .topLeading) {
-                    TextEditor(text: $scriptText)
-                        .font(.system(.footnote, design: .monospaced))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .scrollContentBackground(.hidden)
-                        .padding(12)
-
-                    if scriptText.isEmpty {
-                        Text("在此粘贴内置解析脚本内容（调用 registerBuiltinParser({...}) 的 JavaScript 代码）…")
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 17)
-                            .padding(.vertical, 20)
-                            .allowsHitTesting(false)
-                    }
-                }
+        Group {
+            if let preview {
+                previewConfirmView(preview)
+            } else {
+                editorMainView
             }
-            .navigationTitle("编辑脚本")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
+        }
+        .navigationTitle(preview == nil ? "编辑脚本" : "确认保存")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if preview != nil {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消", action: onCancel)
+                    Button("返回编辑") {
+                        self.preview = nil
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("校验并保存") {
-                        onSave(scriptText, fileName)
+                    Button(preview?.isUpdate == true ? "覆盖保存" : "确认保存") {
+                        if let currentPreview = self.preview {
+                            Task { await performInstall(currentPreview) }
+                        }
                     }
-                    .disabled(scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .fontWeight(.semibold)
+                    .disabled(isAnalyzing)
+                }
+            } else {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await validateScript() }
+                    } label: {
+                        if isAnalyzing {
+                            ProgressView()
+                        } else {
+                            Text("校验并保存")
+                                .fontWeight(.semibold)
+                        }
+                    }
+                    .disabled(isAnalyzing || scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .onAppear {
+        }
+        .alert("提示", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+        .onAppear {
+            if !didLoadInitial {
+                didLoadInitial = true
                 scriptText = initialText
             }
         }
     }
-}
 
-// MARK: - 保存预览（写入前的确认弹窗，不是提示）
-
-struct BuiltinParserPreviewSheet: View {
-    let preview: BuiltinParserPreview
-    let onCancel: () -> Void
-    let onConfirm: () -> Void
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("解析脚本") {
-                    LabeledContent("名称", value: preview.meta.name)
-                    LabeledContent("版本", value: preview.meta.displayVersion)
-                    if !preview.meta.author.isEmpty {
-                        LabeledContent("作者", value: preview.meta.author)
+    private var editorMainView: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button {
+                    if let clip = UIPasteboard.general.string, !clip.isEmpty {
+                        scriptText = clip
+                    } else {
+                        errorMessage = "剪贴板为空，请先复制脚本内容"
                     }
-                    LabeledContent("文件", value: preview.fileName)
-                    LabeledContent("大小", value: String(format: "%.1f KB", Double(preview.sizeBytes) / 1024.0))
-                    LabeledContent("SHA-256", value: String(preview.sha256.prefix(16)))
+                } label: {
+                    Label("从剪贴板粘贴", systemImage: "doc.on.clipboard")
+                        .font(.subheadline.weight(.medium))
                 }
+                .buttonStyle(.bordered)
 
-                Section("目标书源") {
-                    if !preview.meta.targets.hosts.isEmpty {
-                        LabeledContent("域名", value: preview.meta.targets.hosts.joined(separator: ", "))
-                    }
-                    if !preview.meta.targets.sourceIDs.isEmpty {
-                        LabeledContent("sourceID", value: preview.meta.targets.sourceIDs.joined(separator: ", "))
-                    }
-                    LabeledContent("能力", value: capabilitiesText)
+                Button(role: .destructive) {
+                    scriptText = ""
+                } label: {
+                    Label("清空", systemImage: "xmark.circle")
+                        .font(.subheadline)
                 }
+                .buttonStyle(.bordered)
+                .disabled(scriptText.isEmpty)
 
-                if !preview.meta.summary.isEmpty {
-                    Section("说明") {
-                        Text(preview.meta.summary)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                Spacer()
 
-                if preview.isUpdate {
-                    Section {
-                        LabeledContent("已安装版本", value: preview.installedVersion ?? "—")
-                        Text("确认后将覆盖同名解析脚本，旧脚本会保留为备份以便回滚。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                Text("\(scriptText.utf8.count) 字节")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            .navigationTitle("确认保存")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消", action: onCancel)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(preview.isUpdate ? "覆盖保存" : "保存", action: onConfirm)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color(.secondarySystemBackground))
+
+            Divider()
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $scriptText)
+                    .font(.system(.footnote, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .scrollContentBackground(.hidden)
+                    .padding(12)
+
+                if scriptText.isEmpty {
+                    Text("在此粘贴内置解析脚本内容（调用 registerBuiltinParser({...}) 的 JavaScript 代码）…")
+                        .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 17)
+                        .padding(.vertical, 20)
+                        .allowsHitTesting(false)
                 }
             }
         }
     }
 
-    private var capabilitiesText: String {
+    private func previewConfirmView(_ preview: BuiltinParserPreview) -> some View {
+        Form {
+            Section("解析脚本") {
+                LabeledContent("名称", value: preview.meta.name)
+                LabeledContent("版本", value: preview.meta.displayVersion)
+                if !preview.meta.author.isEmpty {
+                    LabeledContent("作者", value: preview.meta.author)
+                }
+                LabeledContent("文件", value: preview.fileName)
+                LabeledContent("大小", value: String(format: "%.1f KB", Double(preview.sizeBytes) / 1024.0))
+                LabeledContent("SHA-256", value: String(preview.sha256.prefix(16)))
+            }
+
+            Section("目标书源") {
+                if !preview.meta.targets.hosts.isEmpty {
+                    LabeledContent("域名", value: preview.meta.targets.hosts.joined(separator: ", "))
+                }
+                if !preview.meta.targets.sourceIDs.isEmpty {
+                    LabeledContent("sourceID", value: preview.meta.targets.sourceIDs.joined(separator: ", "))
+                }
+                LabeledContent("能力", value: capabilitiesText(for: preview))
+            }
+
+            if !preview.meta.summary.isEmpty {
+                Section("说明") {
+                    Text(preview.meta.summary)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if preview.isUpdate {
+                Section {
+                    LabeledContent("已安装版本", value: preview.installedVersion ?? "—")
+                    Text("确认后将覆盖同名解析脚本，旧脚本会保留为备份以便回滚。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func capabilitiesText(for preview: BuiltinParserPreview) -> String {
         var parts: [String] = []
         if preview.meta.supportsPlayback { parts.append("播放") }
         if preview.meta.supportsDownload { parts.append("下载") }
         if preview.meta.requiresCookie { parts.append("需要 Cookie") }
         return parts.isEmpty ? "—" : parts.joined(separator: " · ")
     }
+
+    private func validateScript() async {
+        let trimmed = scriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "脚本内容不能为空，请粘贴内置解析脚本代码"
+            return
+        }
+        isAnalyzing = true
+        do {
+            let analyzed = try await BuiltinParserRuntime.shared.analyze(
+                scriptText: scriptText,
+                fileName: fileName.isEmpty ? "ximalaya_parser.js" : fileName
+            )
+            await MainActor.run {
+                isAnalyzing = false
+                preview = analyzed
+            }
+        } catch {
+            await MainActor.run {
+                isAnalyzing = false
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    private func performInstall(_ currentPreview: BuiltinParserPreview) async {
+        isAnalyzing = true
+        do {
+            let installed = try await BuiltinParserRuntime.shared.install(preview: currentPreview)
+            await MainActor.run {
+                isAnalyzing = false
+                onInstalled(installed)
+                dismiss()
+            }
+        } catch {
+            await MainActor.run {
+                isAnalyzing = false
+                errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
 }
 
-// MARK: - 日志（仅用户主动打开时展示）
+// MARK: - 日志页面（通过 NavigationLink 推入，避免嵌套 Sheet 闪退）
 
-struct BuiltinParserLogSheet: View {
+struct BuiltinParserLogView: View {
     let parserID: String
 
-    @Environment(\.dismiss) private var dismiss
     @State private var lines: [String] = []
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if lines.isEmpty {
-                    ContentUnavailableView("暂无日志", systemImage: "text.alignleft")
-                } else {
-                    List(Array(lines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(.caption, design: .monospaced))
-                    }
+        Group {
+            if lines.isEmpty {
+                ContentUnavailableView("暂无日志", systemImage: "text.alignleft")
+            } else {
+                List(Array(lines.enumerated()), id: \.offset) { _, line in
+                    Text(line)
+                        .font(.system(.caption, design: .monospaced))
                 }
             }
-            .navigationTitle("解析日志")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+        }
+        .navigationTitle("解析日志")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("清空") {
+                    BuiltinParserLogStore.shared.clear(parserID)
+                    lines = []
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("清空") {
-                        BuiltinParserLogStore.shared.clear(parserID)
-                        lines = []
-                    }
-                }
+                .disabled(lines.isEmpty)
             }
-            .task {
-                lines = BuiltinParserLogStore.shared.lines(for: parserID)
-            }
+        }
+        .task {
+            lines = BuiltinParserLogStore.shared.lines(for: parserID)
         }
     }
 }
