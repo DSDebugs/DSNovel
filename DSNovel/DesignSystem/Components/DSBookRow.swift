@@ -92,7 +92,7 @@ struct DSBookRow: View {
 }
 
 #Preview("Light") {
-    DSBookRow(model: BookCardModel(id: "1", title: "诡秘之主", author: "8082Audio", sourceName: "有听网", progressSubtitle: "第 102/2059 章 · 02:45", onPlayTap: nil), onPlayTap: {})
+    DSBookRow(model: BookCardModel(id: "1", title: "诡秘之主", author: "8082Audio", sourceName: "有听网", progressSubtitle: "第 102/2059 章 · 02:45"), onPlayTap: {})
         .padding()
         .preferredColorScheme(.light)
 }

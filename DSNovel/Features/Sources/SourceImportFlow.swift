@@ -22,6 +22,12 @@ struct SourceImportFlow: View {
         self.onClose = onClose
     }
 
+    private static var importContentTypes: [UTType] {
+        var types: [UTType] = [.data, .zip, .json]
+        if let js = UTType(filenameExtension: "js") { types.append(js) }
+        return types
+    }
+
     var body: some View {
         DSSheetScaffold(title: "导入书源", onClose: onClose) {
             Group {
@@ -36,7 +42,7 @@ struct SourceImportFlow: View {
             }
             .fileImporter(
                 isPresented: $showFileImporter,
-                allowedContentTypes: [.data, .zip, .javascript, .json],
+                allowedContentTypes: Self.importContentTypes,
                 allowsMultipleSelection: false
             ) { result in
                 handleFilePick(result)

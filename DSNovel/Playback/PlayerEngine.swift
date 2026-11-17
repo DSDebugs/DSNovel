@@ -25,7 +25,7 @@ final class PlaybackClock {
         return "-" + Self.formatSeconds(rem)
     }
 
-    static func formatSeconds(_ seconds: Double) -> String {
+    nonisolated static func formatSeconds(_ seconds: Double) -> String {
         guard seconds.isFinite && seconds > 0 else { return "00:00" }
         let total = Int(seconds.rounded())
         let h = total / 3600

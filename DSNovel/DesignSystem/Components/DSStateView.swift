@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum DSStateKind: Equatable, Sendable {
+enum DSStateKind: Equatable, Hashable, Sendable {
     case loading
     case empty
     case error(detail: String? = nil)
@@ -89,8 +89,10 @@ enum UserFacingError {
                 return .needLogin(sourceName: sourceName)
             case .needVerify:
                 return .needVerify
-            case .vipRequired, .builtinParserMissing, .builtinParserFailed:
+            case .vipRequired, .builtinParserMissing:
                 return .vipChapter
+            case .builtinParserFailed(_, let reason):
+                return .error(detail: reason.isEmpty ? "VIP 章节解析失败" : reason)
             case .timeout:
                 return .error(detail: "请求超时 (timeout)")
             case .network(let msg):
@@ -98,7 +100,9 @@ enum UserFacingError {
                     return .offline
                 }
                 return .error(detail: msg)
-            case .notFound(let msg), .invalidPackage(let msg), .scriptException(let msg), .parseFailed(let msg):
+            case .rateLimited:
+                return .error(detail: "请求过于频繁，请稍后再试")
+            case .parseFailed(let msg):
                 return .error(detail: msg)
             }
         }
