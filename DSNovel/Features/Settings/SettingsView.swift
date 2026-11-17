@@ -35,6 +35,7 @@ struct SettingsView: View {
             storageAndNetworkSection
         }
         .listStyle(.insetGrouped)
+        .dsAdaptiveBottomDockScroll()
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {

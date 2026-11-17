@@ -89,3 +89,44 @@ enum ChapterCacheStore {
         return nil
     }
 }
+
+
+/// 单章收听进度轻量化存储（UserDefaults 按书持久化 chapterID -> positionMs），供详情页每章展示「听至 mm:ss」
+enum ChapterProgressStore {
+    private static func key(for bookID: String) -> String {
+        let digest = SHA256.hash(data: Data(bookID.utf8))
+        let hex = digest.map { String(format: "%02x", $0) }.joined().prefix(24)
+        return "chapter_prog_\(hex)"
+    }
+
+    static func loadAll(for bookID: String) -> [String: Int] {
+        guard let dict = UserDefaults.standard.dictionary(forKey: key(for: bookID)) as? [String: Int] else {
+            return [:]
+        }
+        return dict
+    }
+
+    static func save(bookID: String, chapterID: String, positionMs: Int) {
+        guard !bookID.isEmpty, !chapterID.isEmpty, positionMs > 0 else { return }
+        var dict = loadAll(for: bookID)
+        dict[chapterID] = positionMs
+        if dict.count > 500 {
+            let trimmed = Dictionary(dict.prefix(400), uniquingKeysWith: { first, _ in first })
+            UserDefaults.standard.set(trimmed, forKey: key(for: bookID))
+        } else {
+            UserDefaults.standard.set(dict, forKey: key(for: bookID))
+        }
+    }
+
+    static func formattedPosition(ms: Int) -> String {
+        guard ms > 0 else { return "00:00" }
+        let totalSec = ms / 1000
+        let h = totalSec / 3600
+        let m = (totalSec % 3600) / 60
+        let s = totalSec % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%02d:%02d", m, s)
+    }
+}

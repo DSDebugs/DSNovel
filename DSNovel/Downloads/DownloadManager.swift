@@ -81,6 +81,24 @@ final class DownloadManager {
         pumpQueue()
     }
 
+    /// 无损校验已完成离线文件是否在磁盘存在（不干扰正在进行的下载任务）
+    func reconcileCompletedFiles() {
+        guard let ctx = modelContext else { return }
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.state == "completed" })
+        guard let items = try? ctx.fetch(desc), !items.isEmpty else { return }
+        var changed = false
+        for item in items where !item.localPath.isEmpty {
+            let url = downloadsRootDirectory.appendingPathComponent(item.localPath)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                ctx.delete(item)
+                changed = true
+            }
+        }
+        if changed {
+            try? ctx.save()
+        }
+    }
+
     /// 应用启动时修复上次被强杀/崩溃遗留的「downloading」僵尸记录（否则永远显示「正在缓存」且不会再被调度）
     func recoverInterruptedItems() {
         guard let ctx = modelContext else { return }

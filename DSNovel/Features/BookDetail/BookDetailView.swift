@@ -34,7 +34,7 @@ final class BookDetailViewModel {
         self.alternatives = alternatives
     }
 
-    /// 生成每段 50 章的分段区间（5.4 节）
+    /// 生成每段 50 章的分段区间
     nonisolated static func buildSegments(totalCount: Int, pageSize: Int = 50) -> [ChapterSegmentRange] {
         guard totalCount > 0 else { return [] }
         var segments: [ChapterSegmentRange] = []
@@ -82,7 +82,6 @@ final class BookDetailViewModel {
         let sourceID = activeBook.sourceID
         let bookURL = activeBook.bookURL
 
-        // 1. 先读 LZFSE 压缩缓存立即渲染（5.4 节步骤 1）
         if !forceRefresh, let cached = ChapterCacheStore.loadChapters(for: bookID), !cached.isEmpty {
             chapters = cached
         }
@@ -91,14 +90,11 @@ final class BookDetailViewModel {
         errorMessage = nil
         pluginError = nil
 
-        // 1.5 缓存足够新鲜（10 分钟内）就直接使用，不再整本重拉：
-        // 原实现每次打开详情页都会在后台发起 loadFullPages=true 的全量请求（最长 45 秒），长期占用 JS 上下文，拖慢随后选章播放
         if !forceRefresh, !chapters.isEmpty,
            let age = ChapterCacheStore.cacheAge(for: bookID), age < 600 {
             return
         }
 
-        // 2. 若已有缓存章节且插件支持增量更新 updateEpisodes，优先尝试增量拉取
         if !forceRefresh, !chapters.isEmpty {
             if let updated = try? await PluginRuntime.shared.updateEpisodes(
                 sourceID: sourceID,
@@ -113,7 +109,6 @@ final class BookDetailViewModel {
             }
         }
 
-        // 3. 检查源是否声明了 multipleEpisodePages（McpGuide.md 第 6 节：先用 loadFullPages=false 快速取第一页，再用 true 全量加载）
         let isMultiPage = await PluginRuntime.shared.supportsMultipleEpisodePages(sourceID: sourceID)
 
         if isMultiPage && chapters.isEmpty {
@@ -130,9 +125,7 @@ final class BookDetailViewModel {
                     isLoading = false
                     isLoadingRest = true
                 }
-            } catch {
-                // 首屏快速拉取失败时继续尝试全量拉取
-            }
+            } catch {}
         }
 
         do {
@@ -149,7 +142,6 @@ final class BookDetailViewModel {
                 UnplayableBookStore.shared.unmark(bookID)
             } else if chapters.isEmpty {
                 errorMessage = "没有获取到章节"
-                // 书源正常响应但没有任何章节：记为无法播放，今后搜索/发现不再展示
                 UnplayableBookStore.shared.mark(bookID)
             }
         } catch let pErr as PluginError {
@@ -187,7 +179,7 @@ final class BookDetailViewModel {
     }
 }
 
-/// 书籍详情页（5.4 节）：1–50 章节分段、正序/倒序、区间下载、一键换源、来源跳转及就地登录/验证（已彻底移除书签并严格分离「加入书架」与「最近播放」）
+/// 书籍详情页（重构版：右上角心形加书架 + 紫色胶囊「继续播放」+ 居中上次收听提示 + 靶心定位/章节搜索/正倒序 + 行级直下按钮与单章听至进度）
 struct BookDetailView: View {
     let onJumpToDiscoverSource: (String) -> Void
 
@@ -200,6 +192,9 @@ struct BookDetailView: View {
     @State private var isIntroExpanded = false
     @State private var showRangeDownloadSheet = false
     @State private var showSwitchSourceSheet = false
+    @State private var showChapterSearch = false
+    @State private var chapterSearchKeyword = ""
+    @State private var chapterProgressMap: [String: Int] = [:]
     @State private var authSession: WebAuthSessionRequest?
 
     private var player = PlayerEngine.shared
@@ -209,19 +204,20 @@ struct BookDetailView: View {
         self.onJumpToDiscoverSource = onJumpToDiscoverSource
     }
 
-    /// 书籍在数据库中的记录（无论是「书架」还是「最近播放」均共用同一条记录，保存最后播放章节与时间）
     private var savedBook: Book? {
         allBooks.first(where: { $0.id == viewModel.activeBook.id })
     }
 
-    /// 严格判断该书是否由用户主动加入了「书架」
     private var isInShelf: Bool {
         savedBook?.inShelf == true
     }
 
-    /// 已完成下载的条目 ID 集合：每次 body 只算一次（原实现每一行都遍历整个 downloads 数组，O(行数×下载数)）
-    private var downloadedItemIDs: Set<String> {
-        Set(downloads.lazy.filter { $0.state == "completed" }.map(\.id))
+    private var downloadStateByID: [String: String] {
+        var map: [String: String] = [:]
+        for item in downloads where item.bookID == viewModel.activeBook.id && item.kind == "manual" {
+            map[item.id] = item.state
+        }
+        return map
     }
 
     private var currentPlugin: PluginRecord? {
@@ -232,36 +228,114 @@ struct BookDetailView: View {
         currentPlugin?.name ?? viewModel.activeBook.sourceID
     }
 
-    var body: some View {
-        detailListContent
-            .navigationTitle(viewModel.activeBook.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .task(id: viewModel.activeBook.id) {
-                await viewModel.loadBookDetails()
-            }
-            .sheet(isPresented: $showRangeDownloadSheet) {
-                rangeDownloadSheetView
-            }
-            .sheet(isPresented: $showSwitchSourceSheet) {
-                switchSourceSheetView
-            }
-            .sheet(item: $authSession) { session in
-                WebAuthSheet(session: session)
-            }
+    private var filteredOrSegmentedChapters: [ChapterDTO] {
+        let kw = chapterSearchKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        if showChapterSearch && !kw.isEmpty {
+            let matches = viewModel.chapters.filter { $0.title.localizedCaseInsensitiveContains(kw) }
+            return viewModel.isAscending ? matches : matches.reversed()
+        }
+        return viewModel.displayedChapters
     }
 
-    private var detailListContent: some View {
+    var body: some View {
+        ScrollViewReader { proxy in
+            detailListContent(proxy: proxy)
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                // 右上角心形加书架按钮（对齐参考截图 1）
+                Button {
+                    toggleShelfMembership()
+                } label: {
+                    Image(systemName: isInShelf ? "heart.fill" : "heart")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(isInShelf ? DSColor.primary : .primary)
+                }
+                .accessibilityLabel(isInShelf ? "已在书架，点击移出" : "加入书架")
+
+                Menu {
+                    Button {
+                        Task { await viewModel.loadBookDetails(forceRefresh: true) }
+                    } label: {
+                        Label("刷新章节", systemImage: "arrow.clockwise")
+                    }
+
+                    Button {
+                        showRangeDownloadSheet = true
+                    } label: {
+                        Label("区间下载", systemImage: "arrow.down.circle")
+                    }
+
+                    Button {
+                        showSwitchSourceSheet = true
+                    } label: {
+                        Label("换源（\(viewModel.alternatives.count)）", systemImage: "arrow.triangle.2.circlepath")
+                    }
+
+                    if let plugin = currentPlugin, (!plugin.loginURL.isEmpty || plugin.requiresLogin) {
+                        Button {
+                            openAuthSheet(initialURL: plugin.loginURL.isEmpty ? plugin.siteURL : plugin.loginURL, isLogin: true) {
+                                Task { await viewModel.loadBookDetails(forceRefresh: true) }
+                            }
+                        } label: {
+                            Label("书源网页登录", systemImage: "person.badge.key")
+                        }
+                    }
+
+                    Button {
+                        UIPasteboard.general.string = viewModel.activeBook.bookURL
+                        ToastManager.shared.show("已复制书籍源链接")
+                    } label: {
+                        Label("复制链接", systemImage: "doc.on.doc")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .accessibilityLabel("更多操作")
+            }
+        }
+        .task(id: viewModel.activeBook.id) {
+            chapterProgressMap = ChapterProgressStore.loadAll(for: viewModel.activeBook.id)
+            await viewModel.loadBookDetails()
+            syncTotalChaptersToDatabase()
+        }
+        .onChange(of: viewModel.chapters.count) { _, _ in
+            syncTotalChaptersToDatabase()
+        }
+        .onChange(of: player.currentChapter?.id) { _, _ in
+            if player.currentBookID == viewModel.activeBook.id {
+                chapterProgressMap = ChapterProgressStore.loadAll(for: viewModel.activeBook.id)
+            }
+        }
+        .onChange(of: player.state) { _, _ in
+            if player.currentBookID == viewModel.activeBook.id {
+                chapterProgressMap = ChapterProgressStore.loadAll(for: viewModel.activeBook.id)
+            }
+        }
+        .sheet(isPresented: $showRangeDownloadSheet) {
+            rangeDownloadSheetView
+        }
+        .sheet(isPresented: $showSwitchSourceSheet) {
+            switchSourceSheetView
+        }
+        .sheet(item: $authSession) { session in
+            WebAuthSheet(session: session)
+        }
+    }
+
+    private func detailListContent(proxy: ScrollViewProxy) -> some View {
         List {
             Section {
                 headerBlock
-                actionRow
-                lastPlayedProgressBanner
+                playPrimaryBanner
                 playbackFailureBanner
                 if savedBook?.sourceUnavailable == true {
                     HStack {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
-                        Text("当前来源不可用，建议点击右上角或「更多 → 换源」切换来源")
+                        Text("当前来源不可用，建议点击右上角「⋯ → 换源」切换来源")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -314,16 +388,18 @@ struct BookDetailView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 20)
                 } else {
-                    let doneIDs = downloadedItemIDs
-                    ForEach(viewModel.displayedChapters) { chapter in
-                        chapterRow(for: chapter, downloadedIDs: doneIDs)
+                    let states = downloadStateByID
+                    ForEach(filteredOrSegmentedChapters) { chapter in
+                        chapterRow(for: chapter, downloadStates: states)
+                            .id(chapter.id)
                     }
                 }
             } header: {
-                chapterSectionHeader
+                chapterSectionHeader(proxy: proxy)
             }
         }
         .listStyle(.plain)
+        .dsAdaptiveBottomDockScroll()
         .background(DSColor.contentBackground)
     }
 
@@ -337,15 +413,33 @@ struct BookDetailView: View {
                     height: 128,
                     cornerRadius: 8
                 )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.6)
+                )
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 7) {
                     Text(viewModel.activeBook.title)
-                        .font(.title3.weight(.semibold))
+                        .font(.title3.weight(.bold))
                         .lineLimit(2)
 
-                    Text(viewModel.activeBook.author.isEmpty ? "未知作者" : viewModel.activeBook.author)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        if !viewModel.activeBook.author.isEmpty && viewModel.activeBook.author != "未知作者" {
+                            Text(viewModel.activeBook.author)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        if !viewModel.statusText.isEmpty {
+                            Text(viewModel.statusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if !viewModel.chapters.isEmpty {
+                            Text("共 \(viewModel.chapters.count) 章")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
 
                     Button {
                         if plugins.contains(where: { $0.id == viewModel.activeBook.sourceID }) {
@@ -355,24 +449,17 @@ struct BookDetailView: View {
                         }
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: "globe")
                             Text(sourceName)
                             Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
                         }
                         .font(.caption.weight(.medium))
                         .foregroundStyle(DSColor.primary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .background(DSColor.cardSurface)
-                        .clipShape(Capsule())
+                        .background(DSColor.primary.opacity(0.14), in: Capsule())
                     }
                     .buttonStyle(.plain)
-
-                    if !viewModel.statusText.isEmpty {
-                        Text(viewModel.statusText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
                 }
             }
 
@@ -389,11 +476,11 @@ struct BookDetailView: View {
         }
     }
 
-    private var actionRow: some View {
-        HStack(spacing: 10) {
+    // 全宽大胶囊「▶ 继续播放 / 开始收听」+ 居中上次听到提示（对齐参考截图 1）
+    private var playPrimaryBanner: some View {
+        VStack(spacing: 8) {
             Button {
                 guard !viewModel.chapters.isEmpty else { return }
-                // 点击开始/继续收听仅记录到「最近播放」（若已在书架则同步更新书架进度），绝不强行把未收藏书籍塞入书架
                 let startChap = viewModel.chapters.first(where: { $0.id == savedBook?.lastChapterID }) ?? viewModel.chapters[0]
                 let pos = savedBook?.lastPositionMs ?? 0
                 player.startPlayback(
@@ -403,108 +490,34 @@ struct BookDetailView: View {
                     initialPositionMs: pos
                 )
             } label: {
-                Label(
-                    savedBook?.lastChapterID != nil ? "继续收听" : "开始收听",
-                    systemImage: "play.fill"
-                )
-                .font(.subheadline.weight(.semibold))
+                HStack(spacing: 8) {
+                    Image(systemName: "play.fill")
+                        .font(.subheadline.weight(.bold))
+                    Text(savedBook?.lastChapterID != nil ? "继续播放" : "开始收听")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(viewModel.chapters.isEmpty ? Color.gray.opacity(0.4) : DSColor.primary)
+                )
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.plain)
             .disabled(viewModel.chapters.isEmpty)
 
-            Button {
-                toggleShelfMembership()
-            } label: {
-                Label(
-                    isInShelf ? "已在书架" : "加入书架",
-                    systemImage: isInShelf ? "checkmark" : "plus"
-                )
-                .font(.subheadline)
+            if let record = savedBook, let lastChap = record.lastChapterTitle, !lastChap.isEmpty {
+                Text("上次听到：\(lastChap)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
-            .buttonStyle(.bordered)
-
-            Menu {
-                Button {
-                    Task { await viewModel.loadBookDetails(forceRefresh: true) }
-                } label: {
-                    Label("刷新章节", systemImage: "arrow.clockwise")
-                }
-
-                Button {
-                    showRangeDownloadSheet = true
-                } label: {
-                    Label("区间下载", systemImage: "arrow.down.circle")
-                }
-
-                Button {
-                    showSwitchSourceSheet = true
-                } label: {
-                    Label("换源（\(viewModel.alternatives.count)）", systemImage: "arrow.triangle.2.circlepath")
-                }
-
-                if let plugin = currentPlugin, (!plugin.loginURL.isEmpty || plugin.requiresLogin) {
-                    Button {
-                        openAuthSheet(initialURL: plugin.loginURL.isEmpty ? plugin.siteURL : plugin.loginURL, isLogin: true) {
-                            Task { await viewModel.loadBookDetails(forceRefresh: true) }
-                        }
-                    } label: {
-                        Label("书源网页登录", systemImage: "person.badge.key")
-                    }
-                }
-
-                Button {
-                    UIPasteboard.general.string = viewModel.activeBook.bookURL
-                    ToastManager.shared.show("已复制书籍源链接")
-                } label: {
-                    Label("复制链接", systemImage: "doc.on.doc")
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
-                    .padding(.horizontal, 6)
-            }
-            .accessibilityLabel("更多操作")
         }
         .padding(.top, 4)
     }
 
-    /// 展示本书最后播放章节、播放进度时间点与最后播放时间
-    @ViewBuilder
-    private var lastPlayedProgressBanner: some View {
-        if let record = savedBook, let lastChap = record.lastChapterTitle, !lastChap.isEmpty {
-            HStack(spacing: 8) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.caption)
-                    .foregroundStyle(DSColor.primary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("上次听到：\(lastChap)")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text("播放进度 \(record.formattedPositionText) · \(record.formattedLastPlayedAtText)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if let targetIndex = viewModel.chapters.firstIndex(where: { $0.id == record.lastChapterID }) {
-                    Button("定位章节") {
-                        let targetSegment = targetIndex / 50
-                        viewModel.selectedSegmentIndex = targetSegment
-                    }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(DSColor.primary)
-                }
-            }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(DSColor.cardSurface)
-            )
-        }
-    }
-
-    /// 若当前正在播放本书且遇到登录/验证或网络错误，直接在详情页展示一键「去登录 / 重试」横幅
     @ViewBuilder
     private var playbackFailureBanner: some View {
         if player.currentBookID == viewModel.activeBook.id,
@@ -536,7 +549,6 @@ struct BookDetailView: View {
                         .font(.caption.weight(.semibold))
                         .buttonStyle(.borderedProminent)
                     default:
-                        // VIP 章节：唯一提示出口 —— 跳到「书源管理 → 内置解析」
                         if let jumpTitle = pErr.builtinParserJumpTitle {
                             Button(jumpTitle) {
                                 AppRouter.shared.openBuiltinParser(sourceID: viewModel.activeBook.sourceID)
@@ -586,35 +598,90 @@ struct BookDetailView: View {
         )
     }
 
-    private var chapterSectionHeader: some View {
+    private func chapterSectionHeader(proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text("共 \(viewModel.chapters.count) 章")
-                    .font(.subheadline.weight(.semibold))
+            HStack(spacing: 14) {
+                Text("共 \(viewModel.chapters.count) 集")
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.primary)
 
                 if viewModel.isLoadingRest {
                     ProgressView()
                         .controlSize(.mini)
-                    Text("正在加载其余章节…")
+                    Text("加载其余章节…")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
                 Spacer()
+
+                // 靶心定位按钮：一键定位到上次收听章节并滚动
+                if savedBook?.lastChapterID != nil {
+                    Button {
+                        scrollToLastPlayedChapter(proxy: proxy)
+                    } label: {
+                        Image(systemName: "scope")
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("定位到上次收听章节")
+                }
+
+                // 章节搜索过滤按钮
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showChapterSearch.toggle()
+                        if !showChapterSearch { chapterSearchKeyword = "" }
+                    }
+                } label: {
+                    Image(systemName: showChapterSearch ? "xmark" : "magnifyingglass")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("搜索章节")
+
+                // 正序/倒序按钮
                 Button {
                     viewModel.isAscending.toggle()
                 } label: {
-                    Label(
-                        viewModel.isAscending ? "正序" : "倒序",
-                        systemImage: "arrow.up.arrow.down"
-                    )
-                    .font(.caption)
+                    Image(systemName: "arrow.up.arrow.down")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(.primary)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(viewModel.isAscending ? "切换为倒序" : "切换为正序")
+            }
+
+            if showChapterSearch {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("搜索章节名称或集数…", text: $chapterSearchKeyword)
+                        .textFieldStyle(.plain)
+                        .font(.subheadline)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !chapterSearchKeyword.isEmpty {
+                        Button {
+                            chapterSearchKeyword = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(DSColor.cardSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
 
             let indexedSegs = viewModel.indexedSegments
-            if indexedSegs.count > 1 {
+            if indexedSegs.count > 1 && !(showChapterSearch && !chapterSearchKeyword.trimmingCharacters(in: .whitespaces).isEmpty) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         let allActive = viewModel.selectedSegmentIndex == -1
@@ -656,53 +723,78 @@ struct BookDetailView: View {
         .background(DSColor.contentBackground)
     }
 
-    private func chapterRow(for chapter: ChapterDTO, downloadedIDs: Set<String>) -> some View {
+    private func chapterRow(for chapter: ChapterDTO, downloadStates: [String: String]) -> some View {
         let isCurrent = player.currentBookID == viewModel.activeBook.id && player.currentChapter?.id == chapter.id
         let itemID = "\(viewModel.activeBook.id)::\(chapter.id)"
-        let isDownloaded = downloadedIDs.contains(itemID)
+        let dlState = downloadStates[itemID]
         let isLastListened = savedBook?.lastChapterID == chapter.id
 
-        return HStack(spacing: 10) {
-            if isCurrent {
-                Image(systemName: player.state == .playing ? "waveform" : "speaker.wave.2.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(DSColor.primary)
-            } else if isLastListened {
-                Image(systemName: "clock")
-                    .font(.caption2)
-                    .foregroundStyle(DSColor.primary)
+        // 读取单章收听历史秒数
+        let chapterPosMs: Int = {
+            if let recorded = chapterProgressMap[chapter.id], recorded > 0 {
+                return recorded
             }
+            if isLastListened, let rec = savedBook, rec.lastPositionMs > 0 {
+                return rec.lastPositionMs
+            }
+            return 0
+        }()
 
-            VStack(alignment: .leading, spacing: 2) {
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(chapter.title)
                     .font(.subheadline.weight((isCurrent || isLastListened) ? .semibold : .regular))
                     .foregroundStyle((isCurrent || isLastListened) ? DSColor.primary : .primary)
                     .lineLimit(1)
 
-                if isLastListened, let rec = savedBook, rec.lastPositionMs > 0 {
-                    Text("上次播至 \(rec.formattedPositionText) · \(rec.formattedLastPlayedAtText)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    if chapterPosMs > 0 {
+                        Text("听至 \(ChapterProgressStore.formattedPosition(ms: chapterPosMs))")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    if let dur = chapter.normalizedDurationSec {
+                        Text(PlaybackClock.formatSeconds(Double(dur)))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 8)
 
-            if let dur = chapter.normalizedDurationSec {
-                Text(PlaybackClock.formatSeconds(Double(dur)))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            // 行级直下状态按钮（对齐参考截图 1：紫色已下载对勾 / 转圈下载中 / 灰色下载箭头）
+            Button {
+                if dlState == nil || dlState == "failed" {
+                    DownloadManager.shared.enqueueChapters([chapter], for: viewModel.activeBook, kind: "manual")
+                    ToastManager.shared.show("已加入下载队列")
+                }
+            } label: {
+                Group {
+                    switch dlState {
+                    case "completed":
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 19))
+                            .foregroundStyle(DSColor.primary)
+                    case "downloading", "queued":
+                        ProgressView()
+                            .controlSize(.small)
+                    default:
+                        Image(systemName: "arrow.down.to.line")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
             }
-            if isDownloaded {
-                Image(systemName: "arrow.down.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(DSColor.primary)
-                    .accessibilityLabel("已下载")
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(dlState == "completed" ? "已下载" : "下载此章")
         }
+        .padding(.vertical, 3)
         .contentShape(Rectangle())
         .onTapGesture {
-            let resumePos = (savedBook?.lastChapterID == chapter.id) ? (savedBook?.lastPositionMs ?? 0) : 0
+            let resumePos = chapterPosMs > 0 ? chapterPosMs : ((savedBook?.lastChapterID == chapter.id) ? (savedBook?.lastPositionMs ?? 0) : 0)
             player.startPlayback(
                 book: viewModel.activeBook,
                 chapters: viewModel.chapters,
@@ -727,6 +819,38 @@ struct BookDetailView: View {
             } label: {
                 Label("从此章开始下载", systemImage: "arrow.down.to.line")
             }
+        }
+    }
+
+    private func scrollToLastPlayedChapter(proxy: ScrollViewProxy) {
+        guard let lastID = savedBook?.lastChapterID,
+              let targetIndex = viewModel.chapters.firstIndex(where: { $0.id == lastID }) else { return }
+        showChapterSearch = false
+        chapterSearchKeyword = ""
+        viewModel.selectedSegmentIndex = targetIndex / 50
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            withAnimation(.easeInOut(duration: 0.3)) {
+                proxy.scrollTo(lastID, anchor: .center)
+            }
+        }
+    }
+
+    private func syncTotalChaptersToDatabase() {
+        guard !viewModel.chapters.isEmpty, let existing = savedBook else { return }
+        var changed = false
+        if existing.totalChapters != viewModel.chapters.count {
+            existing.totalChapters = viewModel.chapters.count
+            changed = true
+        }
+        if let lastID = existing.lastChapterID,
+           let idx = viewModel.chapters.firstIndex(where: { $0.id == lastID }),
+           existing.lastChapterIndex != idx + 1 {
+            existing.lastChapterIndex = idx + 1
+            changed = true
+        }
+        if changed {
+            try? modelContext.save()
         }
     }
 
@@ -805,9 +929,6 @@ struct BookDetailView: View {
         .presentationDetents([.medium])
     }
 
-    /// 切换「书架」归属状态：
-    /// - 只有点击「加入书架」才会使 `inShelf = true`；
-    /// - 点击「已在书架」移除时，若该书有播放历史（`lastPlayedAt != nil`），仅将 `inShelf` 置为 `false` 保留在「最近播放」中。
     private func toggleShelfMembership() {
         if let existing = savedBook {
             if existing.inShelf {
@@ -823,6 +944,9 @@ struct BookDetailView: View {
             } else {
                 existing.inShelf = true
                 existing.addedAt = .now
+                if !viewModel.chapters.isEmpty {
+                    existing.totalChapters = viewModel.chapters.count
+                }
                 try? modelContext.save()
                 ToastManager.shared.show("已加入书架")
             }
@@ -836,10 +960,7 @@ struct BookDetailView: View {
                 cover: viewModel.activeBook.cover,
                 intro: viewModel.activeBook.intro,
                 inShelf: true,
-                addedAt: .now,
-                skipIntroSec: AppSettingsStore.shared.defaultSkipIntroSec,
-                skipOutroSec: AppSettingsStore.shared.defaultSkipOutroSec,
-                speed: AppSettingsStore.shared.defaultSpeed
+                totalChapters: viewModel.chapters.count
             )
             modelContext.insert(newBook)
             try? modelContext.save()

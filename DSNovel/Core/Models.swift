@@ -18,6 +18,10 @@ final class Book {
     var categoryID: String?
     var lastChapterID: String?
     var lastChapterTitle: String?
+    /// 最后播放章节序号（1-based，0 表示未知）
+    var lastChapterIndex: Int = 0
+    /// 书籍总章节数（0 表示未知）
+    var totalChapters: Int = 0
     var lastPositionMs: Int
     var lastPlayedAt: Date?
     var volume: Double
@@ -40,6 +44,8 @@ final class Book {
         categoryID: String? = nil,
         lastChapterID: String? = nil,
         lastChapterTitle: String? = nil,
+        lastChapterIndex: Int = 0,
+        totalChapters: Int = 0,
         lastPositionMs: Int = 0,
         lastPlayedAt: Date? = nil,
         volume: Double = 1.0,
@@ -61,6 +67,8 @@ final class Book {
         self.categoryID = categoryID
         self.lastChapterID = lastChapterID
         self.lastChapterTitle = lastChapterTitle
+        self.lastChapterIndex = lastChapterIndex
+        self.totalChapters = totalChapters
         self.lastPositionMs = lastPositionMs
         self.lastPlayedAt = lastPlayedAt
         self.volume = volume
@@ -126,6 +134,33 @@ final class Book {
                 return "\(chapter) · \(formattedPositionText)"
             }
             return chapter
+        }
+        return "尚未收听"
+    }
+
+    /// 书架/最近播放卡片第二行：演播/作者 · 书源名称（无作者时仅展示书源名称）
+    func authorAndSourceSubtitle(sourceName: String) -> String {
+        let cleanAuthor = author.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanAuthor.isEmpty || cleanAuthor == "未知作者" {
+            return sourceName
+        }
+        if cleanAuthor.contains(sourceName) {
+            return cleanAuthor
+        }
+        return "\(cleanAuthor) · \(sourceName)"
+    }
+
+    /// 书架/最近播放卡片第三行：精确展示「第 102/2059 集 · 02:45」
+    var episodeAndTimeProgressText: String {
+        let timePart = formattedPositionText
+        if lastChapterIndex > 0 && totalChapters > 0 {
+            return "第 \(lastChapterIndex)/\(totalChapters) 集 · \(timePart)"
+        } else if lastChapterIndex > 0 {
+            return "第 \(lastChapterIndex) 集 · \(timePart)"
+        } else if let title = lastChapterTitle, !title.isEmpty {
+            return "\(title) · \(timePart)"
+        } else if totalChapters > 0 {
+            return "共 \(totalChapters) 集 · 尚未收听"
         }
         return "尚未收听"
     }
@@ -461,16 +496,18 @@ enum AppTab: Int, CaseIterable, Hashable {
     }
 }
 
-/// 书架页顶部切换子页：「我的书架」与「最近播放」
+/// 书架页顶部三栏切换：「书架 · 最近播放 · 已下载」（已完整移除书签）
 enum ShelfSectionMode: String, CaseIterable, Identifiable {
     case shelf = "shelf"
     case recent = "recent"
+    case downloaded = "downloaded"
 
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .shelf: return "我的书架"
+        case .shelf: return "书架"
         case .recent: return "最近播放"
+        case .downloaded: return "已下载"
         }
     }
 }
@@ -537,6 +574,35 @@ struct BookRef: Identifiable, Hashable, Codable, Sendable {
         self.cover = cover
         self.intro = intro
         self.chapterCount = chapterCount
+    }
+
+    /// 发现页网格与列表卡片的智能副标题：优先展示「共 X 章 / X 集」，其次展示作者或状态简介，彻底消除生硬的「未知作者」
+    var discoverSubtitle: String {
+        if chapterCount > 0 {
+            return "共 \(chapterCount) 章"
+        }
+        let combined = [intro, author].joined(separator: " ")
+        if let range = combined.range(of: #"共\s*\d+\s*[章集回讲]"#, options: .regularExpression) {
+            return String(combined[range]).replacingOccurrences(of: " ", with: "")
+                .replacingOccurrences(of: "共", with: "共 ")
+                .replacingOccurrences(of: "章", with: " 章")
+                .replacingOccurrences(of: "集", with: " 集")
+                .replacingOccurrences(of: "回", with: " 回")
+                .replacingOccurrences(of: "讲", with: " 讲")
+        }
+        if let range = combined.range(of: #"\d+\s*[章集回讲]"#, options: .regularExpression) {
+            let numPart = String(combined[range]).trimmingCharacters(in: .whitespaces)
+            return "共 \(numPart)"
+        }
+        let cleanAuthor = author.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanAuthor.isEmpty {
+            return cleanAuthor
+        }
+        let cleanIntro = intro.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanIntro.isEmpty {
+            return cleanIntro
+        }
+        return "有声读物"
     }
 
     var normalizedKey: String {

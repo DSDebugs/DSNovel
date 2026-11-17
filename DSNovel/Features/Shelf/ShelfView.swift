@@ -1,11 +1,11 @@
 import SwiftUI
 import SwiftData
 
-/// 书架与最近播放页：
-/// 1. 顶部清晰分离「我的书架」与「最近播放」两个独立视图；
-/// 2. 只有用户主动点击「加入书架」的书籍（`inShelf == true`）才在「我的书架」展示；
-/// 3. 所有播放过的历史记录（`lastPlayedAt != nil`）在「最近播放」按时间倒序展示，未加入书架的书籍支持一键「+ 加入书架」；
-/// 4. 「我的书架」与「最近播放」均完整记录并展示每本书的最后播放章节、播放进度时间点与最后播放时间。
+/// 书架与最近播放及已下载聚合页：
+/// 1. 左对齐大字号三栏沉浸顶栏：「书架 · 最近播放 · 已下载」（已完整去除书签）+ 右侧旋转刷新与更多管理菜单；
+/// 2. 「书架」下展示「全部 N」+ 各自定义分类计数胶囊 + 显式「+ 新建分类」描边胶囊；
+/// 3. 书籍卡片统一采用高辨识度三行布局（书名 / 演播·书源 / 主题色高亮 `第 X/Y 集 · mm:ss`）+ 右侧主题色圆形播放键；
+/// 4. 「已下载」标签页按书籍聚合展示离线占用空间（MB）、已下载集数与一键清理按钮。
 struct ShelfView: View {
     let onSwitchToDiscover: () -> Void
     let onSwitchToSearch: () -> Void
@@ -16,6 +16,7 @@ struct ShelfView: View {
     @Query(sort: [SortDescriptor(\Book.addedAt, order: .reverse)]) private var books: [Book]
     @Query(sort: [SortDescriptor(\ShelfCategory.order)]) private var categories: [ShelfCategory]
     @Query(sort: [SortDescriptor(\PluginRecord.order)]) private var plugins: [PluginRecord]
+    @Query(sort: [SortDescriptor(\DownloadItem.createdAt, order: .reverse)]) private var downloadItems: [DownloadItem]
 
     init(
         onSwitchToDiscover: @escaping () -> Void,
@@ -33,17 +34,23 @@ struct ShelfView: View {
     @State private var selectedCategoryID: String? = nil
     @State private var isEditingSelection = false
     @State private var selectedBookIDs: Set<String> = []
+    @State private var isRefreshingShelf = false
     @State private var showCategoryManageSheet = false
     @State private var showNewCategoryAlert = false
     @State private var newCategoryName = ""
     @State private var showMoveCategoryDialog = false
     @State private var showClearRecentConfirm = false
+    @State private var pendingDeleteDownloadBook: DownloadedBookSummary?
 
     private var player = PlayerEngine.shared
     private var settings = AppSettingsStore.shared
 
     private var sourceNameByID: [String: String] {
         Dictionary(plugins.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    private var bookByID: [String: Book] {
+        Dictionary(books.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// 严格仅包含用户主动加入书架的书籍
@@ -56,14 +63,6 @@ struct ShelfView: View {
         books
             .filter { $0.lastPlayedAt != nil }
             .sorted { ($0.lastPlayedAt ?? .distantPast) > ($1.lastPlayedAt ?? .distantPast) }
-    }
-
-    /// 书架内最近播放的一本书（用于书架顶部快捷续听卡片）
-    private var mostRecentShelfBook: Book? {
-        shelfBooks
-            .filter { $0.lastPlayedAt != nil }
-            .sorted { ($0.lastPlayedAt ?? .distantPast) > ($1.lastPlayedAt ?? .distantPast) }
-            .first
     }
 
     private var filteredShelfBooks: [Book] {
@@ -86,159 +85,403 @@ struct ShelfView: View {
         }
     }
 
-    var body: some View {
-        shelfMainStack
-            .navigationTitle(sectionMode.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    sectionModeSwitcher
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    shelfTrailingToolbarItems
-                }
-            }
-            .onChange(of: sectionMode) { _, _ in
-                if isEditingSelection {
-                    isEditingSelection = false
-                    selectedBookIDs.removeAll()
-                }
-            }
-            .alert("新建书架分类", isPresented: $showNewCategoryAlert) {
-                TextField("分类名称", text: $newCategoryName)
-                Button("取消", role: .cancel) { newCategoryName = "" }
-                Button("创建") {
-                    createNewCategory()
-                }
-            }
-            .confirmationDialog("移动选中书籍到分类", isPresented: $showMoveCategoryDialog) {
-                Button("全部（取消分类）") {
-                    moveSelectedBooks(to: nil)
-                }
-                ForEach(categories) { cat in
-                    Button(cat.name) {
-                        moveSelectedBooks(to: cat.id)
-                    }
-                }
-                Button("取消", role: .cancel) {}
-            }
-            .confirmationDialog("确定清空全部最近播放记录？", isPresented: $showClearRecentConfirm, titleVisibility: .visible) {
-                Button("清空最近播放（不影响已加入书架的书籍）", role: .destructive) {
-                    clearAllRecentHistory()
-                }
-                Button("取消", role: .cancel) {}
-            }
-            .sheet(isPresented: $showCategoryManageSheet) {
-                CategoryManageSheet()
-            }
+    /// 按书籍聚合的手动离线下载汇总
+    private struct DownloadedBookSummary: Identifiable {
+        var id: String { bookID }
+        let bookID: String
+        let bookTitle: String
+        let sourceID: String
+        let completedCount: Int
+        let pendingCount: Int
+        let failedCount: Int
+        let totalBytes: Int64
+        let latestAt: Date
     }
 
-    // MARK: - 顶部「我的书架 / 最近播放」分段切换器
+    private var manualDownloads: [DownloadItem] {
+        downloadItems.filter { $0.kind == "manual" }
+    }
 
-    private var sectionModeSwitcher: some View {
-        HStack(spacing: 4) {
-            ForEach(ShelfSectionMode.allCases) { mode in
-                let isSelected = sectionMode == mode
-                let count = mode == .shelf ? shelfBooks.count : recentBooks.count
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        sectionMode = mode
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(mode.title)
-                            .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                        if count > 0 {
-                            Text("\(count)")
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(
-                                    Capsule()
-                                        .fill(isSelected ? Color.white.opacity(0.24) : Color.secondary.opacity(0.14))
-                                )
-                        }
-                    }
-                    .foregroundStyle(isSelected ? .white : .primary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(isSelected ? DSColor.primary : Color.clear)
-                    )
-                }
-                .buttonStyle(.plain)
-            }
+    private var downloadedBookSummaries: [DownloadedBookSummary] {
+        let grouped = Dictionary(grouping: manualDownloads, by: \.bookID)
+        return grouped.map { bookID, items in
+            let completed = items.filter { $0.state == "completed" }
+            let pending = items.filter { $0.state == "queued" || $0.state == "downloading" }
+            let failed = items.filter { $0.state == "failed" }
+            let bytes = completed.reduce(Int64(0)) { $0 + $1.bytes }
+            let latest = items.map(\.createdAt).max() ?? .distantPast
+            return DownloadedBookSummary(
+                bookID: bookID,
+                bookTitle: items.first?.bookTitle ?? bookByID[bookID]?.title ?? "未知书籍",
+                sourceID: items.first?.sourceID ?? bookByID[bookID]?.sourceID ?? "",
+                completedCount: completed.count,
+                pendingCount: pending.count,
+                failedCount: failed.count,
+                totalBytes: bytes,
+                latestAt: latest
+            )
         }
-        .padding(3)
-        .background(
-            Capsule(style: .continuous)
-                .fill(DSColor.cardSurface)
-        )
+        .sorted { $0.latestAt > $1.latestAt }
     }
 
-    private var shelfMainStack: some View {
+    private var totalManualDownloadBytes: Int64 {
+        manualDownloads.filter { $0.state == "completed" }.reduce(0) { $0 + $1.bytes }
+    }
+
+    var body: some View {
         ZStack(alignment: .bottom) {
-            Group {
-                switch sectionMode {
-                case .shelf:
-                    shelfPrimaryContent
-                case .recent:
-                    recentPlayedPrimaryContent
+            VStack(spacing: 0) {
+                shelfTopHeaderBar
+
+                Group {
+                    switch sectionMode {
+                    case .shelf:
+                        shelfPrimaryContent
+                    case .recent:
+                        recentPlayedPrimaryContent
+                    case .downloaded:
+                        downloadedPrimaryContent
+                    }
                 }
             }
             .background(DSColor.contentBackground)
 
-            // 书架编辑模式下的底部操作栏（书架页唯一的玻璃元素）
+            // 书架编辑模式下的底部操作栏
             if sectionMode == .shelf && isEditingSelection && !selectedBookIDs.isEmpty {
                 shelfEditingFloatingBar
             }
         }
+        .toolbar(.hidden, for: .navigationBar)
+        .onChange(of: sectionMode) { _, _ in
+            if isEditingSelection {
+                isEditingSelection = false
+                selectedBookIDs.removeAll()
+            }
+        }
+        .onChange(of: isEditingSelection) { _, editing in
+            BottomDockController.shared.isSuppressedByEditing = (editing && sectionMode == .shelf)
+        }
+        .onDisappear {
+            BottomDockController.shared.isSuppressedByEditing = false
+        }
+        .task {
+            backfillMissingChapterCountsIfNeeded()
+        }
+        .onAppear {
+            backfillMissingChapterCountsIfNeeded()
+        }
+        .onChange(of: books.count) { _, _ in
+            backfillMissingChapterCountsIfNeeded()
+        }
+        .alert("新建分类", isPresented: $showNewCategoryAlert) {
+            TextField("输入分类名称", text: $newCategoryName)
+            Button("取消", role: .cancel) { newCategoryName = "" }
+            Button("创建") {
+                createNewCategory()
+            }
+        }
+        .confirmationDialog("移动选中书籍到分类", isPresented: $showMoveCategoryDialog) {
+            Button("全部（取消分类）") {
+                moveSelectedBooks(to: nil)
+            }
+            ForEach(categories) { cat in
+                Button(cat.name) {
+                    moveSelectedBooks(to: cat.id)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog("确定清空全部最近播放记录？", isPresented: $showClearRecentConfirm, titleVisibility: .visible) {
+            Button("清空最近播放（不影响书架收藏）", role: .destructive) {
+                clearAllRecentHistory()
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .alert("删除离线缓存", isPresented: Binding(
+            get: { pendingDeleteDownloadBook != nil },
+            set: { if !$0 { pendingDeleteDownloadBook = nil } }
+        )) {
+            Button("取消", role: .cancel) { pendingDeleteDownloadBook = nil }
+            Button("删除", role: .destructive) {
+                if let target = pendingDeleteDownloadBook {
+                    DownloadManager.shared.removeDownloads(forBookID: target.bookID)
+                    ToastManager.shared.show("已清理「\(target.bookTitle)」离线音频")
+                }
+                pendingDeleteDownloadBook = nil
+            }
+        } message: {
+            Text("确认删除「\(pendingDeleteDownloadBook?.bookTitle ?? "")」的全部离线下载音频文件吗？")
+        }
+        .sheet(isPresented: $showCategoryManageSheet) {
+            CategoryManageSheet()
+        }
     }
 
-    // MARK: - 1. 「我的书架」视图（仅展示用户主动加入书架的书籍）
+    // MARK: - 1. 顶部左对齐大字号三栏导航（书架 · 最近播放 · 已下载）
+
+    private var shelfTopHeaderBar: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 20) {
+            ForEach(ShelfSectionMode.allCases) { mode in
+                let isSelected = sectionMode == mode
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                        sectionMode = mode
+                    }
+                } label: {
+                    Text(mode.title)
+                        .font(.system(size: isSelected ? 24 : 17, weight: isSelected ? .bold : .medium))
+                        .foregroundStyle(isSelected ? .primary : .secondary)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 8)
+
+            Menu {
+                if sectionMode == .shelf && !shelfBooks.isEmpty {
+                    Picker("排序方式", selection: Bindable(settings).shelfSort) {
+                        ForEach(ShelfSortOrder.allCases) { order in
+                            Text(order.title).tag(order)
+                        }
+                    }
+
+                    Button {
+                        settings.shelfLayout = settings.shelfLayout == .grid ? .list : .grid
+                    } label: {
+                        Label(settings.shelfLayout == .grid ? "切换为列表视图" : "切换为网格视图",
+                              systemImage: settings.shelfLayout == .grid ? "list.bullet" : "square.grid.2x2")
+                    }
+
+                    Button {
+                        isEditingSelection.toggle()
+                        selectedBookIDs.removeAll()
+                    } label: {
+                        Label(isEditingSelection ? "完成批量管理" : "批量管理书架", systemImage: "checkmark.circle")
+                    }
+
+                    Button {
+                        showCategoryManageSheet = true
+                    } label: {
+                        Label("管理分类", systemImage: "folder.badge.gearshape")
+                    }
+                } else if sectionMode == .recent && !recentBooks.isEmpty {
+                    Button(role: .destructive) {
+                        showClearRecentConfirm = true
+                    } label: {
+                        Label("清空最近播放", systemImage: "trash")
+                    }
+                }
+
+                Button {
+                    onOpenDownloads()
+                } label: {
+                    Label("详细下载队列", systemImage: "arrow.down.circle")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("更多操作")
+
+            Button {
+                Task { await refreshCurrentSection() }
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .rotationEffect(.degrees(isRefreshingShelf ? 360 : 0))
+                    .animation(
+                        isRefreshingShelf
+                            ? .linear(duration: 0.9).repeatForever(autoreverses: false)
+                            : .default,
+                        value: isRefreshingShelf
+                    )
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("刷新")
+        }
+        .padding(.horizontal, DSSpacing.lg)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    // MARK: - 2. 「书架」视图（分组胶囊 + 三行信息卡片 + 右侧圆形播放键）
 
     @ViewBuilder
     private var shelfPrimaryContent: some View {
-        if shelfBooks.isEmpty {
-            ContentUnavailableView {
-                Label("书架还是空的", systemImage: "books.vertical")
-            } description: {
-                Text("只有你在书籍详情页或最近播放中点击「加入书架」的书籍才会展示在这里，并持久记录最后播放章节与时间")
-            } actions: {
-                VStack(spacing: 10) {
-                    HStack(spacing: 12) {
-                        Button("去发现页") {
-                            onSwitchToDiscover()
-                        }
-                        .buttonStyle(.borderedProminent)
+        VStack(spacing: 0) {
+            categoryCapsuleStrip
 
-                        Button("去搜索书籍") {
-                            onSwitchToSearch()
-                        }
-                        .buttonStyle(.bordered)
-                    }
+            if shelfBooks.isEmpty {
+                ContentUnavailableView {
+                    Label("书架还是空的", systemImage: "books.vertical")
+                } description: {
+                    Text("在书籍详情页点击右上角收藏心形或「加入书架」，即可在此分类管理并同步播放集数进度")
+                } actions: {
+                    VStack(spacing: 10) {
+                        HStack(spacing: 12) {
+                            Button("去发现页") {
+                                onSwitchToDiscover()
+                            }
+                            .buttonStyle(.borderedProminent)
 
-                    if !recentBooks.isEmpty {
-                        Button("查看最近播放记录 (\(recentBooks.count))") {
-                            sectionMode = .recent
+                            Button("去搜索书籍") {
+                                onSwitchToSearch()
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .font(.footnote.weight(.medium))
+
+                        if !recentBooks.isEmpty {
+                            Button("查看最近播放记录 (\(recentBooks.count))") {
+                                sectionMode = .recent
+                            }
+                            .font(.footnote.weight(.medium))
+                        }
                     }
                 }
-            }
-        } else {
-            VStack(spacing: 0) {
-                if let recent = mostRecentShelfBook {
-                    continueListeningCard(for: recent)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if filteredShelfBooks.isEmpty {
+                ContentUnavailableView {
+                    Label("该分类下暂无书籍", systemImage: "folder")
+                } description: {
+                    Text("长按任意书架书籍选择「移动到分类」，即可归类到当前分组")
+                } actions: {
+                    Button("查看全部书架") {
+                        selectedCategoryID = nil
+                    }
+                    .buttonStyle(.bordered)
                 }
-                categoryCapsuleStrip
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
                 shelfCollectionBody
             }
         }
     }
 
-    // MARK: - 2. 「最近播放」视图（展示全部历史播放记录，记录最后播放章节、进度与时间）
+    private var categoryCapsuleStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                let allSelected = selectedCategoryID == nil
+                Button {
+                    selectedCategoryID = nil
+                } label: {
+                    Text("全部 \(shelfBooks.count)")
+                        .font(.system(size: 13, weight: allSelected ? .semibold : .regular))
+                        .foregroundStyle(allSelected ? DSColor.primary : .secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(allSelected ? DSColor.primary.opacity(0.16) : Color.clear)
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .strokeBorder(
+                                    allSelected ? DSColor.primary.opacity(0.45) : Color.primary.opacity(0.16),
+                                    lineWidth: 1
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+
+                ForEach(categories) { cat in
+                    let isSelected = selectedCategoryID == cat.id
+                    let catCount = shelfBooks.filter { $0.categoryID == cat.id }.count
+                    Button {
+                        selectedCategoryID = cat.id
+                    } label: {
+                        Text("\(cat.name) \(catCount)")
+                            .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                            .foregroundStyle(isSelected ? DSColor.primary : .secondary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(isSelected ? DSColor.primary.opacity(0.16) : Color.clear)
+                            )
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(
+                                        isSelected ? DSColor.primary.opacity(0.45) : Color.primary.opacity(0.16),
+                                        lineWidth: 1
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button {
+                            showCategoryManageSheet = true
+                        } label: {
+                            Label("管理/排序分类", systemImage: "folder.badge.gearshape")
+                        }
+                    }
+                }
+
+                // 显式「+ 新建分类」描边胶囊（对齐参考截图 4）
+                Button {
+                    newCategoryName = ""
+                    showNewCategoryAlert = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("新建分类")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 6)
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.2), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, DSSpacing.lg)
+            .padding(.vertical, 8)
+        }
+    }
+
+    @ViewBuilder
+    private var shelfCollectionBody: some View {
+        if settings.shelfLayout == .grid {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 14)], spacing: 18) {
+                    ForEach(filteredShelfBooks) { book in
+                        shelfGridItem(for: book)
+                    }
+                }
+                .padding(DSSpacing.lg)
+            }
+            .dsAdaptiveBottomDockScroll()
+        } else {
+            List(filteredShelfBooks) { book in
+                shelfThreeLineCard(for: book, showAddToShelfButton: false)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 7, leading: DSSpacing.lg, bottom: 7, trailing: DSSpacing.lg))
+                    .listRowBackground(Color.clear)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            removeFromShelf(book)
+                        } label: {
+                            Label("移出书架", systemImage: "trash")
+                        }
+                    }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .dsAdaptiveBottomDockScroll()
+        }
+    }
+
+    // MARK: - 3. 「最近播放」视图
 
     @ViewBuilder
     private var recentPlayedPrimaryContent: some View {
@@ -246,7 +489,7 @@ struct ShelfView: View {
             ContentUnavailableView {
                 Label("暂无最近播放记录", systemImage: "clock.arrow.circlepath")
             } description: {
-                Text("点击任意书籍章节开始收听后，这里会自动记录最后播放章节、收听进度与播放时间")
+                Text("点击任意书籍章节开始收听后，这里会自动记录播至第几集与时间进度")
             } actions: {
                 HStack(spacing: 12) {
                     Button("去发现页听书") {
@@ -260,177 +503,307 @@ struct ShelfView: View {
                     .buttonStyle(.bordered)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List {
-                Section {
-                    ForEach(recentBooks) { book in
-                        recentPlayedRow(for: book)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    removeRecentHistory(book)
-                                } label: {
-                                    Label("移除记录", systemImage: "trash")
-                                }
-
-                                if !book.inShelf {
-                                    Button {
-                                        addBookToShelf(book)
-                                    } label: {
-                                        Label("加入书架", systemImage: "plus.circle")
-                                    }
-                                    .tint(DSColor.primary)
-                                }
+                ForEach(recentBooks) { book in
+                    shelfThreeLineCard(for: book, showAddToShelfButton: !book.inShelf)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 7, leading: DSSpacing.lg, bottom: 7, trailing: DSSpacing.lg))
+                        .listRowBackground(Color.clear)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                removeRecentHistory(book)
+                            } label: {
+                                Label("移除记录", systemImage: "trash")
                             }
-                    }
-                } header: {
-                    HStack {
-                        Text("按最后播放时间排序（共 \(recentBooks.count) 本）")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("清空记录") {
-                            showClearRecentConfirm = true
+
+                            if !book.inShelf {
+                                Button {
+                                    addBookToShelf(book)
+                                } label: {
+                                    Label("加入书架", systemImage: "plus.circle")
+                                }
+                                .tint(DSColor.primary)
+                            }
                         }
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                    }
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .dsAdaptiveBottomDockScroll()
         }
     }
 
-    private func recentPlayedRow(for book: Book) -> some View {
-        let isThisPlaying = player.currentBookID == book.id && player.state == .playing
-        let sourceName = sourceNameByID[book.sourceID] ?? book.sourceID
+    // MARK: - 4. 「已下载」按书聚合视图（对齐参考截图 2）
 
-        return HStack(alignment: .center, spacing: 12) {
-            ZStack(alignment: .bottomTrailing) {
-                CoverImageView(url: book.cover, title: book.title, width: 60, height: 80, cornerRadius: 8)
-                if isThisPlaying {
-                    Image(systemName: "waveform")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.white)
-                        .padding(4)
-                        .background(Circle().fill(DSColor.primary))
-                        .padding(4)
+    @ViewBuilder
+    private var downloadedPrimaryContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            let formattedSize = ByteCountFormatter.string(fromByteCount: totalManualDownloadBytes, countStyle: .file)
+            Text("共占用 \(formattedSize) · 文件存在应用自己的目录里，卸载应用时会一起删除")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, DSSpacing.lg)
+                .padding(.vertical, 8)
+
+            if downloadedBookSummaries.isEmpty {
+                ContentUnavailableView {
+                    Label("暂无已下载书籍", systemImage: "arrow.down.circle")
+                } description: {
+                    Text("在书籍详情页点击章节右侧下载箭头或「区间下载」，即可离线保存音频")
+                } actions: {
+                    Button("查看详细下载队列") {
+                        onOpenDownloads()
+                    }
+                    .buttonStyle(.bordered)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(downloadedBookSummaries) { summary in
+                        downloadedBookRow(summary)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 7, leading: DSSpacing.lg, bottom: 7, trailing: DSSpacing.lg))
+                            .listRowBackground(Color.clear)
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .dsAdaptiveBottomDockScroll()
             }
+        }
+    }
+
+    private func downloadedBookRow(_ summary: DownloadedBookSummary) -> some View {
+        let bookRecord = bookByID[summary.bookID]
+        let sourceName = sourceNameByID[summary.sourceID] ?? summary.sourceID
+        let sizeText = ByteCountFormatter.string(fromByteCount: summary.totalBytes, countStyle: .file)
+
+        return HStack(alignment: .center, spacing: 14) {
+            CoverImageView(
+                url: bookRecord?.cover ?? "",
+                title: summary.bookTitle,
+                width: 60,
+                height: 80,
+                cornerRadius: 7
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.6)
+            )
 
             VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Text(book.title)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                Text(summary.bookTitle)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
 
-                    if book.inShelf {
-                        Text("已在书架")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(DSColor.primary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(
-                                Capsule()
-                                    .fill(DSColor.primary.opacity(0.12))
-                            )
+                Text(sourceName.isEmpty ? "离线音频" : sourceName)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                HStack(spacing: 6) {
+                    Text("已下载 \(summary.completedCount) 集 · \(sizeText)")
+                        .font(.system(size: 13, weight: .medium).monospacedDigit())
+                        .foregroundStyle(DSColor.primary)
+
+                    if summary.pendingCount > 0 {
+                        Text("(\(summary.pendingCount) 集下载中)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else if summary.failedCount > 0 {
+                        Text("(\(summary.failedCount) 集失败)")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
                     }
-                }
-
-                // 最后播放章节
-                HStack(spacing: 4) {
-                    Image(systemName: "headphones")
-                        .font(.caption2)
-                        .foregroundStyle(DSColor.primary)
-                    Text(book.lastChapterTitle ?? "未知章节")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                }
-
-                // 播放进度位置 + 最后播放时间 + 书源名称
-                HStack(spacing: 6) {
-                    Text("进度 \(book.formattedPositionText)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(DSColor.primary)
-                    Text("·")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(book.formattedLastPlayedAtText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text("· \(sourceName)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 8)
 
-            VStack(alignment: .trailing, spacing: 8) {
-                Button {
-                    triggerQuickPlay(for: book)
-                } label: {
-                    Image(systemName: isThisPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 30))
-                        .foregroundStyle(DSColor.primary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isThisPlaying ? "暂停" : "继续播放")
-
-                if !book.inShelf {
-                    Button {
-                        addBookToShelf(book)
-                    } label: {
-                        HStack(spacing: 2) {
-                            Image(systemName: "plus")
-                            Text("书架")
-                        }
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(DSColor.primary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .strokeBorder(DSColor.primary.opacity(0.6), lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
+            Button {
+                pendingDeleteDownloadBook = summary
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 17))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("删除本书离线下载")
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
         .contentShape(Rectangle())
         .onTapGesture {
-            onSelectBook(book.bookRef)
+            if let existing = bookRecord {
+                onSelectBook(existing.bookRef)
+            } else {
+                onOpenDownloads()
+            }
+        }
+    }
+
+    // MARK: - 5. 统一三行式书籍信息卡（对齐参考截图 3 / 图 4）
+
+    private func shelfThreeLineCard(for book: Book, showAddToShelfButton: Bool) -> some View {
+        let isThisPlaying = player.currentBookID == book.id && player.state == .playing
+        let isSelected = selectedBookIDs.contains(book.id)
+        let sourceName = sourceNameByID[book.sourceID] ?? book.sourceID
+
+        return HStack(alignment: .center, spacing: 14) {
+            CoverImageView(url: book.cover, title: book.title, width: 60, height: 80, cornerRadius: 7)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.6)
+                )
+
+            VStack(alignment: .leading, spacing: 5) {
+                // 第一行：书名
+                HStack(spacing: 5) {
+                    if book.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(DSColor.primary)
+                    }
+                    Text(book.title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+
+                // 第二行：演播名称 · 书源名称
+                Text(book.authorAndSourceSubtitle(sourceName: sourceName))
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                // 第三行：第 X/Y 集 · mm:ss
+                Text(book.episodeAndTimeProgressText)
+                    .font(.system(size: 13, weight: .medium).monospacedDigit())
+                    .foregroundStyle(book.lastPlayedAt != nil ? DSColor.primary : .secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+
+            if isEditingSelection && sectionMode == .shelf {
+                Button {
+                    toggleSelection(for: book.id)
+                } label: {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.title2)
+                        .foregroundStyle(isSelected ? DSColor.primary : .secondary)
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 8) {
+                    if showAddToShelfButton {
+                        Button {
+                            addBookToShelf(book)
+                        } label: {
+                            Text("+ 书架")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(DSColor.primary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(
+                                    Capsule()
+                                        .strokeBorder(DSColor.primary.opacity(0.55), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Button {
+                        triggerQuickPlay(for: book)
+                    } label: {
+                        Circle()
+                            .fill(DSColor.primary)
+                            .frame(width: 34, height: 34)
+                            .overlay {
+                                Image(systemName: isThisPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .offset(x: isThisPlaying ? 0 : 1)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isThisPlaying ? "暂停" : "继续播放")
+                }
+            }
+        }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isEditingSelection && sectionMode == .shelf {
+                toggleSelection(for: book.id)
+            } else {
+                onSelectBook(book.bookRef)
+            }
         }
         .contextMenu {
-            Button {
-                triggerQuickPlay(for: book)
-            } label: {
-                Label("继续播放", systemImage: "play.fill")
-            }
+            bookContextMenu(for: book)
+        }
+    }
 
-            if !book.inShelf {
+    private func shelfGridItem(for book: Book) -> some View {
+        let isThisPlaying = player.currentBookID == book.id && player.state == .playing
+        let isSelected = selectedBookIDs.contains(book.id)
+        let sourceName = sourceNameByID[book.sourceID] ?? book.sourceID
+
+        return VStack(alignment: .leading, spacing: 5) {
+            ZStack(alignment: .bottomTrailing) {
+                CoverImageView(url: book.cover, title: book.title, width: 104, height: 138, cornerRadius: 8)
+
                 Button {
-                    addBookToShelf(book)
+                    if isEditingSelection {
+                        toggleSelection(for: book.id)
+                    } else {
+                        triggerQuickPlay(for: book)
+                    }
                 } label: {
-                    Label("加入书架", systemImage: "books.vertical")
+                    Circle()
+                        .fill(isEditingSelection ? (isSelected ? DSColor.primary : Color.gray) : DSColor.primary)
+                        .frame(width: 28, height: 28)
+                        .overlay {
+                            Image(systemName: isEditingSelection
+                                  ? (isSelected ? "checkmark" : "circle")
+                                  : (isThisPlaying ? "pause.fill" : "play.fill"))
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white)
+                        }
                 }
-            } else {
-                Button(role: .destructive) {
-                    removeFromShelf(book)
-                } label: {
-                    Label("移出书架", systemImage: "folder.badge.minus")
-                }
+                .buttonStyle(.plain)
+                .padding(6)
             }
 
-            Button(role: .destructive) {
-                removeRecentHistory(book)
-            } label: {
-                Label("删除此条播放记录", systemImage: "trash")
+            Text(book.title)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+
+            Text(book.authorAndSourceSubtitle(sourceName: sourceName))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text(book.episodeAndTimeProgressText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(DSColor.primary)
+                .lineLimit(1)
+        }
+        .frame(width: 104, alignment: .leading)
+        .onTapGesture {
+            if isEditingSelection {
+                toggleSelection(for: book.id)
+            } else {
+                onSelectBook(book.bookRef)
             }
+        }
+        .contextMenu {
+            bookContextMenu(for: book)
         }
     }
 
@@ -461,342 +834,6 @@ struct ShelfView: View {
     }
 
     @ViewBuilder
-    private var shelfTrailingToolbarItems: some View {
-        if sectionMode == .shelf {
-            Button {
-                settings.shelfLayout = settings.shelfLayout == .grid ? .list : .grid
-            } label: {
-                Image(systemName: settings.shelfLayout == .grid ? "list.bullet" : "square.grid.2x2")
-            }
-            .accessibilityLabel(settings.shelfLayout == .grid ? "切换为列表" : "切换为网格")
-
-            Menu {
-                Picker("排序方式", selection: Bindable(settings).shelfSort) {
-                    ForEach(ShelfSortOrder.allCases) { order in
-                        Text(order.title).tag(order)
-                    }
-                }
-            } label: {
-                Image(systemName: "arrow.up.arrow.down")
-            }
-            .accessibilityLabel("排序方式")
-        } else if !recentBooks.isEmpty {
-            Button {
-                showClearRecentConfirm = true
-            } label: {
-                Image(systemName: "trash")
-            }
-            .accessibilityLabel("清空最近播放")
-        }
-
-        Menu {
-            if sectionMode == .shelf && !shelfBooks.isEmpty {
-                Button {
-                    isEditingSelection.toggle()
-                    selectedBookIDs.removeAll()
-                } label: {
-                    Label(isEditingSelection ? "完成编辑" : "批量管理书架", systemImage: "checkmark.circle")
-                }
-
-                Button {
-                    showCategoryManageSheet = true
-                } label: {
-                    Label("分类管理", systemImage: "folder.badge.gearshape")
-                }
-            }
-
-            Button {
-                onOpenDownloads()
-            } label: {
-                Label("离线下载管理", systemImage: "arrow.down.circle")
-            }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-        }
-        .accessibilityLabel("更多操作")
-    }
-
-    private func createNewCategory() {
-        let trimmed = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            let cat = ShelfCategory(name: trimmed, order: categories.count)
-            modelContext.insert(cat)
-            try? modelContext.save()
-        }
-        newCategoryName = ""
-    }
-
-    private func continueListeningCard(for book: Book) -> some View {
-        let isThisPlaying = player.currentBookID == book.id && player.state == .playing
-        return HStack(spacing: 12) {
-            CoverImageView(url: book.cover, title: book.title, width: 52, height: 70, cornerRadius: 6)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("继续收听 · \(book.title)")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    Text(book.formattedLastPlayedAtText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Text(book.lastChapterTitle ?? "点击继续上次位置")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text("已播至 \(book.formattedPositionText)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(DSColor.primary)
-            }
-            Spacer(minLength: 4)
-
-            Button {
-                triggerQuickPlay(for: book)
-            } label: {
-                Image(systemName: isThisPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(DSColor.primary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isThisPlaying ? "暂停" : "继续播放")
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(DSColor.cardSurface)
-        )
-        .padding(.horizontal, DSSpacing.lg)
-        .padding(.top, DSSpacing.sm)
-        .onTapGesture {
-            onSelectBook(book.bookRef)
-        }
-    }
-
-    private var categoryCapsuleStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                let allSelected = selectedCategoryID == nil
-                Button {
-                    selectedCategoryID = nil
-                } label: {
-                    Text("全部 (\(shelfBooks.count))")
-                        .font(.caption.weight(allSelected ? .semibold : .regular))
-                        .foregroundStyle(allSelected ? .white : .primary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(allSelected ? DSColor.primary : DSColor.cardSurface)
-                        )
-                }
-                .buttonStyle(.plain)
-
-                ForEach(categories) { cat in
-                    let isSelected = selectedCategoryID == cat.id
-                    Button {
-                        selectedCategoryID = cat.id
-                    } label: {
-                        Text(cat.name)
-                            .font(.caption.weight(isSelected ? .semibold : .regular))
-                            .foregroundStyle(isSelected ? .white : .primary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(
-                                Capsule(style: .continuous)
-                                    .fill(isSelected ? DSColor.primary : DSColor.cardSurface)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Button {
-                    showNewCategoryAlert = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(DSColor.cardSurface)
-                        )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("新建分类")
-            }
-            .padding(.horizontal, DSSpacing.lg)
-            .padding(.vertical, 8)
-        }
-    }
-
-    @ViewBuilder
-    private var shelfCollectionBody: some View {
-        if settings.shelfLayout == .grid {
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 14)], spacing: 18) {
-                    ForEach(filteredShelfBooks) { book in
-                        shelfGridItem(for: book)
-                    }
-                }
-                .padding(DSSpacing.lg)
-            }
-        } else {
-            List(filteredShelfBooks) { book in
-                shelfListItem(for: book)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            removeFromShelf(book)
-                        } label: {
-                            Label("移出书架", systemImage: "trash")
-                        }
-                    }
-            }
-            .listStyle(.plain)
-        }
-    }
-
-    private func shelfGridItem(for book: Book) -> some View {
-        let isThisPlaying = player.currentBookID == book.id && player.state == .playing
-        let isSelected = selectedBookIDs.contains(book.id)
-
-        return VStack(alignment: .leading, spacing: 5) {
-            ZStack(alignment: .bottomTrailing) {
-                CoverImageView(url: book.cover, title: book.title, width: 104, height: 138, cornerRadius: 8)
-
-                // 封面右下角叠加不透明圆形纯色播放状态角标
-                Button {
-                    if isEditingSelection {
-                        toggleSelection(for: book.id)
-                    } else {
-                        triggerQuickPlay(for: book)
-                    }
-                } label: {
-                    Circle()
-                        .fill(isEditingSelection ? (isSelected ? DSColor.primary : Color.gray) : DSColor.primary)
-                        .frame(width: 28, height: 28)
-                        .overlay {
-                            Image(systemName: isEditingSelection
-                                  ? (isSelected ? "checkmark" : "circle")
-                                  : (isThisPlaying ? "pause.fill" : "play.fill"))
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.white)
-                        }
-                }
-                .buttonStyle(.plain)
-                .padding(6)
-            }
-
-            HStack(spacing: 4) {
-                if book.isPinned {
-                    Image(systemName: "pin.fill")
-                        .font(.caption2)
-                        .foregroundStyle(DSColor.primary)
-                }
-                Text(book.title)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-            }
-
-            // 最后播放章节
-            Text(book.lastChapterTitle ?? "尚未收听")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            // 最后播放进度与时间
-            if book.lastPlayedAt != nil {
-                Text("\(book.formattedPositionText) · \(book.formattedLastPlayedAtText)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(DSColor.primary)
-                    .lineLimit(1)
-            } else {
-                Text(book.author.isEmpty ? "待收听" : book.author)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-        }
-        .frame(width: 104, alignment: .leading)
-        .onTapGesture {
-            if isEditingSelection {
-                toggleSelection(for: book.id)
-            } else {
-                onSelectBook(book.bookRef)
-            }
-        }
-        .contextMenu {
-            bookContextMenu(for: book)
-        }
-    }
-
-    private func shelfListItem(for book: Book) -> some View {
-        let isThisPlaying = player.currentBookID == book.id && player.state == .playing
-        return HStack(spacing: 12) {
-            CoverImageView(url: book.cover, title: book.title, width: 56, height: 76, cornerRadius: 6)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    if book.isPinned {
-                        Image(systemName: "pin.fill")
-                            .font(.caption2)
-                            .foregroundStyle(DSColor.primary)
-                    }
-                    Text(book.title)
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-                }
-
-                // 最后播放章节
-                Text(book.lastChapterTitle.map { "上次听到：\($0)" } ?? "尚未开始收听")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                // 最后播放进度与时间
-                if book.lastPlayedAt != nil {
-                    HStack(spacing: 6) {
-                        Text("进度 \(book.formattedPositionText)")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(DSColor.primary)
-                        Text("·")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(book.formattedLastPlayedAtText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if book.sourceUnavailable {
-                    Text("书源不可用 · 点击详情可换源")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-            }
-            Spacer()
-            Button {
-                triggerQuickPlay(for: book)
-            } label: {
-                Image(systemName: isThisPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(DSColor.primary)
-            }
-            .buttonStyle(.plain)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if isEditingSelection {
-                toggleSelection(for: book.id)
-            } else {
-                onSelectBook(book.bookRef)
-            }
-        }
-        .contextMenu {
-            bookContextMenu(for: book)
-        }
-    }
-
-    @ViewBuilder
     private func bookContextMenu(for book: Book) -> some View {
         Button {
             triggerQuickPlay(for: book)
@@ -804,23 +841,31 @@ struct ShelfView: View {
             Label("继续播放", systemImage: "play.fill")
         }
 
-        Button {
-            book.isPinned.toggle()
-            try? modelContext.save()
-        } label: {
-            Label(book.isPinned ? "取消置顶" : "置顶书籍", systemImage: "pin")
-        }
-
-        Menu("移动到分类") {
-            Button("全部（无分类）") {
-                book.categoryID = nil
+        if book.inShelf {
+            Button {
+                book.isPinned.toggle()
                 try? modelContext.save()
+            } label: {
+                Label(book.isPinned ? "取消置顶" : "置顶书籍", systemImage: "pin")
             }
-            ForEach(categories) { cat in
-                Button(cat.name) {
-                    book.categoryID = cat.id
+
+            Menu("移动到分类") {
+                Button("全部（无分类）") {
+                    book.categoryID = nil
                     try? modelContext.save()
                 }
+                ForEach(categories) { cat in
+                    Button(cat.name) {
+                        book.categoryID = cat.id
+                        try? modelContext.save()
+                    }
+                }
+            }
+        } else {
+            Button {
+                addBookToShelf(book)
+            } label: {
+                Label("加入书架", systemImage: "plus.circle")
             }
         }
 
@@ -835,14 +880,123 @@ struct ShelfView: View {
             Label("下载全部", systemImage: "arrow.down.circle")
         }
 
-        Button(role: .destructive) {
-            removeFromShelf(book)
-        } label: {
-            Label("移出书架", systemImage: "trash")
+        if book.inShelf {
+            Button(role: .destructive) {
+                removeFromShelf(book)
+            } label: {
+                Label("移出书架", systemImage: "trash")
+            }
+        } else {
+            Button(role: .destructive) {
+                removeRecentHistory(book)
+            } label: {
+                Label("删除播放记录", systemImage: "trash")
+            }
         }
     }
 
-    // MARK: - 书架与最近播放操作方法
+    // MARK: - 6. 数据同步与操作方法
+
+    private func backfillMissingChapterCountsIfNeeded() {
+        var updated = false
+        for book in books where book.totalChapters == 0 || (book.lastChapterID != nil && book.lastChapterIndex == 0) {
+            guard let cached = ChapterCacheStore.loadChapters(for: book.id), !cached.isEmpty else { continue }
+            if book.totalChapters != cached.count {
+                book.totalChapters = cached.count
+                updated = true
+            }
+            if let lastID = book.lastChapterID,
+               let idx = cached.firstIndex(where: { $0.id == lastID }),
+               book.lastChapterIndex != idx + 1 {
+                book.lastChapterIndex = idx + 1
+                updated = true
+            }
+        }
+        if updated {
+            try? modelContext.save()
+        }
+    }
+
+    private func refreshCurrentSection() async {
+        guard !isRefreshingShelf else { return }
+        isRefreshingShelf = true
+        defer { isRefreshingShelf = false }
+
+        if sectionMode == .downloaded {
+            DownloadManager.shared.reconcileCompletedFiles()
+            ToastManager.shared.show("已刷新离线文件占用状态")
+            return
+        }
+
+        let targets = Array((sectionMode == .shelf ? shelfBooks : recentBooks).prefix(12))
+        let targetSnapshots = targets.map { (id: $0.id, sourceID: $0.sourceID, bookURL: $0.bookURL) }
+        var fetchedResults: [(String, [ChapterDTO])] = []
+
+        await withTaskGroup(of: (String, [ChapterDTO])?.self) { group in
+            var nextIdx = 0
+            let maxConcurrency = 3
+            for _ in 0..<min(maxConcurrency, targetSnapshots.count) {
+                let snap = targetSnapshots[nextIdx]
+                nextIdx += 1
+                group.addTask {
+                    if let detail = try? await PluginRuntime.shared.bookDetail(
+                        sourceID: snap.sourceID,
+                        bookURL: snap.bookURL,
+                        loadEpisodes: true,
+                        loadFullPages: false
+                    ), !detail.chapters.isEmpty {
+                        return (snap.id, detail.chapters)
+                    }
+                    return nil
+                }
+            }
+            for await item in group {
+                if let item { fetchedResults.append(item) }
+                if nextIdx < targetSnapshots.count {
+                    let snap = targetSnapshots[nextIdx]
+                    nextIdx += 1
+                    group.addTask {
+                        if let detail = try? await PluginRuntime.shared.bookDetail(
+                            sourceID: snap.sourceID,
+                            bookURL: snap.bookURL,
+                            loadEpisodes: true,
+                            loadFullPages: false
+                        ), !detail.chapters.isEmpty {
+                            return (snap.id, detail.chapters)
+                        }
+                        return nil
+                    }
+                }
+            }
+        }
+
+        var updatedCount = 0
+        for (bookID, chapters) in fetchedResults {
+            guard let book = bookByID[bookID] else { continue }
+            if chapters.count > book.totalChapters {
+                updatedCount += 1
+                book.totalChapters = chapters.count
+                ChapterCacheStore.saveChapters(chapters, for: book.id)
+            }
+            if let lastID = book.lastChapterID,
+               let idx = chapters.firstIndex(where: { $0.id == lastID }) {
+                book.lastChapterIndex = idx + 1
+            }
+        }
+        try? modelContext.save()
+        ToastManager.shared.show(updatedCount > 0 ? "发现 \(updatedCount) 本书有章节更新" : "书架进度已同步")
+    }
+
+    private func createNewCategory() {
+        let trimmed = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            let cat = ShelfCategory(name: trimmed, order: categories.count)
+            modelContext.insert(cat)
+            try? modelContext.save()
+            selectedCategoryID = cat.id
+        }
+        newCategoryName = ""
+    }
 
     private func addBookToShelf(_ book: Book) {
         book.inShelf = true
@@ -851,7 +1005,6 @@ struct ShelfView: View {
         ToastManager.shared.show("已加入书架")
     }
 
-    /// 从「我的书架」移出：若该书有播放历史，保留在「最近播放」中；若无播放历史则彻底删除
     private func removeFromShelf(_ book: Book) {
         if book.lastPlayedAt != nil {
             book.inShelf = false
@@ -864,7 +1017,6 @@ struct ShelfView: View {
         ToastManager.shared.show("已移出书架")
     }
 
-    /// 从「最近播放」删除单条记录：若该书已在书架，保留书架收藏并清空最近播放时间戳；若未在书架则彻底删除
     private func removeRecentHistory(_ book: Book) {
         if book.inShelf {
             book.lastPlayedAt = nil
@@ -875,7 +1027,6 @@ struct ShelfView: View {
         ToastManager.shared.show("已移除该条播放记录")
     }
 
-    /// 清空全部最近播放历史（不影响「我的书架」中的书籍）
     private func clearAllRecentHistory() {
         for book in recentBooks {
             if book.inShelf {

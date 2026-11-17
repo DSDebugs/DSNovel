@@ -431,15 +431,17 @@ struct SearchView: View {
     @Query(sort: [SortDescriptor(\PluginGroup.order)]) private var groups: [PluginGroup]
     @Query(sort: [SortDescriptor(\SearchHistory.updatedAt, order: .reverse)]) private var histories: [SearchHistory]
 
+    @Bindable var viewModel: SearchViewModel
+
     init(
+        viewModel: SearchViewModel = SearchViewModel(),
         onSelectMergedItem: @escaping (MergedSearchItem) -> Void,
         onNavigateToPluginManager: @escaping () -> Void = {}
     ) {
+        self.viewModel = viewModel
         self.onSelectMergedItem = onSelectMergedItem
         self.onNavigateToPluginManager = onNavigateToPluginManager
     }
-
-    @State private var viewModel = SearchViewModel()
     @State private var showFailedDetails = false
     @State private var authSession: WebAuthSessionRequest?
     @FocusState private var isSearchFieldFocused: Bool
@@ -454,7 +456,6 @@ struct SearchView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            searchInputHeader
             scopeCapsuleBar
 
             if viewModel.hasSearched {
@@ -484,6 +485,11 @@ struct SearchView: View {
         }
         .sheet(item: $authSession) { session in
             WebAuthSheet(session: session)
+        }
+        .onAppear {
+            BottomDockController.shared.onSubmitInlineSearch = { rawKeyword in
+                submitSearch(rawKeyword)
+            }
         }
     }
 
@@ -699,6 +705,7 @@ struct SearchView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            .dsAdaptiveBottomDockScroll()
         }
     }
 
@@ -799,6 +806,7 @@ struct SearchView: View {
                 }
             }
             .listStyle(.plain)
+            .dsAdaptiveBottomDockScroll()
         }
     }
 
@@ -980,6 +988,7 @@ struct SearchView: View {
         let trimmed = rawKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         isSearchFieldFocused = false
+        BottomDockController.shared.isSearchFieldFocused = false
         viewModel.keyword = trimmed
         recordHistory(trimmed)
         viewModel.performSearch(plugins: plugins)

@@ -83,12 +83,14 @@ final class DiscoverViewModel {
         guard sections.indices.contains(index) else { return }
         selectedSectionIndex = index
         selectedTabIndex = 0
+        isInSourceSearching = false
         loadSource(sourceID: sourceID)
     }
 
     func selectTab(_ index: Int, sourceID: String) {
         guard let sec = activeSection, sec.tabs.indices.contains(index) else { return }
         selectedTabIndex = index
+        isInSourceSearching = false
         loadSource(sourceID: sourceID)
     }
 
@@ -163,7 +165,9 @@ final class DiscoverViewModel {
                         if !sections.indices.contains(selectedSectionIndex) {
                             selectedSectionIndex = 0
                         }
-                        selectedTabIndex = 0
+                        if let sec = activeSection, !sec.tabs.indices.contains(selectedTabIndex) {
+                            selectedTabIndex = 0
+                        }
                     }
                     if let tab = activeTab {
                         let resolvedCacheKey = "\(sourceID)_\(selectedSectionIndex)_\(selectedTabIndex)"
@@ -235,10 +239,12 @@ final class DiscoverViewModel {
     }
 }
 
-/// 发现页（5.1 节）：书源切换器 Menu（含延迟提示与书源管理快捷入口）、网格/列表切换、纯色横向分类胶囊、就地登录/验证弹层与无书源引导
+// MARK: - 发现页（重构版：左对齐书源大标题 + 右侧搜索/布局/刷新三键 + 半屏首字徽标书源切换抽屉 + 一级下划线/二级胶囊分类栏 + 三列等比网格/紧凑列表）
+
 struct DiscoverView: View {
     let onNavigateToImportPlugins: () -> Void
     let onSwitchToSearch: () -> Void
+    let onSwitchToSearchWithKeyword: (String) -> Void
     let onSelectBook: (BookRef) -> Void
 
     @Query(sort: [SortDescriptor(\PluginRecord.order)]) private var plugins: [PluginRecord]
@@ -247,10 +253,12 @@ struct DiscoverView: View {
     init(
         onNavigateToImportPlugins: @escaping () -> Void,
         onSwitchToSearch: @escaping () -> Void = {},
+        onSwitchToSearchWithKeyword: @escaping (String) -> Void = { _ in },
         onSelectBook: @escaping (BookRef) -> Void
     ) {
         self.onNavigateToImportPlugins = onNavigateToImportPlugins
         self.onSwitchToSearch = onSwitchToSearch
+        self.onSwitchToSearchWithKeyword = onSwitchToSearchWithKeyword
         self.onSelectBook = onSelectBook
     }
 
@@ -258,6 +266,14 @@ struct DiscoverView: View {
     @State private var settings = AppSettingsStore.shared
     @State private var authSession: WebAuthSessionRequest?
     @State private var showInSourceSearch = false
+    @State private var showSourcePickerSheet = false
+    @FocusState private var isInSourceSearchFocused: Bool
+    @Namespace private var categoryUnderlineNS
+
+    private static let threeColumns: [GridItem] = Array(
+        repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
+        count: 3
+    )
 
     private var enabledDiscoverPlugins: [PluginRecord] {
         plugins
@@ -304,39 +320,26 @@ struct DiscoverView: View {
             }
         }
         .background(DSColor.contentBackground)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                if let active = currentPlugin {
-                    sourceSwitcherMenu(active: active)
-                } else {
-                    Text("发现").font(.headline)
-                }
-            }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if !enabledDiscoverPlugins.isEmpty {
-                    Button {
-                        showInSourceSearch.toggle()
-                        if !showInSourceSearch {
-                            viewModel.isInSourceSearching = false
-                            viewModel.inSourceSearchKeyword = ""
-                            if let id = currentPlugin?.id {
-                                viewModel.loadSource(sourceID: id)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: showInSourceSearch ? "xmark.circle" : "magnifyingglass")
+        .toolbar(.hidden, for: .navigationBar)
+        .sheet(isPresented: $showSourcePickerSheet) {
+            DiscoverSourcePickerSheet(
+                plugins: enabledDiscoverPlugins,
+                groups: groups,
+                activePluginID: currentPlugin?.id ?? "",
+                onSelect: { selected in
+                    settings.currentDiscoverSourceID = selected.id
+                    if showInSourceSearch {
+                        showInSourceSearch = false
+                        isInSourceSearchFocused = false
+                        viewModel.isInSourceSearching = false
+                        viewModel.inSourceSearchKeyword = ""
                     }
-                    .accessibilityLabel("源内搜索")
-
-                    Button {
-                        settings.discoverLayout = settings.discoverLayout == .grid ? .list : .grid
-                    } label: {
-                        Image(systemName: settings.discoverLayout == .grid ? "list.bullet" : "square.grid.2x2")
-                    }
-                    .accessibilityLabel(settings.discoverLayout == .grid ? "切换为列表" : "切换为网格")
+                    viewModel.switchSourceIfNeeded(to: selected.id)
+                },
+                onManageSources: {
+                    onNavigateToImportPlugins()
                 }
-            }
+            )
         }
         .sheet(item: $authSession) { session in
             WebAuthSheet(session: session)
@@ -351,217 +354,208 @@ struct DiscoverView: View {
         }
     }
 
-    @ViewBuilder
-    private var contentBody: some View {
-        VStack(spacing: 0) {
-            if showInSourceSearch, let plugin = currentPlugin {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
+    // MARK: - 1. 顶部沉浸式标题栏（左对齐书源大标题 + 右侧搜索/布局切换/刷新三键）
+
+    private var discoverTopBar: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Button {
+                isInSourceSearchFocused = false
+                showSourcePickerSheet = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text(currentPlugin?.name ?? "发现")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.secondary)
-                    TextField("在「\(plugin.name)」内搜索…", text: $viewModel.inSourceSearchKeyword)
-                        .textFieldStyle(.plain)
-                        .submitLabel(.search)
-                        .onSubmit {
-                            viewModel.isInSourceSearching = true
-                            viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
-                        }
-                    if !viewModel.inSourceSearchKeyword.isEmpty {
-                        Button("搜索") {
-                            viewModel.isInSourceSearching = true
-                            viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(DSColor.primary)
-                    }
+                        .rotationEffect(.degrees(showSourcePickerSheet ? 180 : 0))
+                        .animation(.easeInOut(duration: 0.2), value: showSourcePickerSheet)
                 }
-                .padding(10)
-                .background(DSColor.cardSurface)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .padding(.horizontal, DSSpacing.lg)
-                .padding(.vertical, DSSpacing.sm)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("切换听书源，当前为\(currentPlugin?.name ?? "发现")")
 
-            if !viewModel.sections.isEmpty && !viewModel.isInSourceSearching {
-                categoryCapsuleBar
-            }
+            Spacer(minLength: 8)
 
-            if let err = viewModel.currentError, let plugin = currentPlugin {
-                inlineErrorView(error: err, plugin: plugin)
-            } else if viewModel.isLoading && viewModel.items.isEmpty {
-                Spacer()
-                ProgressView("正在加载「\(currentPlugin?.name ?? "")」内容…")
-                Spacer()
-            } else if viewModel.items.isEmpty {
-                ContentUnavailableView {
-                    Label("暂无内容", systemImage: "book.closed")
-                } description: {
-                    Text("请尝试切换上方分类、下拉刷新或点击顶部标题切换其他书源")
-                } actions: {
-                    if let plugin = currentPlugin {
-                        Button("刷新当前分类") {
-                            viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
-                        }
-                        .buttonStyle(.borderedProminent)
+            if !enabledDiscoverPlugins.isEmpty {
+                // ① 源内搜索切换按钮（magnifyingglass <-> xmark，对齐参考截图 2）
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                        showInSourceSearch.toggle()
                     }
+                    if showInSourceSearch {
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(90))
+                            isInSourceSearchFocused = true
+                        }
+                    } else {
+                        isInSourceSearchFocused = false
+                        let wasSearching = viewModel.isInSourceSearching
+                        viewModel.isInSourceSearching = false
+                        viewModel.inSourceSearchKeyword = ""
+                        if wasSearching, let id = currentPlugin?.id {
+                            viewModel.loadSource(sourceID: id)
+                        }
+                    }
+                } label: {
+                    Image(systemName: showInSourceSearch ? "xmark" : "magnifyingglass")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
                 }
-            } else {
-                if settings.discoverLayout == .grid {
-                    ScrollView {
-                        LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 104), spacing: 12)],
-                            spacing: 16
-                        ) {
-                            ForEach(viewModel.items) { book in
-                                DiscoverGridCell(book: book)
-                                    .onTapGesture {
-                                        onSelectBook(book)
+                .buttonStyle(.plain)
+                .accessibilityLabel(showInSourceSearch ? "关闭源内搜索" : "在当前书源内搜索")
+
+                // ② 布局切换按钮（网格态显示列表图标 list.bullet，列表态显示网格图标 square.grid.2x2，对齐参考截图 3/4）
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        settings.discoverLayout = settings.discoverLayout == .grid ? .list : .grid
+                    }
+                } label: {
+                    Image(systemName: settings.discoverLayout == .grid ? "list.bullet" : "square.grid.2x2")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(settings.discoverLayout == .grid ? "切换为列表视图" : "切换为三列网格视图")
+
+                // ③ 显式强制刷新按钮（加载中自动旋转，对齐参考截图右上角刷新图标）
+                Button {
+                    if let id = currentPlugin?.id {
+                        viewModel.loadSource(sourceID: id, forceRefresh: true)
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .rotationEffect(.degrees(viewModel.isLoading ? 360 : 0))
+                        .animation(
+                            viewModel.isLoading
+                                ? .linear(duration: 0.85).repeatForever(autoreverses: false)
+                                : .default,
+                            value: viewModel.isLoading
+                        )
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("刷新当前分类")
+            }
+        }
+        .padding(.horizontal, DSSpacing.lg)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    // MARK: - 2. 源内搜索输入框（平滑展开于顶栏下方，同时保留分类栏与列表内容）
+
+    @ViewBuilder
+    private var inSourceSearchBar: some View {
+        if showInSourceSearch, let plugin = currentPlugin {
+            HStack(spacing: 8) {
+                TextField("在“\(plugin.name)”里搜索", text: $viewModel.inSourceSearchKeyword)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline)
+                    .focused($isInSourceSearchFocused)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .onSubmit {
+                        triggerInSourceSearch(pluginID: plugin.id)
+                    }
+
+                if !viewModel.inSourceSearchKeyword.isEmpty {
+                    Button {
+                        viewModel.inSourceSearchKeyword = ""
+                        if viewModel.isInSourceSearching {
+                            viewModel.isInSourceSearching = false
+                            viewModel.loadSource(sourceID: plugin.id)
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("清空源内搜索词")
+
+                    Button {
+                        isInSourceSearchFocused = false
+                        triggerInSourceSearch(pluginID: plugin.id)
+                    } label: {
+                        Text("搜索")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(DSColor.primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.8)
+                    )
+            )
+            .padding(.horizontal, DSSpacing.lg)
+            .padding(.bottom, 6)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    private func triggerInSourceSearch(pluginID: String) {
+        let trimmed = viewModel.inSourceSearchKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        viewModel.isInSourceSearching = true
+        viewModel.loadSource(sourceID: pluginID, forceRefresh: true)
+    }
+
+    // MARK: - 3. 双层差异化分类导航栏（一级文字+下划线横条 · 二级描边/填充胶囊）
+
+    private var categoryHierarchyBar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            let indexedSecs = viewModel.indexedSections
+            if !indexedSecs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 22) {
+                        ForEach(indexedSecs) { entry in
+                            let selected = entry.index == viewModel.selectedSectionIndex && !viewModel.isInSourceSearching
+                            let rawTitle = entry.section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                            Button {
+                                if let id = currentPlugin?.id {
+                                    isInSourceSearchFocused = false
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                                        viewModel.selectSection(entry.index, sourceID: id)
                                     }
-                                    .onAppear {
-                                        if let id = currentPlugin?.id {
-                                            viewModel.loadNextPageIfNeeded(sourceID: id, currentItem: book)
+                                }
+                            } label: {
+                                VStack(spacing: 5) {
+                                    Text(rawTitle.isEmpty ? "推荐" : rawTitle)
+                                        .font(.system(size: 16, weight: selected ? .bold : .medium))
+                                        .foregroundStyle(selected ? DSColor.primary : .secondary)
+
+                                    ZStack {
+                                        Capsule()
+                                            .fill(Color.clear)
+                                            .frame(width: 18, height: 3)
+                                        if selected {
+                                            Capsule()
+                                                .fill(DSColor.primary)
+                                                .frame(width: 18, height: 3)
+                                                .matchedGeometryEffect(id: "discover_sec_underline", in: categoryUnderlineNS)
                                         }
                                     }
-                            }
-                        }
-                        .padding(DSSpacing.lg)
-                    }
-                    .refreshable {
-                        if let id = currentPlugin?.id {
-                            viewModel.loadSource(sourceID: id, forceRefresh: true)
-                        }
-                    }
-                } else {
-                    List(viewModel.items) { book in
-                        DiscoverListRow(book: book)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                onSelectBook(book)
-                            }
-                            .onAppear {
-                                if let id = currentPlugin?.id {
-                                    viewModel.loadNextPageIfNeeded(sourceID: id, currentItem: book)
                                 }
-                            }
-                    }
-                    .listStyle(.plain)
-                    .refreshable {
-                        if let id = currentPlugin?.id {
-                            viewModel.loadSource(sourceID: id, forceRefresh: true)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func menuTitle(for item: PluginRecord) -> String {
-        if item.lastLatencyMs > 0 && item.isHealthyOrSlow {
-            return "\(item.name) (\(item.lastLatencyMs)ms)"
-        }
-        if item.healthState == .unavailable {
-            return "\(item.name) (不可用)"
-        }
-        return item.name
-    }
-
-    private func sourceSwitcherMenu(active: PluginRecord) -> some View {
-        Menu {
-            let pinned = enabledDiscoverPlugins.filter(\.isPinned)
-            if !pinned.isEmpty {
-                Section("置顶书源") {
-                    ForEach(pinned) { item in
-                        Button {
-                            settings.currentDiscoverSourceID = item.id
-                            viewModel.switchSourceIfNeeded(to: item.id)
-                        } label: {
-                            Label(menuTitle(for: item), systemImage: item.id == active.id ? "checkmark" : "pin.fill")
-                        }
-                    }
-                }
-            }
-            ForEach(groups) { group in
-                let inGroup = enabledDiscoverPlugins.filter { $0.groupID == group.id && !$0.isPinned }
-                if !inGroup.isEmpty {
-                    Section(group.name) {
-                        ForEach(inGroup) { item in
-                            Button {
-                                settings.currentDiscoverSourceID = item.id
-                                viewModel.switchSourceIfNeeded(to: item.id)
-                            } label: {
-                                if item.id == active.id {
-                                    Label(menuTitle(for: item), systemImage: "checkmark")
-                                } else {
-                                    Text(menuTitle(for: item))
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            let ungrouped = enabledDiscoverPlugins.filter { ($0.groupID == nil || $0.groupID == "") && !$0.isPinned }
-            if !ungrouped.isEmpty {
-                Section("未分组") {
-                    ForEach(ungrouped) { item in
-                        Button {
-                            settings.currentDiscoverSourceID = item.id
-                            viewModel.switchSourceIfNeeded(to: item.id)
-                        } label: {
-                            if item.id == active.id {
-                                Label(menuTitle(for: item), systemImage: "checkmark")
-                            } else {
-                                Text(menuTitle(for: item))
-                            }
-                        }
-                    }
-                }
-            }
-            Section {
-                Button {
-                    onNavigateToImportPlugins()
-                } label: {
-                    Label("书源管理与延迟检测…", systemImage: "bolt.horizontal.circle")
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Text(active.name)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                if active.lastLatencyMs > 0 && active.isHealthyOrSlow {
-                    Text("\(active.lastLatencyMs)ms")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                }
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .accessibilityLabel("切换书源，当前为\(active.name)")
-    }
-
-    private var categoryCapsuleBar: some View {
-        VStack(spacing: 8) {
-            let indexedSecs = viewModel.indexedSections
-            if indexedSecs.count > 1 {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(indexedSecs) { entry in
-                            let selected = entry.index == viewModel.selectedSectionIndex
-                            Button {
-                                if let id = currentPlugin?.id {
-                                    viewModel.selectSection(entry.index, sourceID: id)
-                                }
-                            } label: {
-                                Text(entry.section.title)
-                                    .font(.subheadline.weight(selected ? .semibold : .regular))
-                                    .foregroundStyle(selected ? .white : .primary)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(
-                                        Capsule(style: .continuous)
-                                            .fill(selected ? DSColor.primary : DSColor.cardSurface)
-                                    )
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }
@@ -573,22 +567,30 @@ struct DiscoverView: View {
             let indexedTabs = viewModel.indexedActiveTabs
             if !indexedTabs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 10) {
                         ForEach(indexedTabs) { entry in
-                            let selected = entry.index == viewModel.selectedTabIndex
+                            let selected = entry.index == viewModel.selectedTabIndex && !viewModel.isInSourceSearching
                             Button {
                                 if let id = currentPlugin?.id {
+                                    isInSourceSearchFocused = false
                                     viewModel.selectTab(entry.index, sourceID: id)
                                 }
                             } label: {
                                 Text(entry.tab.title)
-                                    .font(.caption.weight(selected ? .semibold : .regular))
-                                    .foregroundStyle(selected ? .white : .primary)
-                                    .padding(.horizontal, 12)
+                                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                                    .foregroundStyle(selected ? DSColor.primary : .secondary)
+                                    .padding(.horizontal, 14)
                                     .padding(.vertical, 6)
                                     .background(
                                         Capsule(style: .continuous)
-                                            .fill(selected ? DSColor.primary : DSColor.cardSurface)
+                                            .fill(selected ? DSColor.primary.opacity(0.16) : Color.clear)
+                                    )
+                                    .overlay(
+                                        Capsule(style: .continuous)
+                                            .strokeBorder(
+                                                selected ? DSColor.primary.opacity(0.45) : Color.primary.opacity(0.18),
+                                                lineWidth: 1
+                                            )
                                     )
                             }
                             .buttonStyle(.plain)
@@ -598,8 +600,134 @@ struct DiscoverView: View {
                 }
             }
         }
-        .padding(.vertical, 8)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
         .background(DSColor.contentBackground)
+    }
+
+    // MARK: - 4. 主内容区域（三列等比网格 / 单列详情列表）
+
+    @ViewBuilder
+    private var contentBody: some View {
+        VStack(spacing: 0) {
+            discoverTopBar
+            inSourceSearchBar
+
+            if !viewModel.sections.isEmpty {
+                categoryHierarchyBar
+            }
+
+            if let err = viewModel.currentError, let plugin = currentPlugin {
+                inlineErrorView(error: err, plugin: plugin)
+            } else if viewModel.isLoading && viewModel.items.isEmpty {
+                Spacer()
+                ProgressView("正在加载「\(currentPlugin?.name ?? "")」内容…")
+                Spacer()
+            } else if viewModel.items.isEmpty {
+                emptyDiscoverStateView
+            } else {
+                if settings.discoverLayout == .grid {
+                    ScrollView {
+                        LazyVGrid(columns: Self.threeColumns, spacing: 18) {
+                            ForEach(viewModel.items) { book in
+                                DiscoverGridCell(book: book)
+                                    .onTapGesture {
+                                        isInSourceSearchFocused = false
+                                        onSelectBook(book)
+                                    }
+                                    .onAppear {
+                                        if let id = currentPlugin?.id {
+                                            viewModel.loadNextPageIfNeeded(sourceID: id, currentItem: book)
+                                        }
+                                    }
+                            }
+                        }
+                        .padding(.horizontal, DSSpacing.lg)
+                        .padding(.top, 6)
+                        .padding(.bottom, 12)
+                    }
+                    .scrollDismissesKeyboard(.immediately)
+                    .dsAdaptiveBottomDockScroll()
+                    .refreshable {
+                        if let id = currentPlugin?.id {
+                            viewModel.loadSource(sourceID: id, forceRefresh: true)
+                        }
+                    }
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 14) {
+                            ForEach(viewModel.items) { book in
+                                DiscoverListRow(book: book)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        isInSourceSearchFocused = false
+                                        onSelectBook(book)
+                                    }
+                                    .onAppear {
+                                        if let id = currentPlugin?.id {
+                                            viewModel.loadNextPageIfNeeded(sourceID: id, currentItem: book)
+                                        }
+                                    }
+                            }
+                        }
+                        .padding(.horizontal, DSSpacing.lg)
+                        .padding(.top, 6)
+                        .padding(.bottom, 12)
+                    }
+                    .scrollDismissesKeyboard(.immediately)
+                    .dsAdaptiveBottomDockScroll()
+                    .refreshable {
+                        if let id = currentPlugin?.id {
+                            viewModel.loadSource(sourceID: id, forceRefresh: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var emptyDiscoverStateView: some View {
+        let keyword = viewModel.inSourceSearchKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        ContentUnavailableView {
+            Label(viewModel.isInSourceSearching ? "未在「\(currentPlugin?.name ?? "")」找到匹配结果" : "暂无内容",
+                  systemImage: viewModel.isInSourceSearching ? "magnifyingglass" : "book.closed")
+        } description: {
+            if viewModel.isInSourceSearching && !keyword.isEmpty {
+                Text("当前书源没有返回与“\(keyword)”相关的有声书，可尝试跨全网书源聚合搜索")
+            } else {
+                Text("请尝试切换上方分类、点击右上角刷新或点击左上方书源名称切换其他听书源")
+            }
+        } actions: {
+            HStack(spacing: 12) {
+                if viewModel.isInSourceSearching && !keyword.isEmpty {
+                    Button("全网搜索“\(keyword)”") {
+                        isInSourceSearchFocused = false
+                        onSwitchToSearchWithKeyword(keyword)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("返回分类浏览") {
+                        viewModel.isInSourceSearching = false
+                        viewModel.inSourceSearchKeyword = ""
+                        if let id = currentPlugin?.id {
+                            viewModel.loadSource(sourceID: id)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                } else if let plugin = currentPlugin {
+                    Button("刷新当前分类") {
+                        viewModel.loadSource(sourceID: plugin.id, forceRefresh: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("切换听书源") {
+                        showSourcePickerSheet = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -645,8 +773,8 @@ struct DiscoverView: View {
                     .buttonStyle(.borderedProminent)
                 }
 
-                Button("书源管理") {
-                    onNavigateToImportPlugins()
+                Button("切换听书源") {
+                    showSourcePickerSheet = true
                 }
                 .buttonStyle(.bordered)
             }
@@ -654,28 +782,215 @@ struct DiscoverView: View {
     }
 }
 
+// MARK: - 5. 切换听书源半屏抽屉（还原参考截图 1：圆角矩形首字徽标 + 听书副标题 + 延迟/VIP 增强）
+
+struct DiscoverSourcePickerSheet: View {
+    let plugins: [PluginRecord]
+    let groups: [PluginGroup]
+    let activePluginID: String
+    let onSelect: (PluginRecord) -> Void
+    let onManageSources: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                let pinned = plugins.filter(\.isPinned)
+                if !pinned.isEmpty {
+                    Section("置顶书源") {
+                        ForEach(pinned) { item in
+                            sourceRow(for: item)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+                }
+
+                ForEach(groups) { group in
+                    let inGroup = plugins.filter { !$0.isPinned && $0.groupID == group.id }
+                    if !inGroup.isEmpty {
+                        Section(group.name) {
+                            ForEach(inGroup) { item in
+                                sourceRow(for: item)
+                                    .listRowSeparator(.hidden)
+                                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                                    .listRowBackground(Color.clear)
+                            }
+                        }
+                    }
+                }
+
+                let validGroupIDs = Set(groups.map(\.id))
+                let ungrouped = plugins.filter { p in
+                    guard !p.isPinned else { return false }
+                    guard let gid = p.groupID, !gid.isEmpty else { return true }
+                    return !validGroupIDs.contains(gid)
+                }
+                if !ungrouped.isEmpty {
+                    Section(pinned.isEmpty && groups.isEmpty ? "" : "其他书源") {
+                        ForEach(ungrouped) { item in
+                            sourceRow(for: item)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(DSColor.contentBackground)
+            .navigationTitle("切换听书源")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("关闭") {
+                        dismiss()
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                        onManageSources()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text("书源管理")
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .font(.subheadline.weight(.medium))
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(24)
+    }
+
+    private func sourceRow(for item: PluginRecord) -> some View {
+        let isSelected = item.id == activePluginID
+        return Button {
+            onSelect(item)
+            dismiss()
+        } label: {
+            HStack(spacing: 14) {
+                // 左侧圆角矩形首字徽标（对齐参考图 1）
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(isSelected ? DSColor.primary.opacity(0.24) : DSColor.primary.opacity(0.14))
+                        .frame(width: 44, height: 44)
+                    Text(Self.firstCharacter(of: item.name))
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(DSColor.primary)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(item.name)
+                            .font(.system(size: 16, weight: isSelected ? .semibold : .medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+
+                        if item.isPinned {
+                            Image(systemName: "pin.fill")
+                                .font(.caption2)
+                                .foregroundStyle(DSColor.primary)
+                        }
+
+                        if item.loggedIn {
+                            Text("已登录")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(Color.green.opacity(0.14), in: Capsule())
+                        }
+                    }
+
+                    HStack(spacing: 6) {
+                        Text("听书")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        if item.lastLatencyMs > 0 && item.isHealthyOrSlow {
+                            Text("· \(item.lastLatencyMs)ms")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.green)
+                        } else if item.healthState == .unavailable {
+                            Text("· 不可用")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        } else if !item.summary.isEmpty {
+                            Text("· \(item.summary)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(DSColor.primary)
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private static func firstCharacter(of name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "源" }
+        return String(first)
+    }
+}
+
+// MARK: - 6. 三列等比网格卡片与紧凑单列列表行（对齐参考图 3 / 图 4）
+
 struct DiscoverGridCell: View, Equatable {
     let book: BookRef
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            CoverImageView(
-                url: book.cover,
-                title: book.title,
-                width: 104,
-                height: 138,
-                cornerRadius: 8
-            )
+        VStack(alignment: .leading, spacing: 7) {
+            GeometryReader { geo in
+                let w = max(80, geo.size.width)
+                let h = w * 1.34
+                CoverImageView(
+                    url: book.cover,
+                    title: book.title,
+                    width: w,
+                    height: h,
+                    cornerRadius: 8
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.6)
+                )
+            }
+            .aspectRatio(1.0 / 1.34, contentMode: .fit)
+
             Text(book.title)
-                .font(.subheadline.weight(.medium))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
-            Text(book.author.isEmpty ? "未知作者" : book.author)
-                .font(.caption)
+                .padding(.top, 1)
+
+            Text(book.discoverSubtitle)
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .frame(width: 104, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -683,33 +998,40 @@ struct DiscoverListRow: View, Equatable {
     let book: BookRef
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 14) {
             CoverImageView(
                 url: book.cover,
                 title: book.title,
-                width: 64,
-                height: 86,
-                cornerRadius: 6
+                width: 62,
+                height: 84,
+                cornerRadius: 7
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.6)
+            )
+
             VStack(alignment: .leading, spacing: 6) {
                 Text(book.title)
-                    .font(.body.weight(.medium))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                if !book.author.isEmpty {
-                    Text(book.author)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+                Text(book.discoverSubtitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if !book.intro.isEmpty && book.intro != book.discoverSubtitle {
+                    Text(book.intro)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
-                Text(book.intro.isEmpty ? "点击查看章节详情" : book.intro)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
         .background(DSColor.contentBackground)
     }
 }

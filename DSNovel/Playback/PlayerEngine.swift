@@ -786,10 +786,16 @@ final class PlayerEngine {
         guard let ctx = modelContext, let book = currentBook, let chapter = currentChapter else { return }
         let bookID = book.id
         let posMs = positionMsOverride ?? max(0, Int(clock.currentTimeSec * 1000))
+        let chapterIdx = (chapterQueue.firstIndex(where: { $0.id == chapter.id }).map { $0 + 1 }) ?? 0
+        let totalChaps = chapterQueue.count
+        ChapterProgressStore.save(bookID: bookID, chapterID: chapter.id, positionMs: posMs)
+
         let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
         if let saved = try? ctx.fetch(descriptor).first {
             saved.lastChapterID = chapter.id
             saved.lastChapterTitle = chapter.title
+            if chapterIdx > 0 { saved.lastChapterIndex = chapterIdx }
+            if totalChaps > 0 { saved.totalChapters = totalChaps }
             saved.lastPositionMs = posMs
             saved.lastPlayedAt = .now
             if !book.cover.isEmpty && saved.cover.isEmpty {
@@ -812,6 +818,8 @@ final class PlayerEngine {
                 addedAt: .now,
                 lastChapterID: chapter.id,
                 lastChapterTitle: chapter.title,
+                lastChapterIndex: chapterIdx,
+                totalChapters: totalChaps,
                 lastPositionMs: posMs,
                 lastPlayedAt: .now,
                 volume: bookVolume,
