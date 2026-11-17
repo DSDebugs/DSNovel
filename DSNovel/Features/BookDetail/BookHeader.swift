@@ -12,6 +12,7 @@ struct BookHeader: View {
     let statusText: String
     private let onTapSwitchSource: () -> Void
     private let onTapLogin: () -> Void
+    private let onTapNarrator: ((String) -> Void)?
     private let onCoverLoaded: (UIImage) -> Void
 
     init(
@@ -26,6 +27,7 @@ struct BookHeader: View {
         statusText: String,
         onTapSwitchSource: @escaping () -> Void,
         onTapLogin: @escaping () -> Void,
+        onTapNarrator: ((String) -> Void)? = nil,
         onCoverLoaded: @escaping (UIImage) -> Void = { _ in }
     ) {
         self.book = book
@@ -39,6 +41,7 @@ struct BookHeader: View {
         self.statusText = statusText
         self.onTapSwitchSource = onTapSwitchSource
         self.onTapLogin = onTapLogin
+        self.onTapNarrator = onTapNarrator
         self.onCoverLoaded = onCoverLoaded
     }
 
@@ -58,10 +61,25 @@ struct BookHeader: View {
                     .lineLimit(3)
 
                 if !book.author.isEmpty {
-                    Text(book.author)
+                    Button {
+                        if let onTapNarrator {
+                            onTapNarrator(book.author)
+                        } else {
+                            AppRouter.shared.searchByNarrator(book.author)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "mic.fill")
+                                .font(DSTypography.caption2)
+                            Text(book.author)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.right")
+                                .font(DSTypography.caption2)
+                        }
                         .font(DSTypography.subtitle)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .foregroundStyle(Color.dsAccent)
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 let metaParts = [

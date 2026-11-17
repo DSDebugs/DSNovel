@@ -60,10 +60,15 @@ final class SearchStore {
     private(set) var pendingHigherRelevanceCount: Int = 0
     private(set) var searchGeneration: UInt64 = 0
 
+    private(set) var hotBooks: [BookRef] = []
+    private(set) var isLoadingHotBooks: Bool = false
+    private(set) var hotBooksSourceName: String = ""
+
     private var activeTask: Task<Void, Never>?
     private var stagingBuffer: [BookRef] = []
     private var skippedSourceIDs: Set<String> = []
     var customSourceSearchRunner: (@Sendable (SearchSourceDescriptor, String) async throws -> [BookRef])?
+    var customHotBooksLoader: (@Sendable (String) async throws -> [BookRef])?
 
     init() {}
 
@@ -148,6 +153,48 @@ final class SearchStore {
             }
         }
         return counts.map { ($0.key, $0.value) }.sorted { $0.count > $1.count }
+    }
+
+    func loadHotBooksIfNeeded(sources: [PluginRecord], forceReload: Bool = false) async {
+        if !forceReload && !hotBooks.isEmpty { return }
+        if isLoadingHotBooks { return }
+        let discoverable = sources.filter { $0.isEnabled && $0.discoverable }
+        let preferredID = AppSettingsStore.shared.currentDiscoverSourceID
+        guard let target = discoverable.first(where: { $0.id == preferredID }) ?? discoverable.first else {
+            hotBooks = []
+            hotBooksSourceName = ""
+            return
+        }
+
+        if !forceReload && DiscoverStore.shared.currentSourceID == target.id && !DiscoverStore.shared.currentBooks.isEmpty {
+            hotBooks = Array(DiscoverStore.shared.currentBooks.prefix(20))
+            hotBooksSourceName = target.name
+            return
+        }
+
+        isLoadingHotBooks = true
+        defer { isLoadingHotBooks = false }
+
+        do {
+            let books: [BookRef]
+            if let custom = customHotBooksLoader {
+                books = try await custom(target.id)
+            } else {
+                let sections = try await PluginRuntime.shared.discoverSections(sourceID: target.id)
+                if let firstTab = sections.first?.tabs.first {
+                    let page = try await PluginRuntime.shared.discoverPage(sourceID: target.id, tabURL: firstTab.url, page: 1)
+                    books = page.books
+                } else {
+                    books = []
+                }
+            }
+            hotBooks = Array(books.prefix(20))
+            hotBooksSourceName = target.name
+        } catch {
+            if hotBooks.isEmpty {
+                hotBooksSourceName = ""
+            }
+        }
     }
 
     func submit(
@@ -301,7 +348,6 @@ final class SearchStore {
         }
         pendingHigherRelevanceCount = 0
     }
-
 
     func updateTypingState(isFocused: Bool) {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)

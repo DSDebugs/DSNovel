@@ -307,4 +307,81 @@ final class StoresTests: XCTestCase {
         store.ingestBatchForTesting([BookRef(sourceID: "s1", bookURL: "u2", title: "旧结果")], generation: gen)
         XCTAssertTrue(store.mergedItems.isEmpty)
     }
+
+    @MainActor
+    func testDiscoverStoreTwoCharBadgeAndScopedSearch() async {
+        XCTAssertEqual(DiscoverStore.twoCharBadge(for: "喜马拉雅"), "喜马")
+        XCTAssertEqual(DiscoverStore.twoCharBadge(for: " 博看有声 "), "博看")
+        XCTAssertEqual(DiscoverStore.twoCharBadge(for: ""), "源")
+
+        let store = DiscoverStore()
+        store.resetForTesting()
+        store.currentSourceID = "src_xm"
+        store.customSourceSearchLoader = { sid, kw in
+            [BookRef(sourceID: sid, bookURL: "u/1", title: "\(kw) 结果")]
+        }
+        store.submitSourceSearch(keyword: "凡人修仙传")
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(store.isSearchActive)
+        XCTAssertEqual(store.searchResults.count, 1)
+        XCTAssertEqual(store.searchResults.first?.sourceID, "src_xm")
+
+        store.clearSourceSearch()
+        XCTAssertFalse(store.isSearchActive)
+        XCTAssertTrue(store.searchResults.isEmpty)
+        XCTAssertEqual(store.searchKeyword, "")
+    }
+
+    @MainActor
+    func testSourceStoreGroupingMoveAndReorder() throws {
+        let container = try TestContainer.make()
+        let ctx = container.mainContext
+        let store = SourceStore()
+
+        let g1 = PluginGroup(id: "g1", name: "常用有声", order: 0)
+        let g2 = PluginGroup(id: "g2", name: "备用书源", order: 1)
+        let p1 = PluginRecord(id: "p1", packageID: "pkg", name: "喜马拉雅", version: "1.0", groupID: "g1", order: 0)
+        let p2 = PluginRecord(id: "p2", packageID: "pkg", name: "番茄畅听", version: "1.0", groupID: "g1", order: 1)
+        let p3 = PluginRecord(id: "p3", packageID: "pkg", name: "听书网", version: "1.0", groupID: nil, order: 0)
+        ctx.insert(g1)
+        ctx.insert(g2)
+        ctx.insert(p1)
+        ctx.insert(p2)
+        ctx.insert(p3)
+        try ctx.save()
+
+        store.modelContext = ctx
+        store.refreshNow()
+
+        let sections = store.groupedSections(from: store.filteredSources, includeEmptyGroups: true)
+        XCTAssertEqual(sections.map(\.title), ["常用有声", "备用书源", "未分组"])
+        XCTAssertEqual(sections[0].sources.map(\.id), ["p1", "p2"])
+        XCTAssertEqual(sections[1].sources.count, 0)
+        XCTAssertEqual(sections[2].sources.map(\.id), ["p3"])
+
+        store.moveSources(["p3"], toGroupID: "g2")
+        let afterMove = store.groupedSections(from: store.filteredSources, includeEmptyGroups: false)
+        XCTAssertEqual(afterMove.map(\.title), ["常用有声", "备用书源"])
+        XCTAssertEqual(afterMove[1].sources.map(\.id), ["p3"])
+
+        store.reorderSources(inGroupID: "g1", from: IndexSet(integer: 1), to: 0)
+        let afterReorder = store.groupedSections(from: store.filteredSources, includeEmptyGroups: false)
+        XCTAssertEqual(afterReorder[0].sources.map(\.id), ["p2", "p1"])
+    }
+
+    @MainActor
+    func testSearchStoreLoadHotBooksIfNeeded() async {
+        let searchStore = SearchStore()
+        searchStore.customHotBooksLoader = { sourceID in
+            [
+                BookRef(sourceID: sourceID, bookURL: "https://e.com/b1", title: "大奉打更人", author: "头陀渊讲故事"),
+                BookRef(sourceID: sourceID, bookURL: "https://e.com/b2", title: "蛊真人", author: "老宝玉_白玉京")
+            ]
+        }
+        let s1 = PluginRecord(id: "xmly", packageID: "pkg", name: "喜马拉雅", version: "1.0", isEnabled: true, discoverable: true)
+        await searchStore.loadHotBooksIfNeeded(sources: [s1], forceReload: true)
+        XCTAssertEqual(searchStore.hotBooks.count, 2)
+        XCTAssertEqual(searchStore.hotBooksSourceName, "喜马拉雅")
+        XCTAssertEqual(searchStore.hotBooks[0].author, "头陀渊讲故事")
+    }
 }

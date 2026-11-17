@@ -65,7 +65,7 @@ final class AppRouter {
 
         if isPlayerPresented {
             isPlayerPresented = false
-        isBottomBarHidden = false
+            isBottomBarHidden = false
         }
 
         let destinationTab = Self.targetTab(for: route, currentTab: selectedTab)
@@ -81,6 +81,26 @@ final class AppRouter {
         }
 
         appendRoute(route, to: destinationTab)
+    }
+
+    func searchByNarrator(_ rawName: String) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if isPlayerPresented {
+            isPlayerPresented = false
+            isBottomBarHidden = false
+        }
+        selectedTab = .search
+        popToRoot(for: .search)
+        let sources = SearchStore.shared.activeTargetSources(
+            from: SourceStore.shared.allSources,
+            groups: SourceStore.shared.groups
+        )
+        SearchStore.shared.submit(
+            keyword: name,
+            sources: sources,
+            modelContext: SourceStore.shared.modelContext
+        )
     }
 
     private func appendRoute(_ route: Route, to tab: ShellTab) {

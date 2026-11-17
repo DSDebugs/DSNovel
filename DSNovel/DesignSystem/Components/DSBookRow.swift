@@ -6,22 +6,30 @@ struct DSBookRow: View {
     let isSelected: Bool
     private let onSelect: () -> Void
     private let onPlayTap: (() -> Void)?
+    private let onNarratorTap: ((String) -> Void)?
 
     init(
         model: BookCardModel,
         isEditing: Bool = false,
         isSelected: Bool = false,
         onSelect: @escaping () -> Void = {},
-        onPlayTap: (() -> Void)? = nil
+        onPlayTap: (() -> Void)? = nil,
+        onNarratorTap: ((String) -> Void)? = nil
     ) {
         self.model = model
         self.isEditing = isEditing
         self.isSelected = isSelected
         self.onSelect = onSelect
         self.onPlayTap = onPlayTap
+        self.onNarratorTap = onNarratorTap
     }
 
     var body: some View {
+        let authorLine = [model.author, model.sourceName].filter { !$0.isEmpty }.joined(separator: " · ")
+        let showProgressLine = !model.progressSubtitle.isEmpty
+            && model.progressSubtitle != model.author
+            && model.progressSubtitle != authorLine
+
         HStack(spacing: Spacing.s3) {
             Button(action: onSelect) {
                 HStack(spacing: Spacing.s3) {
@@ -37,44 +45,77 @@ struct DSBookRow: View {
                         side: 64,
                         badges: model.badges
                     )
+                }
+            }
+            .buttonStyle(.dsCard)
 
-                    VStack(alignment: .leading, spacing: Spacing.s1) {
-                        HStack(spacing: Spacing.s1) {
-                            if model.isPinned {
-                                Image(systemName: "pin.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(Color.dsAccent)
-                            }
-                            Text(model.title)
-                                .font(DSTypography.rowTitle)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
+            VStack(alignment: .leading, spacing: Spacing.s1) {
+                Button(action: onSelect) {
+                    HStack(spacing: Spacing.s1) {
+                        if model.isPinned {
+                            Image(systemName: "pin.fill")
+                                .font(.caption2)
+                                .foregroundStyle(Color.dsAccent)
                         }
+                        Text(model.title)
+                            .font(DSTypography.rowTitle)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
 
-                        let authorLine = [model.author, model.sourceName].filter { !$0.isEmpty }.joined(separator: " · ")
-                        if !authorLine.isEmpty {
-                            Text(authorLine)
+                if !authorLine.isEmpty {
+                    HStack(spacing: 4) {
+                        if !model.author.isEmpty && !isEditing {
+                            Button {
+                                if let onNarratorTap {
+                                    onNarratorTap(model.author)
+                                } else {
+                                    AppRouter.shared.searchByNarrator(model.author)
+                                }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "mic.fill")
+                                        .font(DSTypography.caption2)
+                                    Text(model.author)
+                                        .lineLimit(1)
+                                }
+                                .font(DSTypography.subtitle)
+                                .foregroundStyle(Color.dsAccent)
+                            }
+                            .buttonStyle(.plain)
+                        } else if !model.author.isEmpty {
+                            Text(model.author)
                                 .font(DSTypography.subtitle)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
 
-                        let showProgressLine = !model.progressSubtitle.isEmpty
-                            && model.progressSubtitle != model.author
-                            && model.progressSubtitle != authorLine
-                        if showProgressLine {
-                            Text(model.progressSubtitle)
-                                .font(DSTypography.numericCaption)
-                                .foregroundStyle(model.isPlaying ? Color.dsAccent : .secondary)
+                        if !model.sourceName.isEmpty {
+                            Text(model.author.isEmpty ? model.sourceName : "· \(model.sourceName)")
+                                .font(DSTypography.subtitle)
+                                .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
                     }
-
-                    Spacer(minLength: 0)
                 }
-                .contentShape(Rectangle())
+
+                if showProgressLine {
+                    Button(action: onSelect) {
+                        Text(model.progressSubtitle)
+                            .font(DSTypography.numericCaption)
+                            .foregroundStyle(model.isPlaying ? Color.dsAccent : .secondary)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.dsCard)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if let onPlayTap, !isEditing {
                 Button(action: onPlayTap) {

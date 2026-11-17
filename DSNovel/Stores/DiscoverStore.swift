@@ -48,6 +48,15 @@ final class DiscoverStore {
     private(set) var loadMoreFailed: Bool = false
     private(set) var lastError: Error?
 
+    var searchKeyword: String = ""
+    private(set) var isSearchActive: Bool = false
+    private(set) var isSearchingInSource: Bool = false
+    private(set) var searchResults: [BookRef] = []
+    private(set) var searchError: Error?
+    @ObservationIgnored private var searchGeneration: UInt64 = 0
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
+
+    var customSourceSearchLoader: ((String, String) async throws -> [BookRef])?
     var customMenusLoader: ((String) async throws -> [DiscoverSectionDTO])?
     var customPageLoader: ((String, String, Int) async throws -> DiscoverPageDTO)?
 
@@ -103,10 +112,80 @@ final class DiscoverStore {
         scrollAnchorBySlot[key ?? currentSlotKey]
     }
 
+
+    nonisolated static func twoCharBadge(for sourceName: String) -> String {
+        let trimmed = sourceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "源" }
+        return String(trimmed.prefix(2))
+    }
+
+    func submitSourceSearch(keyword rawKeyword: String? = nil) {
+        if let rawKeyword {
+            searchKeyword = rawKeyword
+        }
+        let clean = searchKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else {
+            clearSourceSearch()
+            return
+        }
+        searchTask?.cancel()
+        searchGeneration &+= 1
+        let gen = searchGeneration
+        let sid = currentSourceID
+        guard !sid.isEmpty else { return }
+
+        isSearchActive = true
+        isSearchingInSource = true
+        searchError = nil
+        let loader = customSourceSearchLoader
+
+        searchTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let books: [BookRef]
+                if let loader {
+                    books = try await loader(sid, clean)
+                } else {
+                    let page = try await PluginRuntime.shared.search(sourceID: sid, keyword: clean, page: 1)
+                    books = page.books
+                }
+                guard !Task.isCancelled, self.searchGeneration == gen else { return }
+                self.searchResults = books
+                self.isSearchingInSource = false
+            } catch {
+                guard !Task.isCancelled, self.searchGeneration == gen else { return }
+                self.searchResults = []
+                self.searchError = error
+                self.isSearchingInSource = false
+                if let pErr = error as? PluginError {
+                    switch pErr {
+                    case .needLogin, .needVerify:
+                        SourceStore.shared.markAuthExpired(sourceID: sid)
+                    default:
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    func clearSourceSearch() {
+        searchTask?.cancel()
+        searchGeneration &+= 1
+        searchKeyword = ""
+        isSearchActive = false
+        isSearchingInSource = false
+        searchResults = []
+        searchError = nil
+    }
+
     func switchSource(to sourceID: String) async {
         guard !sourceID.isEmpty else { return }
         currentSourceID = sourceID
         lastError = nil
+        if isSearchActive && !searchKeyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            submitSourceSearch()
+        }
         if sectionsBySource[sourceID] == nil {
             await loadCategoryMenusAndFirstPage(forceReload: false)
         } else if currentBooks.isEmpty {

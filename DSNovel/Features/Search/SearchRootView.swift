@@ -78,8 +78,9 @@ struct SearchRootView: View {
                     onClose: { showFailedSheet = false }
                 )
             }
-            .onAppear {
+            .task {
                 sourceStore.modelContext = modelContext
+                await searchStore.loadHotBooksIfNeeded(sources: sourceStore.discoverableSources)
             }
     }
 
@@ -143,6 +144,24 @@ struct SearchRootView: View {
                         }
                     )
                 }
+
+                HotBooksSection(
+                    books: searchStore.hotBooks,
+                    sourceName: searchStore.hotBooksSourceName,
+                    isLoading: searchStore.isLoadingHotBooks,
+                    onSelectBook: { ref in
+                        AppRouter.shared.open(.book(ref))
+                    },
+                    onSelectNarrator: { narrator in
+                        isSearchFocused = false
+                        AppRouter.shared.searchByNarrator(narrator)
+                    },
+                    onRefresh: {
+                        Task {
+                            await searchStore.loadHotBooksIfNeeded(sources: sourceStore.discoverableSources, forceReload: true)
+                        }
+                    }
+                )
             }
             .padding(.vertical, Spacing.s3)
         }

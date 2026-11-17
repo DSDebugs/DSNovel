@@ -75,65 +75,91 @@ struct DSBookCard: View {
     let isEditing: Bool
     let isSelected: Bool
     private let onAction: () -> Void
+    private let onNarratorTap: ((String) -> Void)?
 
     init(
         model: BookCardModel,
         side: CGFloat = 108,
         isEditing: Bool = false,
         isSelected: Bool = false,
-        onAction: @escaping () -> Void = {}
+        onAction: @escaping () -> Void = {},
+        onNarratorTap: ((String) -> Void)? = nil
     ) {
         self.model = model
         self.side = side
         self.isEditing = isEditing
         self.isSelected = isSelected
         self.onAction = onAction
+        self.onNarratorTap = onNarratorTap
     }
 
     var body: some View {
-        Button(action: onAction) {
-            VStack(alignment: .leading, spacing: Spacing.s2) {
-                ZStack(alignment: .topLeading) {
-                    DSCover(
-                        url: model.coverURL,
-                        title: model.title,
-                        side: side,
-                        badges: model.badges
-                    )
+        VStack(alignment: .leading, spacing: Spacing.s2) {
+            Button(action: onAction) {
+                VStack(alignment: .leading, spacing: Spacing.s2) {
+                    ZStack(alignment: .topLeading) {
+                        DSCover(
+                            url: model.coverURL,
+                            title: model.title,
+                            side: side,
+                            badges: model.badges
+                        )
 
-                    if isEditing {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                            .font(.headline)
-                            .foregroundStyle(isSelected ? Color.dsAccent : .white)
-                            .padding(Spacing.s2)
-                            .shadow(radius: 2)
-                    } else if model.isPinned {
-                        Image(systemName: "pin.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.white)
-                            .padding(5)
-                            .background(Circle().fill(Color.black.opacity(0.5)))
-                            .padding(Spacing.s1)
+                        if isEditing {
+                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                .font(.headline)
+                                .foregroundStyle(isSelected ? Color.dsAccent : .white)
+                                .padding(Spacing.s2)
+                                .shadow(radius: 2)
+                        } else if model.isPinned {
+                            Image(systemName: "pin.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.white)
+                                .padding(5)
+                                .background(Circle().fill(Color.black.opacity(0.5)))
+                                .padding(Spacing.s1)
+                        }
                     }
+
+                    Text(model.title)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(width: side)
+                        .frame(minHeight: 34, alignment: .topLeading)
                 }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.dsCard)
 
-                Text(model.title)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .frame(width: side)
-                    .frame(minHeight: 34, alignment: .topLeading)
-
+            if model.progressSubtitle.isEmpty && !model.author.isEmpty && !isEditing {
+                Button {
+                    if let onNarratorTap {
+                        onNarratorTap(model.author)
+                    } else {
+                        AppRouter.shared.searchByNarrator(model.author)
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "mic.fill")
+                            .font(DSTypography.caption2)
+                        Text(model.author)
+                            .lineLimit(1)
+                    }
+                    .font(DSTypography.caption2.monospacedDigit())
+                    .foregroundStyle(Color.dsAccent)
+                    .frame(width: side, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            } else {
                 Text(model.progressSubtitle.isEmpty ? model.author : model.progressSubtitle)
                     .font(DSTypography.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .frame(width: side, alignment: .leading)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.dsCard)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.accessibilitySummary)
     }

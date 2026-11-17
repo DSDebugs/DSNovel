@@ -57,4 +57,26 @@ final class AppRouterAndShellTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(MiniPlayerRenderCounter.shared.staticBodyEvaluations, 1)
     }
+
+    @MainActor
+    func testAppRouterSearchByNarratorDismissesPlayerAndSwitchesToSearch() {
+        let router = AppRouter.shared
+        router.resetForTesting()
+        SearchStore.shared.reset()
+
+        router.selectedTab = .discover
+        router.searchPath = [.history]
+        router.isPlayerPresented = true
+        router.isBottomBarHidden = true
+
+        router.searchByNarrator("  头陀渊讲故事  ")
+        XCTAssertFalse(router.isPlayerPresented)
+        XCTAssertFalse(router.isBottomBarHidden)
+        XCTAssertEqual(router.selectedTab, .search)
+        XCTAssertTrue(router.searchPath.isEmpty)
+        XCTAssertEqual(SearchStore.shared.keyword, "头陀渊讲故事")
+
+        SearchStore.shared.reset()
+        router.resetForTesting()
+    }
 }

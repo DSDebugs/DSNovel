@@ -19,17 +19,20 @@ struct DSChipBar<ID: Hashable>: View {
 
     let items: [DSChipItem<ID>]
     @Binding var selection: ID
+    let isCompact: Bool
     private let trailingActionTitle: String?
     private let onTrailingAction: (() -> Void)?
 
     init(
         items: [DSChipItem<ID>],
         selection: Binding<ID>,
+        isCompact: Bool = false,
         trailingActionTitle: String? = nil,
         onTrailingAction: (() -> Void)? = nil
     ) {
         self.items = items
         self._selection = selection
+        self.isCompact = isCompact
         self.trailingActionTitle = trailingActionTitle
         self.onTrailingAction = onTrailingAction
     }
@@ -96,8 +99,8 @@ struct DSChipBar<ID: Hashable>: View {
             }
             .foregroundStyle(isSelected ? Color.dsOnAccent : .primary)
             .padding(.horizontal, Spacing.s3)
-            .padding(.vertical, Spacing.s2)
-            .frame(minHeight: 36)
+            .padding(.vertical, isCompact ? 6 : Spacing.s2)
+            .frame(minHeight: isCompact ? 32 : 36)
             .background {
                 if isSelected {
                     Capsule(style: .continuous)

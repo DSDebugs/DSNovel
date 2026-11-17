@@ -194,6 +194,22 @@ struct PlayerScreen: View {
                     .font(DSTypography.cardTitle)
                     .foregroundStyle(.white.opacity(0.75))
                     .lineLimit(1)
+
+                if let narrator = player.currentBook?.author, !narrator.isEmpty {
+                    Button {
+                        AppRouter.shared.searchByNarrator(narrator)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "mic.fill")
+                                .font(DSTypography.caption2)
+                            Text(narrator)
+                                .lineLimit(1)
+                        }
+                        .font(DSTypography.caption)
+                        .foregroundStyle(.white.opacity(0.85))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
 
             Spacer()

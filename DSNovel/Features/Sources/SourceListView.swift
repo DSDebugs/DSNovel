@@ -10,6 +10,7 @@ struct SourceListView: View {
     @State private var showImportSheet = false
     @State private var showGroupEditor = false
     @State private var pendingDeleteSource: PluginRecord?
+    @State private var editMode: EditMode = .inactive
 
     init() {}
 
@@ -30,6 +31,10 @@ struct SourceListView: View {
         return list
     }
 
+    private var groupedSections: [GroupedSourceSection] {
+        sourceStore.groupedSections(from: sourceStore.filteredSources, includeEmptyGroups: true)
+    }
+
     var body: some View {
         Group {
             if sourceStore.allSources.isEmpty {
@@ -43,21 +48,53 @@ struct SourceListView: View {
                     if !sourceStore.pinnedSources.isEmpty {
                         Section("已置顶") {
                             ForEach(sourceStore.pinnedSources) { src in
-                                rowWithActions(src)
+                                rowWithActions(src, groupID: src.groupID)
                                     .listRowBackground(Color.dsSurfaceCard)
                             }
                         }
                     }
 
-                    Section("书源列表（\(sourceStore.filteredSources.count)）") {
-                        ForEach(sourceStore.filteredSources) { src in
-                            rowWithActions(src)
-                                .listRowBackground(Color.dsSurfaceCard)
+                    ForEach(groupedSections) { section in
+                        Section {
+                            if section.sources.isEmpty {
+                                Text("拖动书源到此分组")
+                                    .font(DSTypography.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, Spacing.s2)
+                                    .listRowBackground(Color.dsSurfaceCard)
+                                    .dropDestination(for: String.self) { droppedIDs, _ in
+                                        sourceStore.moveSources(Set(droppedIDs), toGroupID: section.groupID)
+                                        return !droppedIDs.isEmpty
+                                    }
+                            } else {
+                                ForEach(section.sources) { src in
+                                    rowWithActions(src, groupID: section.groupID)
+                                        .listRowBackground(Color.dsSurfaceCard)
+                                }
+                                .onMove { indices, newOffset in
+                                    sourceStore.reorderSources(inGroupID: section.groupID, from: indices, to: newOffset)
+                                }
+                            }
+                        } header: {
+                            HStack {
+                                Text(section.title)
+                                Spacer()
+                                Text("\(section.sources.count)")
+                                    .font(DSTypography.numericCaption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                            .dropDestination(for: String.self) { droppedIDs, _ in
+                                sourceStore.moveSources(Set(droppedIDs), toGroupID: section.groupID)
+                                return !droppedIDs.isEmpty
+                            }
                         }
                     }
                 }
                 .listStyle(.insetGrouped)
                 .scrollContentBackground(.hidden)
+                .environment(\.editMode, $editMode)
             }
         }
         .background(Color.dsSurfaceGrouped)
@@ -77,10 +114,11 @@ struct SourceListView: View {
         .toolbarVisibility(isBatchMode ? .hidden : .visible, for: .tabBar)
         .onChange(of: isBatchMode) { _, hidden in AppRouter.shared.isBottomBarHidden = hidden }
         .toolbar {
-            if isBatchMode {
+            if isBatchMode || editMode == .active {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {
                         isBatchMode = false
+                        editMode = .inactive
                         selectedIDs.removeAll()
                     }
                 }
@@ -98,6 +136,9 @@ struct SourceListView: View {
                     Menu {
                         Button("检测全部") {
                             Task { await sourceStore.checkSources() }
+                        }
+                        Button("调整排序") {
+                            editMode = .active
                         }
                         Button("批量管理") {
                             isBatchMode = true
@@ -162,7 +203,7 @@ struct SourceListView: View {
         }
     }
 
-    private func rowWithActions(_ src: PluginRecord) -> some View {
+    private func rowWithActions(_ src: PluginRecord, groupID: String?) -> some View {
         SourceRow(
             source: src,
             isChecking: sourceStore.checkingSourceIDs.contains(src.id),
@@ -180,6 +221,11 @@ struct SourceListView: View {
                 }
             }
         )
+        .draggable(src.id)
+        .dropDestination(for: String.self) { droppedIDs, _ in
+            sourceStore.moveSources(Set(droppedIDs), toGroupID: groupID)
+            return !droppedIDs.isEmpty
+        }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
                 Task { _ = await sourceStore.checkSource(src) }
@@ -216,6 +262,18 @@ struct SourceListView: View {
                 src.isPinned.toggle()
                 try? modelContext.save()
                 sourceStore.recomputeDerived()
+            }
+            if !sourceStore.groups.isEmpty {
+                Menu("移至分组") {
+                    ForEach(sourceStore.groups.sorted { $0.order < $1.order }) { grp in
+                        Button(grp.name) {
+                            sourceStore.moveSources([src.id], toGroupID: grp.id)
+                        }
+                    }
+                    Button("未分组") {
+                        sourceStore.moveSources([src.id], toGroupID: nil)
+                    }
+                }
             }
             Button("复制书源地址") {
                 UIPasteboard.general.string = src.siteURL

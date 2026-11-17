@@ -1,6 +1,14 @@
 import Foundation
 import Observation
 import SwiftData
+import WebKit
+
+struct GroupedSourceSection: Identifiable {
+    let id: String
+    let title: String
+    let groupID: String?
+    let sources: [PluginRecord]
+}
 
 enum SourceDisplayStatus: String, CaseIterable, Equatable, Sendable {
     case disabled
@@ -253,6 +261,98 @@ final class SourceStore {
         pinnedSources = filtered.filter(\.isPinned)
     }
 
+    func groupedSections(from sources: [PluginRecord], includeEmptyGroups: Bool) -> [GroupedSourceSection] {
+        let sortedGroups = groups.sorted { $0.order < $1.order }
+        let validGroupIDs = Set(sortedGroups.map(\.id))
+        var result: [GroupedSourceSection] = []
+
+        for group in sortedGroups {
+            let members = sources
+                .filter { $0.groupID == group.id }
+                .sorted { a, b in
+                    if a.order != b.order { return a.order < b.order }
+                    return a.name.localizedStandardCompare(b.name) == .orderedAscending
+                }
+            if includeEmptyGroups || !members.isEmpty {
+                result.append(
+                    GroupedSourceSection(
+                        id: "group-\(group.id)",
+                        title: group.name,
+                        groupID: group.id,
+                        sources: members
+                    )
+                )
+            }
+        }
+
+        let ungrouped = sources
+            .filter { src in
+                guard let gid = src.groupID, !gid.isEmpty else { return true }
+                return !validGroupIDs.contains(gid)
+            }
+            .sorted { a, b in
+                if a.order != b.order { return a.order < b.order }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
+
+        if !ungrouped.isEmpty || result.isEmpty {
+            result.append(
+                GroupedSourceSection(
+                    id: "group-ungrouped",
+                    title: sortedGroups.isEmpty ? "全部书源" : "未分组",
+                    groupID: nil,
+                    sources: ungrouped
+                )
+            )
+        }
+        return result
+    }
+
+    func moveSources(_ ids: Set<String>, toGroupID groupID: String?) {
+        let existingInTarget = allSources
+            .filter { $0.groupID == groupID && !ids.contains($0.id) }
+            .sorted { $0.order < $1.order }
+        var nextOrder = (existingInTarget.last?.order ?? -1) + 1
+        for s in allSources where ids.contains(s.id) {
+            s.groupID = groupID
+            s.order = nextOrder
+            nextOrder += 1
+        }
+        try? modelContext?.save()
+        refreshNow()
+    }
+
+    func reorderSources(inGroupID groupID: String?, from sourceOffsets: IndexSet, to destinationOffset: Int) {
+        let validGroupIDs = Set(groups.map(\.id))
+        var members = allSources.filter { src in
+            if let groupID {
+                return src.groupID == groupID
+            } else {
+                guard let gid = src.groupID, !gid.isEmpty else { return true }
+                return !validGroupIDs.contains(gid)
+            }
+        }.sorted { a, b in
+            if a.order != b.order { return a.order < b.order }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+        guard !members.isEmpty else { return }
+
+        let movingItems = sourceOffsets.map { members[$0] }
+        for index in sourceOffsets.sorted(by: >) {
+            members.remove(at: index)
+        }
+        let adjustedDest = destinationOffset - sourceOffsets.filter { $0 < destinationOffset }.count
+        let clampedDest = max(0, min(adjustedDest, members.count))
+        members.insert(contentsOf: movingItems, at: clampedDest)
+
+        for (idx, item) in members.enumerated() {
+            item.groupID = groupID
+            item.order = idx
+        }
+        try? modelContext?.save()
+        refreshNow()
+    }
+
     func markLoggedIn(sourceID: String) {
         guard let src = source(for: sourceID) else { return }
         src.loggedIn = true
@@ -270,6 +370,51 @@ final class SourceStore {
         recomputeDerived()
     }
 
+    func logoutSource(_ source: PluginRecord) async {
+        let urls = [source.siteURL, source.loginURL]
+        await CookieSync.clearCookies(for: urls, sourceID: source.id)
+        await clearWebKitData(for: urls)
+        source.loggedIn = false
+        if source.healthState == .healthy || source.healthState == .slow {
+            source.lastCheckStatus = SourceHealthState.needAuth.rawValue
+        }
+        try? modelContext?.save()
+        recomputeDerived()
+    }
+
+    private func clearWebKitData(for urlStrings: [String]) async {
+        let targetDomains: Set<String> = Set(
+            urlStrings.compactMap { raw -> String? in
+                guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      let host = url.host?.lowercased(), !host.isEmpty else { return nil }
+                return host
+            }
+        )
+        let targetRoots: Set<String> = Set(
+            targetDomains.map { host in
+                let parts = host.split(separator: ".")
+                if parts.count >= 2 {
+                    return parts.suffix(2).joined(separator: ".")
+                }
+                return host
+            }
+        )
+        guard !targetRoots.isEmpty else { return }
+
+        let dataStore = WKWebsiteDataStore.default()
+        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
+        let records = await dataStore.dataRecords(ofTypes: allTypes)
+        let matching = records.filter { record in
+            let name = record.displayName.lowercased()
+            return targetDomains.contains(name)
+                || targetRoots.contains(name)
+                || targetRoots.contains(where: { name.hasSuffix(".\($0)") || $0.hasSuffix(".\(name)") })
+        }
+        if !matching.isEmpty {
+            await dataStore.removeData(ofTypes: allTypes, for: matching)
+        }
+    }
+
     func sourceName(for sourceID: String) -> String {
         allSources.first(where: { $0.id == sourceID })?.name ?? sourceID
     }
@@ -281,14 +426,6 @@ final class SourceStore {
     func setEnabled(_ enabled: Bool, forIDs ids: Set<String>) {
         for s in allSources where ids.contains(s.id) {
             s.isEnabled = enabled
-        }
-        try? modelContext?.save()
-        refreshNow()
-    }
-
-    func moveSources(_ ids: Set<String>, toGroupID groupID: String?) {
-        for s in allSources where ids.contains(s.id) {
-            s.groupID = groupID
         }
         try? modelContext?.save()
         refreshNow()

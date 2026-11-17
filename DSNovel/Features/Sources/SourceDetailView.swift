@@ -53,9 +53,9 @@ struct SourceDetailView: View {
                 LabeledContent("站点域名", value: src.siteURL)
             }
 
-            if (src.requiresLogin && !src.loggedIn) || src.healthState == .needAuth || src.healthState == .unavailable {
+            if (src.requiresLogin && !src.loggedIn) || (!src.loggedIn && src.healthState == .needAuth) || src.healthState == .unavailable {
                 Section("需要处理") {
-                    if src.requiresLogin && !src.loggedIn || src.healthState == .needAuth {
+                    if !src.loggedIn && (src.requiresLogin || src.healthState == .needAuth) {
                         Button("去登录") {
                             AuthCoordinator.shared.presentLogin(forSourceID: src.id)
                         }
@@ -107,13 +107,15 @@ struct SourceDetailView: View {
             if src.requiresLogin {
                 Section("账号") {
                     LabeledContent("登录状态", value: src.loggedIn ? "已登录" : "未登录")
-                    Button("去登录") {
-                        AuthCoordinator.shared.presentLogin(forSourceID: src.id)
-                    }
                     if src.loggedIn {
                         Button("退出登录", role: .destructive) {
                             showLogoutConfirm = true
                         }
+                    } else {
+                        Button("去登录") {
+                            AuthCoordinator.shared.presentLogin(forSourceID: src.id)
+                        }
+                        .foregroundStyle(Color.dsAccent)
                     }
                 }
             }
@@ -141,10 +143,11 @@ struct SourceDetailView: View {
         }
         .confirmationDialog("确认退出该书源账号并清除登录凭证？", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
             Button("退出登录", role: .destructive) {
-                CookieSync.setVerifiedLogin(sourceID: src.id, nickname: nil)
-                src.loggedIn = false
-                try? modelContext.save()
-                sourceStore.recomputeDerived()
+                Task {
+                    await sourceStore.logoutSource(src)
+                    DSHapticPolicy.fire(.success)
+                    BannerCenter.shared.show("已退出登录", kind: .info)
+                }
             }
             Button("取消", role: .cancel) {}
         }
