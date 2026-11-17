@@ -478,6 +478,11 @@ struct CompactMiniPlayerPill: View {
     let onTapExpand: () -> Void
     private var player = PlayerEngine.shared
 
+    // 显式 internal init：private 存储属性会使 memberwise init 变为 private
+    init(onTapExpand: @escaping () -> Void) {
+        self.onTapExpand = onTapExpand
+    }
+
     var body: some View {
         if let book = player.currentBook, let chapter = player.currentChapter {
             GlassEffectContainer(cornerRadius: 25) {
