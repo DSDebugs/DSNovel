@@ -20,6 +20,10 @@ struct BuiltinParserSection: View {
 
     let plugin: PluginRecord
 
+    init(plugin: PluginRecord) {
+        self.plugin = plugin
+    }
+
     @State private var errorAlertMessage: String?
     @State private var statusNote: String = ""
     @State private var showDeleteConfirm = false
@@ -30,9 +34,9 @@ struct BuiltinParserSection: View {
     static func isSupportedSource(_ plugin: PluginRecord) -> Bool {
         let host = URL(string: plugin.siteURL)?.host?.lowercased() ?? ""
         if host.contains("ximalaya") || host.contains("xmcdn") { return true }
-        return !BuiltinParserStore.installedParsers().filter {
+        return BuiltinParserStore.installedParsers().contains {
             $0.meta.targets.matches(sourceID: plugin.id, sourceURL: plugin.siteURL)
-        }.isEmpty
+        }
     }
 
     private var activeRecord: BuiltinParserRecord? {
@@ -304,6 +308,16 @@ struct BuiltinParserEditorPage: View {
     let fileName: String
     let onInstalled: (InstalledBuiltinParser) -> Void
 
+    init(
+        initialText: String,
+        fileName: String,
+        onInstalled: @escaping (InstalledBuiltinParser) -> Void
+    ) {
+        self.initialText = initialText
+        self.fileName = fileName
+        self.onInstalled = onInstalled
+    }
+
     @Environment(\.dismiss) private var dismiss
     @State private var scriptText: String = ""
     @State private var didLoadInitial: Bool = false
@@ -521,6 +535,10 @@ struct BuiltinParserEditorPage: View {
 
 struct BuiltinParserLogView: View {
     let parserID: String
+
+    init(parserID: String) {
+        self.parserID = parserID
+    }
 
     @State private var lines: [String] = []
 

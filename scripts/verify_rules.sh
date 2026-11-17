@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$REPO_ROOT"
+
+ALLOWLIST_FILE="scripts/rules_allowlist.txt"
+TOUCHED_VIOLATIONS=0
+
+is_allowed() {
+  local rule="$1"
+  local file="$2"
+  if [[ -f "$ALLOWLIST_FILE" ]] && grep -Fqx "${rule}:${file}" "$ALLOWLIST_FILE"; then
+    return 0
+  fi
+  return 1
+}
+
+check_grep_rule() {
+  local rule="$1"
+  local pattern="$2"
+  shift 2
+  local paths=("$@")
+
+  local existing_paths=()
+  for p in "${paths[@]}"; do
+    [[ -e "$p" ]] && existing_paths+=("$p")
+  done
+  [[ ${#existing_paths[@]} -eq 0 ]] && return 0
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local file="${line%%:*}"
+    if ! is_allowed "$rule" "$file"; then
+      echo "[FAIL] ${rule} -> ${line}"
+      TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
+    fi
+  done < <(grep -rnE --include="*.swift" "$pattern" "${existing_paths[@]}" || true)
+}
+
+# 1. no-availability-ios
+check_grep_rule "no-availability-ios" "#available\(iOS|@available\(iOS" "DSNovel"
+
+# 2. no-system-font-size
+check_grep_rule "no-system-font-size" "\.font\(\.system\(size:" "DSNovel/Features" "DSNovel/DesignSystem/Components"
+
+# 3. no-hardcoded-color
+check_grep_rule "no-hardcoded-color" "Color\(red:|Color\(hex|UIColor\(red:" "DSNovel/Features"
+
+# 4. no-repeat-forever
+check_grep_rule "no-repeat-forever" "repeatForever" "DSNovel"
+
+# 5. no-unvalued-animation
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  file="${line%%:*}"
+  if ! is_allowed "no-unvalued-animation" "$file"; then
+    echo "[FAIL] no-unvalued-animation -> ${line}"
+    TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
+  fi
+done < <(grep -rnP --include="*.swift" "\.animation\([^,)]*\)(?!.*value)" "DSNovel" || true)
+
+# 6. no-legacy-glass
+check_grep_rule "no-legacy-glass" "LegacyGlass" "DSNovel"
+
+# 7. no-geometryreader-in-cells
+check_grep_rule "no-geometryreader-in-cells" "GeometryReader" "DSNovel/DesignSystem/Components" "DSNovel/Features/Discover"
+
+# 8. no-body-collection-ops (only on *View.swift under DSNovel/Features)
+while IFS= read -r view_file; do
+  [[ -z "$view_file" ]] && continue
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if ! is_allowed "no-body-collection-ops" "$view_file"; then
+      echo "[FAIL] no-body-collection-ops -> ${view_file}:${line}"
+      TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
+    fi
+  done < <(grep -nE "\.filter\(|\.sorted\(|Dictionary\(grouping:" "$view_file" || true)
+done < <(find DSNovel/Features -type f -name "*View.swift" 2>/dev/null || true)
+
+# 9. no-ontapgesture-nav
+check_grep_rule "no-ontapgesture-nav" "onTapGesture" "DSNovel/Features" "DSNovel/DesignSystem/Components"
+
+# 10. no-ji-term
+check_grep_rule "no-ji-term" "[0-9一二三四五六七八九十]+ ?集|播完.*集|第.*集" "DSNovel/Features" "DSNovel/DesignSystem"
+
+# 11. no-fatalerror-container
+check_grep_rule "no-fatalerror-container" 'fatalError\("无法初始化' "DSNovel/App"
+
+# 12. uitest-flags-confined
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  file="${line%%:*}"
+  case "$file" in
+    DSNovel/Debug/*|DSNovel/App/AppLaunchConfig.swift)
+      ;;
+    *)
+      echo "[FAIL] uitest-flags-confined -> ${line}"
+      TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
+      ;;
+  esac
+done < <(grep -rnE --include="*.swift" "DSNOVEL_UITEST" "DSNovel" || true)
+
+if [[ $TOUCHED_VIOLATIONS -gt 0 ]]; then
+  echo "verify_rules.sh failed with ${TOUCHED_VIOLATIONS} violation(s)."
+  exit 1
+fi
+
+echo "[PASS] verify_rules.sh: all rule checks passed."
+exit 0

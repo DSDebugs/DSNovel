@@ -1,0 +1,231 @@
+import Foundation
+import Observation
+
+struct DiscoverCategorySlotKey: Hashable, Equatable, Sendable {
+    let sourceID: String
+    let sectionIndex: Int
+    let tabIndex: Int
+}
+
+@MainActor
+@Observable
+final class DiscoverStore {
+    static let shared = DiscoverStore()
+
+    var currentSourceID: String = AppSettingsStore.shared.currentDiscoverSourceID {
+        didSet {
+            if AppSettingsStore.shared.currentDiscoverSourceID != currentSourceID {
+                AppSettingsStore.shared.currentDiscoverSourceID = currentSourceID
+            }
+        }
+    }
+
+    private(set) var sectionsBySource: [String: [DiscoverSectionDTO]] = [:]
+    private(set) var selectedSectionBySource: [String: Int] = [:]
+    private(set) var selectedTabBySource: [String: Int] = [:]
+    private(set) var booksBySlot: [DiscoverCategorySlotKey: [BookRef]] = [:]
+    private(set) var nextPageBySlot: [DiscoverCategorySlotKey: String] = [:]
+    private(set) var currentPageNumBySlot: [DiscoverCategorySlotKey: Int] = [:]
+    private var scrollAnchorBySlot: [DiscoverCategorySlotKey: String] = [:]
+
+    private(set) var isLoadingInitial: Bool = false
+    private(set) var isLoadingMore: Bool = false
+    private(set) var loadMoreFailed: Bool = false
+    private(set) var lastError: Error?
+
+    var customMenusLoader: ((String) async throws -> [DiscoverSectionDTO])?
+    var customPageLoader: ((String, String, Int) async throws -> DiscoverPageDTO)?
+
+    init() {}
+
+    var currentSlotKey: DiscoverCategorySlotKey {
+        DiscoverCategorySlotKey(
+            sourceID: currentSourceID,
+            sectionIndex: selectedSectionIndex,
+            tabIndex: selectedTabIndex
+        )
+    }
+
+    var currentSections: [DiscoverSectionDTO] {
+        sectionsBySource[currentSourceID] ?? []
+    }
+
+    var selectedSectionIndex: Int {
+        get { selectedSectionBySource[currentSourceID] ?? 0 }
+        set { selectedSectionBySource[currentSourceID] = newValue }
+    }
+
+    var selectedTabIndex: Int {
+        get { selectedTabBySource[currentSourceID] ?? 0 }
+        set { selectedTabBySource[currentSourceID] = newValue }
+    }
+
+    var currentTabs: [DiscoverTabDTO] {
+        let secs = currentSections
+        guard secs.indices.contains(selectedSectionIndex) else { return [] }
+        return secs[selectedSectionIndex].tabs
+    }
+
+    var currentBooks: [BookRef] {
+        booksBySlot[currentSlotKey] ?? []
+    }
+
+    var canLoadMore: Bool {
+        guard let next = nextPageBySlot[currentSlotKey] else { return false }
+        return !next.isEmpty
+    }
+
+    var currentScrollAnchor: String? {
+        get { scrollAnchorBySlot[currentSlotKey] }
+        set { scrollAnchorBySlot[currentSlotKey] = newValue }
+    }
+
+    func recordScrollAnchor(_ bookID: String?, for key: DiscoverCategorySlotKey? = nil) {
+        let target = key ?? currentSlotKey
+        scrollAnchorBySlot[target] = bookID
+    }
+
+    func savedScrollAnchor(for key: DiscoverCategorySlotKey? = nil) -> String? {
+        scrollAnchorBySlot[key ?? currentSlotKey]
+    }
+
+    func switchSource(to sourceID: String) async {
+        guard !sourceID.isEmpty else { return }
+        currentSourceID = sourceID
+        lastError = nil
+        if sectionsBySource[sourceID] == nil {
+            await loadCategoryMenusAndFirstPage(forceReload: false)
+        } else if currentBooks.isEmpty {
+            await loadFirstPage(forceReload: false)
+        }
+    }
+
+    func selectSection(_ index: Int) async {
+        guard selectedSectionIndex != index else { return }
+        selectedSectionIndex = index
+        selectedTabIndex = 0
+        if currentBooks.isEmpty {
+            await loadFirstPage(forceReload: false)
+        }
+    }
+
+    func selectTab(_ index: Int) async {
+        guard selectedTabIndex != index else { return }
+        selectedTabIndex = index
+        if currentBooks.isEmpty {
+            await loadFirstPage(forceReload: false)
+        }
+    }
+
+    func loadCategoryMenusAndFirstPage(forceReload: Bool = false) async {
+        let sid = currentSourceID
+        guard !sid.isEmpty else { return }
+        if !forceReload, let existing = sectionsBySource[sid], !existing.isEmpty, !currentBooks.isEmpty {
+            return
+        }
+        isLoadingInitial = true
+        lastError = nil
+        do {
+            let menus: [DiscoverSectionDTO]
+            if let custom = customMenusLoader {
+                menus = try await custom(sid)
+            } else {
+                menus = try await PluginRuntime.shared.discoverSections(sourceID: sid)
+            }
+            sectionsBySource[sid] = menus
+            if !menus.indices.contains(selectedSectionIndex) {
+                selectedSectionIndex = 0
+            }
+            let tabs = currentTabs
+            if !tabs.indices.contains(selectedTabIndex) {
+                selectedTabIndex = 0
+            }
+            isLoadingInitial = false
+            await loadFirstPage(forceReload: true)
+        } catch {
+            isLoadingInitial = false
+            lastError = error
+        }
+    }
+
+    func loadFirstPage(forceReload: Bool = false) async {
+        let slot = currentSlotKey
+        if !forceReload, let cached = booksBySlot[slot], !cached.isEmpty {
+            return
+        }
+        let tabs = currentTabs
+        guard tabs.indices.contains(slot.tabIndex) else {
+            booksBySlot[slot] = []
+            nextPageBySlot[slot] = nil
+            return
+        }
+        let tabURL = tabs[slot.tabIndex].url
+        isLoadingInitial = true
+        lastError = nil
+        loadMoreFailed = false
+        do {
+            let page: DiscoverPageDTO
+            if let custom = customPageLoader {
+                page = try await custom(slot.sourceID, tabURL, 1)
+            } else {
+                page = try await PluginRuntime.shared.discoverList(sourceID: slot.sourceID, tabURL: tabURL)
+            }
+            booksBySlot[slot] = page.books
+            nextPageBySlot[slot] = page.nextPageURL
+            currentPageNumBySlot[slot] = 1
+            isLoadingInitial = false
+        } catch {
+            isLoadingInitial = false
+            lastError = error
+        }
+    }
+
+    func loadNextPageIfNeeded(currentItemID: String? = nil) async {
+        let slot = currentSlotKey
+        guard !isLoadingInitial, !isLoadingMore,
+              let nextURL = nextPageBySlot[slot], !nextURL.isEmpty else { return }
+        let items = booksBySlot[slot] ?? []
+        if let currentItemID,
+           let idx = items.firstIndex(where: { $0.id == currentItemID }),
+           idx < max(0, items.count - 6) {
+            return
+        }
+        isLoadingMore = true
+        loadMoreFailed = false
+        let nextPageNum = (currentPageNumBySlot[slot] ?? 1) + 1
+        do {
+            let page: DiscoverPageDTO
+            if let custom = customPageLoader {
+                page = try await custom(slot.sourceID, nextURL, nextPageNum)
+            } else {
+                page = try await PluginRuntime.shared.discoverList(sourceID: slot.sourceID, tabURL: nextURL)
+            }
+            var merged = booksBySlot[slot] ?? []
+            let existingIDs = Set(merged.map(\.id))
+            for b in page.books where !existingIDs.contains(b.id) {
+                merged.append(b)
+            }
+            booksBySlot[slot] = merged
+            nextPageBySlot[slot] = page.nextPageURL
+            currentPageNumBySlot[slot] = nextPageNum
+            isLoadingMore = false
+        } catch {
+            isLoadingMore = false
+            loadMoreFailed = true
+        }
+    }
+
+    func resetForTesting() {
+        sectionsBySource.removeAll()
+        selectedSectionBySource.removeAll()
+        selectedTabBySource.removeAll()
+        booksBySlot.removeAll()
+        nextPageBySlot.removeAll()
+        currentPageNumBySlot.removeAll()
+        scrollAnchorBySlot.removeAll()
+        isLoadingInitial = false
+        isLoadingMore = false
+        loadMoreFailed = false
+        lastError = nil
+    }
+}

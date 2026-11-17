@@ -14,6 +14,10 @@ struct WebAuthSessionRequest: Identifiable {
 /// 内嵌 WKWebView 网页登录与安全验证弹层：双向同步 HTTPCookieStorage 与 WKHTTPCookieStore，支持 loginDesktop UA 切换、loginScript 自动注入与按源精准校验登录状态
 struct WebAuthSheet: View {
     let session: WebAuthSessionRequest
+
+    init(session: WebAuthSessionRequest) {
+        self.session = session
+    }
     @Environment(\.dismiss) private var dismiss
 
     @State private var currentURLString: String = ""

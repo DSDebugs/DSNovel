@@ -49,9 +49,16 @@ enum SleepTimerOption: Equatable {
         case .off: return "定时关闭"
         case .minutes(let m): return "\(m) 分钟"
         case .endOfChapter: return "本章结束"
-        case .chaptersRemaining(let c): return "\(c) 集后"
+        case .chaptersRemaining(let c): return "\(c) 章后"
         }
     }
+}
+
+
+enum NextChapterAvailability: Equatable, Sendable {
+    case none
+    case availableOnline(ChapterDTO)
+    case availableDownloaded(ChapterDTO)
 }
 
 enum PlaybackState: Equatable {
@@ -106,6 +113,68 @@ final class PlayerEngine {
     var currentBookID: String? {
         currentBook?.id
     }
+
+    private(set) var bufferedRange: Double = 0
+    var useFakeBackend: Bool = false
+
+    var isBuffering: Bool {
+        if case .buffering = state { return true }
+        return false
+    }
+
+    var nextChapterAvailability: NextChapterAvailability {
+        guard let current = currentChapter,
+              let idx = chapterQueue.firstIndex(where: { $0.id == current.id }),
+              idx + 1 < chapterQueue.count else {
+            return .none
+        }
+        let nextCh = chapterQueue[idx + 1]
+        if let book = currentBook,
+           DownloadManager.shared.localFileURL(bookID: book.id, chapterID: nextCh.id) != nil {
+            return .availableDownloaded(nextCh)
+        }
+        return .availableOnline(nextCh)
+    }
+
+    static func snapSpeed(_ raw: Double) -> Double {
+        let clamped = min(max(raw, 0.5), 3.0)
+        return (clamped * 20.0).rounded() / 20.0
+    }
+
+    func setSpeed(_ newSpeed: Double, persist: Bool = true) {
+        let snapped = Self.snapSpeed(newSpeed)
+        self.speed = snapped
+        if persist {
+            saveBookAudioSettings()
+        } else {
+            AppSettingsStore.shared.defaultSpeed = snapped
+        }
+    }
+
+    /// T3-05 恢复到上次播放位置但保持暂停（不发声）
+    func prepare(
+        book: BookRef,
+        chapters: [ChapterDTO],
+        chapter: ChapterDTO,
+        positionMs: Int = 0
+    ) {
+        loadTask?.cancel()
+        precacheTask?.cancel()
+        playbackGeneration &+= 1
+        currentBook = book
+        chapterQueue = chapters
+        currentChapter = chapter
+        lastPluginError = nil
+        hasRetriedCurrentChapter = false
+        loadBookPreferences(for: book.id)
+        let startSec = max(0, Double(positionMs) / 1000.0)
+        detachCurrentItem(startSec: startSec)
+        state = .paused
+        clock.currentTimeSec = startSec
+        clock.durationSec = max(chapter.hintDurationSec, startSec > 0 ? startSec + 60 : 600)
+        updateNowPlayingInfo()
+    }
+
 
     private let player = AVPlayer()
     private var timeObserverToken: Any?
@@ -170,6 +239,13 @@ final class PlayerEngine {
         // 立即记录到「最近播放」（及已加入书架书籍的最后播放章节与时间）
         persistProgressNow(positionMsOverride: Int(startSec * 1000))
 
+        if useFakeBackend {
+            state = .playing
+            isCurrentItemReady = true
+            if clock.durationSec <= 0 { clock.durationSec = 600 }
+            updateNowPlayingInfo()
+            return
+        }
         loadTask = Task {
             await loadAndPlay(chapter: startChapter, initialPositionMs: initialPositionMs, generation: gen)
         }
@@ -196,7 +272,10 @@ final class PlayerEngine {
         case .playing:
             pause()
         case .paused, .idle:
-            if player.currentItem?.status == .readyToPlay {
+            if useFakeBackend {
+                state = .playing
+                updateNowPlayingInfo()
+            } else if player.currentItem?.status == .readyToPlay {
                 resume()
             } else if let ch = currentChapter {
                 retryCurrentChapter()
@@ -788,7 +867,7 @@ final class PlayerEngine {
         let posMs = positionMsOverride ?? max(0, Int(clock.currentTimeSec * 1000))
         let chapterIdx = (chapterQueue.firstIndex(where: { $0.id == chapter.id }).map { $0 + 1 }) ?? 0
         let totalChaps = chapterQueue.count
-        ChapterProgressStore.save(bookID: bookID, chapterID: chapter.id, positionMs: posMs)
+        ChapterProgressCache.shared.update(bookID: bookID, chapterID: chapter.id, positionMs: posMs, durationMs: Int(clock.durationSec * 1000), forceFlush: true)
 
         let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
         if let saved = try? ctx.fetch(descriptor).first {

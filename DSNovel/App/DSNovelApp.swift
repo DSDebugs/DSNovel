@@ -1,18 +1,34 @@
 import SwiftUI
 import SwiftData
 
+private struct SimulatedStoreFailureError: LocalizedError {
+    var errorDescription: String? { "Simulated SwiftData store failure (-DSNOVEL_SIMULATE_STORE_FAILURE)" }
+}
+
 @main
 struct DSNovelApp: App {
-    let modelContainer: ModelContainer
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    @State private var containerResult: Result<ModelContainer, Error>
     @State private var settings = AppSettingsStore.shared
     @State private var player = PlayerEngine.shared
     @State private var downloadManager = DownloadManager.shared
-    @State private var toastManager = ToastManager.shared
 
     init() {
         CookieSync.bootstrap()
-        let schema = Schema([
+        let config = AppLaunchConfig.current
+        _containerResult = State(
+            initialValue: Self.makeContainer(
+                simulateFailure: config.simulateStoreFailure,
+                inMemoryOnly: config.isUITestMode
+            )
+        )
+    }
+
+    static var appSchema: Schema {
+        Schema([
             Book.self,
+            ChapterProgress.self,
             ShelfCategory.self,
             DownloadItem.self,
             PluginRecord.self,
@@ -20,39 +36,82 @@ struct DSNovelApp: App {
             SearchHistory.self,
             BuiltinParserRecord.self
         ])
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+    }
+
+    private static func makeContainer(simulateFailure: Bool = false, inMemoryOnly: Bool = false) -> Result<ModelContainer, Error> {
+        if simulateFailure {
+            return .failure(SimulatedStoreFailureError())
+        }
+        let config = ModelConfiguration(schema: appSchema, isStoredInMemoryOnly: inMemoryOnly)
         do {
-            self.modelContainer = try ModelContainer(for: schema, configurations: [config])
+            let container = try ModelContainer(for: appSchema, configurations: [config])
+            return .success(container)
         } catch {
-            fatalError("无法初始化 SwiftData 容器: \(error)")
+            return .failure(error)
         }
     }
 
     var body: some Scene {
         WindowGroup {
-            RootTabView()
-                .preferredColorScheme(settings.appearanceMode.colorScheme)
-                .task {
-                    let context = modelContainer.mainContext
-                    player.modelContext = context
-                    downloadManager.modelContext = context
-                    downloadManager.recoverInterruptedItems()
-                    _ = await CookieSync.pullFromWebView()
-                    // 首次启动：把随 App 打包的听书书源种子安装到插件目录（幂等，不覆盖用户数据）
-                    await BundledSourceSeeder.seedIfNeeded(modelContext: context)
-                    await PluginRuntime.shared.reloadInstalledPackages()
-                    // 内置解析：扫盘载入已安装的解析脚本（未导入时为空列表，功能保持静默）
-                    await BuiltinParserRuntime.shared.reload()
-                    BuiltinParserRegistrySync.syncRecords(context: context)
-                    autoResumeIfNeeded(context: context)
-                }
+            switch containerResult {
+            case .success(let modelContainer):
+                AppShell()
+                    .preferredColorScheme(settings.appearanceMode.colorScheme)
+                    .task {
+                        let context = modelContainer.mainContext
+                        let launch = AppLaunchConfig.current
+                        player.modelContext = context
+                        downloadManager.modelContext = context
+                        LibraryStore.shared.modelContext = context
+                        SourceStore.shared.modelContext = context
+                        ChapterProgressCache.shared.migrateLegacyIfNeeded(context: context)
+
+                        #if DEBUG
+                        if launch.isUITestMode {
+                            player.useFakeBackend = true
+                            FixtureData.populate(
+                                in: context,
+                                emptyAll: launch.isEmptyLibraryAndSources,
+                                noSourceOnly: launch.isNoSourceOnly
+                            )
+                            LibraryStore.shared.refreshNow()
+                            SourceStore.shared.refreshNow()
+                            autoResumeIfNeeded(context: context)
+                            return
+                        }
+                        #endif
+
+                        downloadManager.recoverInterruptedItems()
+                        _ = await CookieSync.pullFromWebView()
+                        await BundledSourceSeeder.seedIfNeeded(modelContext: context)
+                        await PluginRuntime.shared.reloadInstalledPackages()
+                        await BuiltinParserRuntime.shared.reload()
+                        BuiltinParserRegistrySync.syncRecords(context: context)
+                        LibraryStore.shared.refreshNow()
+                        SourceStore.shared.refreshNow()
+                        autoResumeIfNeeded(context: context)
+                    }
+                    .modelContainer(modelContainer)
+
+            case .failure(let error):
+                DataRepairView(
+                    errorDescription: error.localizedDescription,
+                    onRetry: {
+                        containerResult = Self.makeContainer(simulateFailure: false)
+                    },
+                    onBackupAndRebuild: {
+                        _ = try? StoreBackup.backupCurrentStore()
+                        try? StoreBackup.removeStoreFiles()
+                        containerResult = Self.makeContainer(simulateFailure: false)
+                    }
+                )
+            }
         }
-        .modelContainer(modelContainer)
     }
 
     @MainActor
     private func autoResumeIfNeeded(context: ModelContext) {
-        guard settings.autoResumeOnLaunch, player.currentBook == nil else { return }
+        guard settings.launchBehavior != .doNothing, player.currentBook == nil else { return }
         var desc = FetchDescriptor<Book>(
             predicate: #Predicate<Book> { $0.lastPlayedAt != nil },
             sortBy: [SortDescriptor(\Book.lastPlayedAt, order: .reverse)]
@@ -64,11 +123,23 @@ struct DSNovelApp: App {
               let targetChapter = chapters.first(where: { $0.id == lastChapID }) else {
             return
         }
-        player.startPlayback(
-            book: lastBook.bookRef,
-            chapters: chapters,
-            startChapter: targetChapter,
-            initialPositionMs: lastBook.lastPositionMs
-        )
+        switch settings.launchBehavior {
+        case .restorePaused:
+            player.prepare(
+                book: lastBook.bookRef,
+                chapters: chapters,
+                chapter: targetChapter,
+                positionMs: lastBook.lastPositionMs
+            )
+        case .autoPlay:
+            player.startPlayback(
+                book: lastBook.bookRef,
+                chapters: chapters,
+                startChapter: targetChapter,
+                initialPositionMs: lastBook.lastPositionMs
+            )
+        case .doNothing:
+            break
+        }
     }
 }

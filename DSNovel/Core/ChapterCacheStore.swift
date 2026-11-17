@@ -91,35 +91,88 @@ enum ChapterCacheStore {
 }
 
 
-/// 单章收听进度轻量化存储（UserDefaults 按书持久化 chapterID -> positionMs），供详情页每章展示「听至 mm:ss」
+/// 单章收听进度轻量化存储（T0-05：每条进度保存更新时间，超过上限时按更新时间淘汰最旧项，兼容旧版纯 Int 字典格式）
 enum ChapterProgressStore {
+    static let maxEntriesPerBook = 400
+
     private static func key(for bookID: String) -> String {
         let digest = SHA256.hash(data: Data(bookID.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined().prefix(24)
         return "chapter_prog_\(hex)"
     }
 
-    static func loadAll(for bookID: String) -> [String: Int] {
-        guard let dict = UserDefaults.standard.dictionary(forKey: key(for: bookID)) as? [String: Int] else {
+    static func loadAll(for bookID: String, defaults: UserDefaults = .standard) -> [String: Int] {
+        guard let raw = defaults.dictionary(forKey: key(for: bookID)) else {
             return [:]
         }
-        return dict
+        var result: [String: Int] = [:]
+        for (chapterID, val) in raw {
+            if let pos = val as? Int {
+                result[chapterID] = pos
+            } else if let num = val as? NSNumber {
+                result[chapterID] = num.intValue
+            } else if let entry = val as? [String: Any] {
+                if let pos = entry["p"] as? Int {
+                    result[chapterID] = pos
+                } else if let num = entry["p"] as? NSNumber {
+                    result[chapterID] = num.intValue
+                }
+            }
+        }
+        return result
     }
 
-    static func save(bookID: String, chapterID: String, positionMs: Int) {
+    static func save(
+        bookID: String,
+        chapterID: String,
+        positionMs: Int,
+        now: TimeInterval = Date().timeIntervalSince1970,
+        defaults: UserDefaults = .standard
+    ) {
         guard !bookID.isEmpty, !chapterID.isEmpty, positionMs > 0 else { return }
-        var dict = loadAll(for: bookID)
-        dict[chapterID] = positionMs
-        if dict.count > 500 {
-            // 避免使用 Dictionary(_:uniquingKeysWith:) 在 Swift 5 模式下的重载歧义
-            var trimmed: [String: Int] = [:]
-            for (chapterID, position) in dict.prefix(400) {
-                trimmed[chapterID] = position
+        let storageKey = key(for: bookID)
+        var raw = defaults.dictionary(forKey: storageKey) ?? [:]
+
+        var entries: [String: (pos: Int, updatedAt: TimeInterval)] = [:]
+        for (cid, val) in raw {
+            if let pos = val as? Int {
+                entries[cid] = (pos, now - 1.0)
+            } else if let num = val as? NSNumber {
+                entries[cid] = (num.intValue, now - 1.0)
+            } else if let dict = val as? [String: Any] {
+                let p = (dict["p"] as? Int) ?? (dict["p"] as? NSNumber)?.intValue ?? 0
+                let u = (dict["u"] as? TimeInterval) ?? (dict["u"] as? NSNumber)?.doubleValue ?? (now - 1.0)
+                if p > 0 {
+                    entries[cid] = (p, u)
+                }
             }
-            UserDefaults.standard.set(trimmed, forKey: key(for: bookID))
-        } else {
-            UserDefaults.standard.set(dict, forKey: key(for: bookID))
         }
+
+        entries[chapterID] = (positionMs, now)
+
+        if entries.count > 500 {
+            let sorted = entries.sorted { a, b in
+                if a.value.updatedAt != b.value.updatedAt {
+                    return a.value.updatedAt > b.value.updatedAt
+                }
+                return a.key < b.key
+            }
+            var kept: [String: [String: Any]] = [:]
+            for (idx, item) in sorted.enumerated() where idx < maxEntriesPerBook {
+                kept[item.key] = ["p": item.value.pos, "u": item.value.updatedAt]
+            }
+            defaults.set(kept, forKey: storageKey)
+        } else {
+            var serialized: [String: [String: Any]] = [:]
+            for (cid, item) in entries {
+                serialized[cid] = ["p": item.pos, "u": item.updatedAt]
+            }
+            defaults.set(serialized, forKey: storageKey)
+        }
+    }
+
+    static func clear(for bookID: String, defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key(for: bookID))
     }
 
     static func formattedPosition(ms: Int) -> String {

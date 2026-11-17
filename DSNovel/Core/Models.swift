@@ -1,7 +1,7 @@
 import Foundation
 import SwiftData
 
-// MARK: - SwiftData 持久化实体（含「书架」与「最近播放」分离标识及书源测速字段）
+// MARK: - SwiftData 持久化实体
 
 @Model
 final class Book {
@@ -12,7 +12,7 @@ final class Book {
     var author: String
     var cover: String
     var intro: String
-    /// 是否由用户主动加入「书架」（false 表示仅保存在「最近播放」历史记录中）
+    /// 是否由用户主动加入「书架」（false 表示仅保存在「播放历史」中）
     var inShelf: Bool = true
     var addedAt: Date
     var categoryID: String?
@@ -30,6 +30,10 @@ final class Book {
     var speed: Double
     var isPinned: Bool
     var sourceUnavailable: Bool
+    /// T3-03 新增轻量迁移字段（均带默认值）
+    var hasUpdate: Bool = false
+    var latestChapterCount: Int = 0
+    var updateCheckedAt: Date? = nil
 
     init(
         id: String,
@@ -53,7 +57,10 @@ final class Book {
         skipOutroSec: Int = 0,
         speed: Double = 1.0,
         isPinned: Bool = false,
-        sourceUnavailable: Bool = false
+        sourceUnavailable: Bool = false,
+        hasUpdate: Bool = false,
+        latestChapterCount: Int = 0,
+        updateCheckedAt: Date? = nil
     ) {
         self.id = id
         self.sourceID = sourceID
@@ -77,6 +84,9 @@ final class Book {
         self.speed = speed
         self.isPinned = isPinned
         self.sourceUnavailable = sourceUnavailable
+        self.hasUpdate = hasUpdate
+        self.latestChapterCount = latestChapterCount
+        self.updateCheckedAt = updateCheckedAt
     }
 
     var bookRef: BookRef {
@@ -87,11 +97,11 @@ final class Book {
             title: title,
             author: author,
             cover: cover,
-            intro: intro
+            intro: intro,
+            chapterCount: max(totalChapters, latestChapterCount)
         )
     }
 
-    /// 格式化收听进度位置（如 08:42）
     var formattedPositionText: String {
         guard lastPositionMs > 0 else { return "00:00" }
         let totalSec = max(0, lastPositionMs / 1000)
@@ -104,7 +114,6 @@ final class Book {
         return String(format: "%02d:%02d", m, s)
     }
 
-    /// 格式化最后播放时间点（支持相对时间与日期时间展示）
     var formattedLastPlayedAtText: String {
         guard let playedAt = lastPlayedAt else { return "尚未播放" }
         let interval = Date.now.timeIntervalSince(playedAt)
@@ -127,7 +136,6 @@ final class Book {
         }
     }
 
-    /// 汇总展示最后播放章节与进度时间
     var playbackProgressSummary: String {
         if let chapter = lastChapterTitle, !chapter.isEmpty {
             if lastPositionMs > 0 {
@@ -138,7 +146,6 @@ final class Book {
         return "尚未收听"
     }
 
-    /// 书架/最近播放卡片第二行：演播/作者 · 书源名称（无作者时仅展示书源名称）
     func authorAndSourceSubtitle(sourceName: String) -> String {
         let cleanAuthor = author.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanAuthor.isEmpty || cleanAuthor == "未知作者" {
@@ -150,19 +157,48 @@ final class Book {
         return "\(cleanAuthor) · \(sourceName)"
     }
 
-    /// 书架/最近播放卡片第三行：精确展示「第 102/2059 集 · 02:45」
     var episodeAndTimeProgressText: String {
         let timePart = formattedPositionText
         if lastChapterIndex > 0 && totalChapters > 0 {
-            return "第 \(lastChapterIndex)/\(totalChapters) 集 · \(timePart)"
+            return "第 \(lastChapterIndex)/\(totalChapters) 章 · \(timePart)"
         } else if lastChapterIndex > 0 {
-            return "第 \(lastChapterIndex) 集 · \(timePart)"
+            return "第 \(lastChapterIndex) 章 · \(timePart)"
         } else if let title = lastChapterTitle, !title.isEmpty {
             return "\(title) · \(timePart)"
         } else if totalChapters > 0 {
-            return "共 \(totalChapters) 集 · 尚未收听"
+            return "共 \(totalChapters) 章 · 尚未收听"
         }
         return "尚未收听"
+    }
+}
+
+/// T3-02 章节收听进度 SwiftData 模型
+@Model
+final class ChapterProgress {
+    @Attribute(.unique) var id: String // bookID + "::" + chapterID
+    var bookID: String
+    var chapterID: String
+    var positionMs: Int
+    var durationMs: Int
+    var isFinished: Bool
+    var updatedAt: Date
+
+    init(
+        id: String? = nil,
+        bookID: String,
+        chapterID: String,
+        positionMs: Int,
+        durationMs: Int = 0,
+        isFinished: Bool = false,
+        updatedAt: Date = .now
+    ) {
+        self.id = id ?? "\(bookID)::\(chapterID)"
+        self.bookID = bookID
+        self.chapterID = chapterID
+        self.positionMs = positionMs
+        self.durationMs = durationMs
+        self.isFinished = isFinished
+        self.updatedAt = updatedAt
     }
 }
 
@@ -188,7 +224,8 @@ final class DownloadItem {
     var chapterTitle: String
     var sourceID: String
     var kind: String // "manual" | "precache"
-    var state: String // "queued" | "downloading" | "completed" | "failed" | "paused"
+    /// 取值："queued" | "downloading" | "completed" | "failed" | "paused" | "waitingWiFi"
+    var state: String
     var localPath: String
     var bytes: Int64
     var retryCount: Int
@@ -242,13 +279,9 @@ final class PluginRecord {
     var loginURL: String
     var loggedIn: Bool
     var settingsJSON: String
-    /// 书源最近一次检测状态："untested" | "healthy" | "slow" | "needAuth" | "unavailable"
     var lastCheckStatus: String = "untested"
-    /// 书源最近一次检测响应延迟（毫秒），未检测时为 -1
     var lastLatencyMs: Int = -1
-    /// 书源最近一次检测结果说明
     var lastCheckMessage: String = ""
-    /// 书源最近一次检测时间
     var lastCheckedAt: Date? = nil
 
     init(
@@ -318,7 +351,6 @@ final class PluginRecord {
         }
     }
 
-    /// 用于并发搜索与智能排序的优先级分值（越小越优先）
     var searchPriorityScore: Int {
         var score = order
         if isPinned { score -= 10000 }
@@ -370,11 +402,6 @@ final class SearchHistory {
     }
 }
 
-/// 内置解析脚本记录（仅用于「书源管理 → 内置解析」展示与管理）
-///
-/// 注意：解析链路不读这张表 —— `BuiltinParserRuntime` 直接扫盘读取
-/// `Application Support/BuiltinParsers/<parserID>/`，因此即使 SwiftData 记录缺失，
-/// 已安装的解析器依然可用（两者由安装/删除流程同步写入）。
 @Model
 final class BuiltinParserRecord {
     @Attribute(.unique) var id: String
@@ -382,16 +409,13 @@ final class BuiltinParserRecord {
     var version: String
     var author: String
     var summary: String
-    /// 目标书源 host（逗号分隔）
     var targetHosts: String
-    /// 目标书源 sourceID（逗号分隔，兜底匹配用）
     var targetSourceIDs: String
     var fileName: String
     var sha256: String
     var sizeBytes: Int
     var importedAt: Date
     var isEnabled: Bool
-    /// "untested" | "ok" | "failed"
     var lastCheckStatus: String = "untested"
     var lastCheckMessage: String = ""
     var lastLatencyMs: Int = -1
@@ -439,7 +463,6 @@ final class BuiltinParserRecord {
         self.lastAccountExpireAt = lastAccountExpireAt
     }
 
-    /// 由磁盘扫描结果同步展示字段（不改动用户开关与自检结果）
     func applyDiskState(_ parser: InstalledBuiltinParser) {
         name = parser.meta.name
         version = parser.meta.version
@@ -470,7 +493,7 @@ final class BuiltinParserRecord {
 
 // MARK: - 轻量值类型 DTO 与路由枚举
 
-/// 底部主导航标签：固定顺序为「发现 · 搜索 · 书架 · 设置」
+/// 保留旧测试兼容枚举（testBottomTabOrderIsDiscoverSearchShelfSettings）
 enum AppTab: Int, CaseIterable, Hashable {
     case discover = 0
     case search = 1
@@ -496,27 +519,46 @@ enum AppTab: Int, CaseIterable, Hashable {
     }
 }
 
-/// 书架页顶部三栏切换：「书架 · 最近播放 · 已下载」（已完整移除书签）
-enum ShelfSectionMode: String, CaseIterable, Identifiable {
-    case shelf = "shelf"
-    case recent = "recent"
-    case downloaded = "downloaded"
+/// T2-02 新外壳四标签枚举：书架 · 发现 · 我的 · 搜索（role: .search）
+enum ShellTab: String, CaseIterable, Hashable, Sendable {
+    case library = "library"
+    case discover = "discover"
+    case me = "me"
+    case search = "search"
 
-    var id: String { rawValue }
     var title: String {
         switch self {
-        case .shelf: return "书架"
-        case .recent: return "最近播放"
-        case .downloaded: return "已下载"
+        case .library: return "书架"
+        case .discover: return "发现"
+        case .me: return "我的"
+        case .search: return "搜索"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .library: return "books.vertical"
+        case .discover: return "safari"
+        case .me: return "person.crop.circle"
+        case .search: return "magnifyingglass"
         }
     }
 }
 
+enum SourceFocus: String, Hashable, Codable, Sendable {
+    case builtinParser
+}
+
 enum Route: Hashable {
     case book(BookRef, alternatives: [BookRef] = [])
+    case history
+    case downloads
+    case sourceList
+    case sourceDetail(id: String, focus: SourceFocus? = nil)
+    case sourceImport
+    case skipSettings
     case pluginManager
     case downloadManager
-    case skipSettings
 }
 
 enum SourceHealthState: String, Codable, CaseIterable, Sendable {
@@ -576,23 +618,9 @@ struct BookRef: Identifiable, Hashable, Codable, Sendable {
         self.chapterCount = chapterCount
     }
 
-    /// 发现页网格与列表卡片的智能副标题：优先展示「共 X 章 / X 集」，其次展示作者或状态简介，彻底消除生硬的「未知作者」
     var discoverSubtitle: String {
         if chapterCount > 0 {
             return "共 \(chapterCount) 章"
-        }
-        let combined = [intro, author].joined(separator: " ")
-        if let range = combined.range(of: #"共\s*\d+\s*[章集回讲]"#, options: .regularExpression) {
-            return String(combined[range]).replacingOccurrences(of: " ", with: "")
-                .replacingOccurrences(of: "共", with: "共 ")
-                .replacingOccurrences(of: "章", with: " 章")
-                .replacingOccurrences(of: "集", with: " 集")
-                .replacingOccurrences(of: "回", with: " 回")
-                .replacingOccurrences(of: "讲", with: " 讲")
-        }
-        if let range = combined.range(of: #"\d+\s*[章集回讲]"#, options: .regularExpression) {
-            let numPart = String(combined[range]).trimmingCharacters(in: .whitespaces)
-            return "共 \(numPart)"
         }
         let cleanAuthor = author.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanAuthor.isEmpty {
@@ -635,9 +663,6 @@ struct ChapterDTO: Identifiable, Hashable, Codable, Sendable {
 }
 
 extension ChapterDTO {
-    /// 插件返回的章节时长单位并不统一（有的给秒，有的给毫秒）。
-    /// 单章超过 10 小时(36000 秒)几乎不可能，此时按毫秒折算；仍不合理则视为未知。
-    /// 仅用于列表展示与起播前的占位时长，真实时长始终以 AVPlayerItem 为准。
     var normalizedDurationSec: Int? {
         guard let raw = durationSec, raw > 0 else { return nil }
         if raw <= 36_000 { return raw }
@@ -693,9 +718,7 @@ struct PlayStreamInfo: Hashable, Codable, Sendable {
     var url: String
     var headers: [String: String]
     var kind: StreamKind
-    /// 该地址的来源："" = 书源自己解析；"builtinParser" = 内置解析
     var resolvedBy: String = ""
-    /// 直链有效期（内置解析会给出；过期后需要重新解析）
     var expiresAt: Date? = nil
 }
 

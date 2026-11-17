@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum AudioChannelMode: String, CaseIterable, Identifiable {
+enum AudioChannelMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case music = "music"
     case spokenAudio = "spokenAudio"
 
@@ -19,7 +19,7 @@ enum AudioChannelMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum AppAppearanceMode: String, CaseIterable, Identifiable {
+enum AppAppearanceMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case system = "system"
     case light = "light"
     case dark = "dark"
@@ -41,23 +41,26 @@ enum AppAppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum DiscoverLayoutStyle: String, CaseIterable, Identifiable {
+enum DiscoverLayoutStyle: String, CaseIterable, Identifiable, Codable, Sendable {
     case grid = "grid"
     case list = "list"
+    case largeCard = "largeCard"
 
     var id: String { rawValue }
     var title: String {
         switch self {
         case .grid: return "网格"
         case .list: return "列表"
+        case .largeCard: return "大图"
         }
     }
 }
 
-enum ShelfSortOrder: String, CaseIterable, Identifiable {
+enum ShelfSortOrder: String, CaseIterable, Identifiable, Codable, Sendable {
     case lastPlayed = "lastPlayed"
     case addedAt = "addedAt"
     case title = "title"
+    case recentlyUpdated = "recentlyUpdated"
 
     var id: String { rawValue }
     var title: String {
@@ -65,7 +68,29 @@ enum ShelfSortOrder: String, CaseIterable, Identifiable {
         case .lastPlayed: return "最近播放"
         case .addedAt: return "加入时间"
         case .title: return "书名"
+        case .recentlyUpdated: return "最近更新"
         }
+    }
+}
+
+/// T3-05 启动时的行为三选一
+enum LaunchBehavior: String, CaseIterable, Identifiable, Codable, Sendable {
+    case restorePaused = "restorePaused"
+    case autoPlay = "autoPlay"
+    case doNothing = "doNothing"
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .restorePaused: return "恢复到上次位置并暂停"
+        case .autoPlay: return "自动续播"
+        case .doNothing: return "什么都不做"
+        }
+    }
+
+    static func migrate(fromLegacyAutoResume autoResume: Bool?) -> LaunchBehavior {
+        guard let autoResume else { return .restorePaused }
+        return autoResume ? .autoPlay : .restorePaused
     }
 }
 
@@ -74,70 +99,128 @@ enum ShelfSortOrder: String, CaseIterable, Identifiable {
 final class AppSettingsStore {
     static let shared = AppSettingsStore()
 
+    static let allResettablePropertyNames: [String] = [
+        "audioChannel",
+        "defaultSpeed",
+        "sleepFadeOutEnabled",
+        "autoResumeOnLaunch",
+        "launchBehavior",
+        "precacheCount",
+        "rememberBookVolume",
+        "defaultSkipIntroSec",
+        "defaultSkipOutroSec",
+        "discoverLayout",
+        "shelfLayout",
+        "shelfSort",
+        "appearanceMode",
+        "hapticsEnabled",
+        "wifiOnlyDownload",
+        "currentDiscoverSourceID",
+        "nightDimEnabled",
+        "reduceMotionOverride"
+    ]
+
+    private let defaults: UserDefaults
+
     var audioChannel: AudioChannelMode {
-        didSet { UserDefaults.standard.set(audioChannel.rawValue, forKey: "audioChannel") }
+        didSet { defaults.set(audioChannel.rawValue, forKey: "audioChannel") }
     }
     var defaultSpeed: Double {
-        didSet { UserDefaults.standard.set(defaultSpeed, forKey: "defaultSpeed") }
+        didSet { defaults.set(defaultSpeed, forKey: "defaultSpeed") }
     }
     var sleepFadeOutEnabled: Bool {
-        didSet { UserDefaults.standard.set(sleepFadeOutEnabled, forKey: "sleepFadeOutEnabled") }
+        didSet { defaults.set(sleepFadeOutEnabled, forKey: "sleepFadeOutEnabled") }
     }
     var autoResumeOnLaunch: Bool {
-        didSet { UserDefaults.standard.set(autoResumeOnLaunch, forKey: "autoResumeOnLaunch") }
+        didSet {
+            defaults.set(autoResumeOnLaunch, forKey: "autoResumeOnLaunch")
+            if autoResumeOnLaunch && launchBehavior != .autoPlay {
+                launchBehavior = .autoPlay
+            } else if !autoResumeOnLaunch && launchBehavior == .autoPlay {
+                launchBehavior = .restorePaused
+            }
+        }
+    }
+    var launchBehavior: LaunchBehavior {
+        didSet {
+            defaults.set(launchBehavior.rawValue, forKey: "launchBehavior")
+            let shouldAuto = (launchBehavior == .autoPlay)
+            if autoResumeOnLaunch != shouldAuto {
+                autoResumeOnLaunch = shouldAuto
+            }
+        }
     }
     var precacheCount: Int {
-        didSet { UserDefaults.standard.set(precacheCount, forKey: "precacheCount") }
+        didSet { defaults.set(precacheCount, forKey: "precacheCount") }
     }
     var rememberBookVolume: Bool {
-        didSet { UserDefaults.standard.set(rememberBookVolume, forKey: "rememberBookVolume") }
+        didSet { defaults.set(rememberBookVolume, forKey: "rememberBookVolume") }
     }
     var defaultSkipIntroSec: Int {
-        didSet { UserDefaults.standard.set(defaultSkipIntroSec, forKey: "defaultSkipIntroSec") }
+        didSet { defaults.set(defaultSkipIntroSec, forKey: "defaultSkipIntroSec") }
     }
     var defaultSkipOutroSec: Int {
-        didSet { UserDefaults.standard.set(defaultSkipOutroSec, forKey: "defaultSkipOutroSec") }
+        didSet { defaults.set(defaultSkipOutroSec, forKey: "defaultSkipOutroSec") }
     }
     var discoverLayout: DiscoverLayoutStyle {
-        didSet { UserDefaults.standard.set(discoverLayout.rawValue, forKey: "discoverLayout") }
+        didSet { defaults.set(discoverLayout.rawValue, forKey: "discoverLayout") }
     }
     var shelfLayout: DiscoverLayoutStyle {
-        didSet { UserDefaults.standard.set(shelfLayout.rawValue, forKey: "shelfLayout") }
+        didSet { defaults.set(shelfLayout.rawValue, forKey: "shelfLayout") }
     }
     var shelfSort: ShelfSortOrder {
-        didSet { UserDefaults.standard.set(shelfSort.rawValue, forKey: "shelfSort") }
+        didSet { defaults.set(shelfSort.rawValue, forKey: "shelfSort") }
     }
     var appearanceMode: AppAppearanceMode {
-        didSet { UserDefaults.standard.set(appearanceMode.rawValue, forKey: "appearanceMode") }
+        didSet { defaults.set(appearanceMode.rawValue, forKey: "appearanceMode") }
     }
     var hapticsEnabled: Bool {
-        didSet { UserDefaults.standard.set(hapticsEnabled, forKey: "hapticsEnabled") }
+        didSet { defaults.set(hapticsEnabled, forKey: "hapticsEnabled") }
     }
     var wifiOnlyDownload: Bool {
-        didSet { UserDefaults.standard.set(wifiOnlyDownload, forKey: "wifiOnlyDownload") }
+        didSet { defaults.set(wifiOnlyDownload, forKey: "wifiOnlyDownload") }
     }
     var currentDiscoverSourceID: String {
-        didSet { UserDefaults.standard.set(currentDiscoverSourceID, forKey: "currentDiscoverSourceID") }
+        didSet { defaults.set(currentDiscoverSourceID, forKey: "currentDiscoverSourceID") }
+    }
+    /// T6-02 夜间降亮
+    var nightDimEnabled: Bool {
+        didSet { defaults.set(nightDimEnabled, forKey: "nightDimEnabled") }
+    }
+    /// T6-02 应用内减弱动画覆盖（false=跟随系统，true=始终减弱）
+    var reduceMotionOverride: Bool {
+        didSet { defaults.set(reduceMotionOverride, forKey: "reduceMotionOverride") }
     }
 
-    init() {
-        let d = UserDefaults.standard
-        self.audioChannel = AudioChannelMode(rawValue: d.string(forKey: "audioChannel") ?? "") ?? .spokenAudio
-        let spd = d.double(forKey: "defaultSpeed")
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.audioChannel = AudioChannelMode(rawValue: defaults.string(forKey: "audioChannel") ?? "") ?? .spokenAudio
+        let spd = defaults.double(forKey: "defaultSpeed")
         self.defaultSpeed = spd > 0 ? spd : 1.0
-        self.sleepFadeOutEnabled = d.object(forKey: "sleepFadeOutEnabled") as? Bool ?? true
-        self.autoResumeOnLaunch = d.object(forKey: "autoResumeOnLaunch") as? Bool ?? false
-        self.precacheCount = d.object(forKey: "precacheCount") as? Int ?? 2
-        self.rememberBookVolume = d.object(forKey: "rememberBookVolume") as? Bool ?? true
-        self.defaultSkipIntroSec = d.integer(forKey: "defaultSkipIntroSec")
-        self.defaultSkipOutroSec = d.integer(forKey: "defaultSkipOutroSec")
-        self.discoverLayout = DiscoverLayoutStyle(rawValue: d.string(forKey: "discoverLayout") ?? "") ?? .grid
-        self.shelfLayout = DiscoverLayoutStyle(rawValue: d.string(forKey: "shelfLayout") ?? "") ?? .grid
-        self.shelfSort = ShelfSortOrder(rawValue: d.string(forKey: "shelfSort") ?? "") ?? .lastPlayed
-        self.appearanceMode = AppAppearanceMode(rawValue: d.string(forKey: "appearanceMode") ?? "") ?? .system
-        self.hapticsEnabled = d.object(forKey: "hapticsEnabled") as? Bool ?? true
-        self.wifiOnlyDownload = d.object(forKey: "wifiOnlyDownload") as? Bool ?? true
-        self.currentDiscoverSourceID = d.string(forKey: "currentDiscoverSourceID") ?? ""
+        self.sleepFadeOutEnabled = defaults.object(forKey: "sleepFadeOutEnabled") as? Bool ?? true
+        let legacyAutoResume = defaults.object(forKey: "autoResumeOnLaunch") as? Bool
+        self.autoResumeOnLaunch = legacyAutoResume ?? false
+        if let savedBehavior = defaults.string(forKey: "launchBehavior"),
+           let parsed = LaunchBehavior(rawValue: savedBehavior) {
+            self.launchBehavior = parsed
+        } else {
+            let migrated = LaunchBehavior.migrate(fromLegacyAutoResume: legacyAutoResume)
+            self.launchBehavior = migrated
+            defaults.set(migrated.rawValue, forKey: "launchBehavior")
+        }
+        self.precacheCount = defaults.object(forKey: "precacheCount") as? Int ?? 2
+        self.rememberBookVolume = defaults.object(forKey: "rememberBookVolume") as? Bool ?? true
+        self.defaultSkipIntroSec = defaults.integer(forKey: "defaultSkipIntroSec")
+        self.defaultSkipOutroSec = defaults.integer(forKey: "defaultSkipOutroSec")
+        self.discoverLayout = DiscoverLayoutStyle(rawValue: defaults.string(forKey: "discoverLayout") ?? "") ?? .grid
+        self.shelfLayout = DiscoverLayoutStyle(rawValue: defaults.string(forKey: "shelfLayout") ?? "") ?? .grid
+        self.shelfSort = ShelfSortOrder(rawValue: defaults.string(forKey: "shelfSort") ?? "") ?? .lastPlayed
+        self.appearanceMode = AppAppearanceMode(rawValue: defaults.string(forKey: "appearanceMode") ?? "") ?? .system
+        self.hapticsEnabled = defaults.object(forKey: "hapticsEnabled") as? Bool ?? true
+        self.wifiOnlyDownload = defaults.object(forKey: "wifiOnlyDownload") as? Bool ?? true
+        self.currentDiscoverSourceID = defaults.string(forKey: "currentDiscoverSourceID") ?? ""
+        self.nightDimEnabled = defaults.object(forKey: "nightDimEnabled") as? Bool ?? false
+        self.reduceMotionOverride = defaults.object(forKey: "reduceMotionOverride") as? Bool ?? false
     }
 
     func resetAll() {
@@ -145,6 +228,7 @@ final class AppSettingsStore {
         defaultSpeed = 1.0
         sleepFadeOutEnabled = true
         autoResumeOnLaunch = false
+        launchBehavior = .restorePaused
         precacheCount = 2
         rememberBookVolume = true
         defaultSkipIntroSec = 0
@@ -155,5 +239,8 @@ final class AppSettingsStore {
         appearanceMode = .system
         hapticsEnabled = true
         wifiOnlyDownload = true
+        currentDiscoverSourceID = ""
+        nightDimEnabled = false
+        reduceMotionOverride = false
     }
 }

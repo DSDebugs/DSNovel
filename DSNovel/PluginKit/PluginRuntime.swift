@@ -198,7 +198,6 @@ final class PackageContextPool: @unchecked Sendable {
 }
 
 /// 并发安全的单次恢复门栓：防止超时任务与 GCD JS 执行回调重复 resume Continuation
-/// （命名为 PluginContinuationGate，避免与 BuiltinParserRuntime 中的同名门栓冲突）
 private final class PluginContinuationGate<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<T, Error>?
@@ -668,12 +667,21 @@ actor PluginRuntime {
                     sampleCount: 0,
                     checkedAt: .now
                 )
-            case .vipRequired, .builtinParserMissing, .builtinParserFailed:
+            case .vipRequired, .builtinParserMissing:
+                return SourceHealthCheckResult(
+                    sourceID: sourceID,
+                    state: .healthy,
+                    latencyMs: elapsedMs,
+                    message: "书源可连通（部分 VIP 章节需内置解析）",
+                    sampleCount: 0,
+                    checkedAt: .now
+                )
+            case .builtinParserFailed(_, let reason):
                 return SourceHealthCheckResult(
                     sourceID: sourceID,
                     state: .unavailable,
                     latencyMs: elapsedMs,
-                    message: Self.compactErrorMessage(pErr.localizedDescription),
+                    message: Self.compactErrorMessage(reason),
                     sampleCount: 0,
                     checkedAt: .now
                 )
