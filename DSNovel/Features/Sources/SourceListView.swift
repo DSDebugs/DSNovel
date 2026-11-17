@@ -75,6 +75,7 @@ struct SourceListView: View {
         }
         .searchable(text: $sourceStore.searchKeyword, prompt: "搜索书源名称或域名")
         .toolbarVisibility(isBatchMode ? .hidden : .visible, for: .tabBar)
+        .onChange(of: isBatchMode) { _, hidden in AppRouter.shared.isBottomBarHidden = hidden }
         .toolbar {
             if isBatchMode {
                 ToolbarItem(placement: .topBarTrailing) {

@@ -12,6 +12,7 @@ final class AppRouter {
     var mePath: [Route] = []
     var searchPath: [Route] = []
     var isPlayerPresented: Bool = false
+    var isBottomBarHidden: Bool = false
 
     private(set) var pendingParserSourceID: String?
     private(set) var pendingSourceFocus: (sourceID: String, focus: SourceFocus)?
@@ -64,6 +65,7 @@ final class AppRouter {
 
         if isPlayerPresented {
             isPlayerPresented = false
+        isBottomBarHidden = false
         }
 
         let destinationTab = Self.targetTab(for: route, currentTab: selectedTab)
@@ -143,6 +145,7 @@ final class AppRouter {
         mePath.removeAll()
         searchPath.removeAll()
         isPlayerPresented = false
+        isBottomBarHidden = false
         pendingParserSourceID = nil
         pendingSourceFocus = nil
         lastProcessedRequestKey = nil

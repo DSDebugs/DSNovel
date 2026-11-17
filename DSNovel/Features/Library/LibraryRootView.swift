@@ -54,6 +54,7 @@ struct LibraryRootView: View {
         .navigationTitle(isEditing ? "已选 \(selectedIDs.count) 项" : "书籍")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarVisibility(isEditing ? .hidden : .visible, for: .tabBar)
+        .onChange(of: isEditing) { _, hidden in AppRouter.shared.isBottomBarHidden = hidden }
         .toolbar {
             ShelfToolbar(
                 isEditing: isEditing,

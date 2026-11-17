@@ -19,21 +19,12 @@ struct AppShell: View {
 
     init() {}
 
-    private var tabSelectionBinding: Binding<ShellTab> {
-        Binding(
-            get: { router.selectedTab },
-            set: { newTab in
-                if newTab == router.selectedTab {
-                    if !router.isAtRoot(for: newTab) {
-                        router.popToRoot(for: newTab)
-                    } else {
-                        ScrollToTopCenter.shared.requestScrollToTop(in: newTab)
-                    }
-                } else {
-                    router.selectedTab = newTab
-                }
-            }
-        )
+    private func handleTabReselect(_ tab: ShellTab) {
+        if !router.isAtRoot(for: tab) {
+            router.popToRoot(for: tab)
+        } else {
+            ScrollToTopCenter.shared.requestScrollToTop(in: tab)
+        }
     }
 
     var body: some View {
@@ -54,51 +45,57 @@ struct AppShell: View {
                     }
                 )
             } else {
-                TabView(selection: tabSelectionBinding) {
-                    Tab(ShellTab.discover.title, systemImage: ShellTab.discover.icon, value: ShellTab.discover) {
+                TabView(selection: $router.selectedTab) {
+                    Tab(value: ShellTab.discover) {
                         NavigationStack(path: $router.discoverPath) {
                             DiscoverRootView()
                                 .navigationDestination(for: Route.self) { route in
                                     destinationView(for: route)
                                 }
                         }
+                        .toolbar(.hidden, for: .tabBar)
                     }
 
-                    Tab(ShellTab.search.title, systemImage: ShellTab.search.icon, value: ShellTab.search) {
+                    Tab(value: ShellTab.search) {
                         NavigationStack(path: $router.searchPath) {
                             SearchRootView()
                                 .navigationDestination(for: Route.self) { route in
                                     destinationView(for: route)
                                 }
                         }
+                        .toolbar(.hidden, for: .tabBar)
                     }
 
-                    Tab(ShellTab.library.title, systemImage: ShellTab.library.icon, value: ShellTab.library) {
+                    Tab(value: ShellTab.library) {
                         NavigationStack(path: $router.libraryPath) {
                             LibraryRootView()
                                 .navigationDestination(for: Route.self) { route in
                                     destinationView(for: route)
                                 }
                         }
+                        .toolbar(.hidden, for: .tabBar)
                     }
-                    .badge(libraryStore.updatedCount)
 
-                    Tab(ShellTab.me.title, systemImage: ShellTab.me.icon, value: ShellTab.me) {
+                    Tab(value: ShellTab.me) {
                         NavigationStack(path: $router.mePath) {
                             MeRootView()
                                 .navigationDestination(for: Route.self) { route in
                                     destinationView(for: route)
                                 }
                         }
+                        .toolbar(.hidden, for: .tabBar)
                     }
-                    .badge(sourceStore.healthSummary.unavailableCount)
                 }
-                .tabBarMinimizeBehavior(.onScrollDown)
-                .tabViewBottomAccessory {
-                    if player.isMiniPlayerVisible {
-                        MiniPlayer(
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !router.isBottomBarHidden {
+                        DSBottomBar(
+                            selectedTab: $router.selectedTab,
+                            libraryBadge: libraryStore.updatedCount,
+                            meBadge: sourceStore.healthSummary.unavailableCount,
                             player: player,
-                            onExpand: { router.isPlayerPresented = true }
+                            continueBook: libraryStore.continueBook,
+                            onReselectTab: handleTabReselect,
+                            onOpenFullPlayer: { router.isPlayerPresented = true }
                         )
                     }
                 }

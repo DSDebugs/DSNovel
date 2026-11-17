@@ -51,14 +51,18 @@ struct DSBookRow: View {
                                 .lineLimit(1)
                         }
 
-                        if !model.author.isEmpty || !model.sourceName.isEmpty {
-                            Text([model.author, model.sourceName].filter { !$0.isEmpty }.joined(separator: " · "))
+                        let authorLine = [model.author, model.sourceName].filter { !$0.isEmpty }.joined(separator: " · ")
+                        if !authorLine.isEmpty {
+                            Text(authorLine)
                                 .font(DSTypography.subtitle)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
 
-                        if !model.progressSubtitle.isEmpty {
+                        let showProgressLine = !model.progressSubtitle.isEmpty
+                            && model.progressSubtitle != model.author
+                            && model.progressSubtitle != authorLine
+                        if showProgressLine {
                             Text(model.progressSubtitle)
                                 .font(DSTypography.numericCaption)
                                 .foregroundStyle(model.isPlaying ? Color.dsAccent : .secondary)

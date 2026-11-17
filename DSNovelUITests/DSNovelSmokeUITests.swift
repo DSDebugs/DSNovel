@@ -10,13 +10,13 @@ final class DSNovelSmokeUITests: XCTestCase {
 
     func testTabOrderIsDiscoverSearchLibraryMe() {
         let app = launchFixture()
-        let tabBar = app.tabBars.firstMatch
+        let tabBar = app.buttons["tab.discover"]
         XCTAssertTrue(tabBar.waitForExistence(timeout: 5))
 
-        let discoverTab = tabBar.buttons["发现"]
-        let searchTab = tabBar.buttons["搜索"]
-        let libraryTab = tabBar.buttons["书籍"]
-        let meTab = tabBar.buttons["我的"]
+        let discoverTab = app.buttons["tab.discover"]
+        let searchTab = app.buttons["tab.search"]
+        let libraryTab = app.buttons["tab.library"]
+        let meTab = app.buttons["tab.me"]
 
         XCTAssertTrue(discoverTab.exists)
         XCTAssertTrue(searchTab.exists)
@@ -29,7 +29,7 @@ final class DSNovelSmokeUITests: XCTestCase {
 
     func testDiscoverSourceSwitcherAndGridAlignment() {
         let app = launchFixture()
-        app.tabBars.buttons["发现"].tap()
+        app.buttons["tab.discover"].tap()
         let switcher = app.buttons["discover.sourceSwitcher"]
         XCTAssertTrue(switcher.waitForExistence(timeout: 5))
         switcher.tap()
@@ -38,7 +38,7 @@ final class DSNovelSmokeUITests: XCTestCase {
 
     func testSearchFieldVisibleAndClearResetsToIdle() {
         let app = launchFixture()
-        app.tabBars.buttons["搜索"].tap()
+        app.buttons["tab.search"].tap()
         let field = app.textFields["search.field"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
@@ -51,7 +51,7 @@ final class DSNovelSmokeUITests: XCTestCase {
 
     func testSourceListRowsHaveNoDuplicateNameOrLatency() {
         let app = launchFixture()
-        app.tabBars.buttons["我的"].tap()
+        app.buttons["tab.me"].tap()
         let healthBtn = app.buttons.matching(NSPredicate(format: "label CONTAINS '可用'")).firstMatch
         if healthBtn.waitForExistence(timeout: 5) {
             healthBtn.tap()
