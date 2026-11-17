@@ -107,13 +107,11 @@ final class BookDetailModel {
     nonisolated static func cleanHTML(_ raw: String) -> String {
         guard !raw.isEmpty else { return "暂无作品简介" }
         let stripped = raw
-            .replacingOccurrences(of: "<br\s*/?>", with: "
-", options: .regularExpression)
-            .replacingOccurrences(of: "</p>", with: "
-", options: .caseInsensitive)
+            .replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
+            .replacingOccurrences(of: "</p>", with: "\n", options: .caseInsensitive)
             .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
             .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&quot;", with: """)
+            .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&amp;", with: "&")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return stripped.isEmpty ? "暂无作品简介" : stripped
