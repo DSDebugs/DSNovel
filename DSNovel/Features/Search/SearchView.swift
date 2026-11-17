@@ -434,7 +434,7 @@ struct SearchView: View {
     @Bindable var viewModel: SearchViewModel
 
     init(
-        viewModel: SearchViewModel = SearchViewModel(),
+        viewModel: SearchViewModel,
         onSelectMergedItem: @escaping (MergedSearchItem) -> Void,
         onNavigateToPluginManager: @escaping () -> Void = {}
     ) {

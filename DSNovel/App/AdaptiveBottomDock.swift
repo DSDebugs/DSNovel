@@ -183,6 +183,14 @@ struct AdaptiveBottomDock: View {
 
     private let mainTabs: [AppTab] = [.discover, .shelf, .settings]
 
+    // 显式 internal init：private/@Namespace/@FocusState 属性会使 memberwise init 变为 private，
+    // 而 RootTabView 在另一个文件里构造本视图，故必须显式开放。
+    init(dock: BottomDockController, searchVM: SearchViewModel, onExpandFullPlayer: @escaping () -> Void) {
+        self._dock = Bindable(wrappedValue: dock)
+        self._searchVM = Bindable(wrappedValue: searchVM)
+        self.onExpandFullPlayer = onExpandFullPlayer
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             // 上层：在「展开态」或「搜索内联态（键盘未弹出时）」且有播放任务时展示全宽迷你播放条
@@ -381,6 +389,11 @@ struct AdaptiveBottomDock: View {
 struct FullWidthMiniPlayerPill: View {
     let onTapExpand: () -> Void
     private var player = PlayerEngine.shared
+
+    // 显式 internal init：private 存储属性会使编译器生成的 memberwise init 变为 private
+    init(onTapExpand: @escaping () -> Void) {
+        self.onTapExpand = onTapExpand
+    }
 
     var body: some View {
         if let book = player.currentBook, let chapter = player.currentChapter {

@@ -111,7 +111,11 @@ enum ChapterProgressStore {
         var dict = loadAll(for: bookID)
         dict[chapterID] = positionMs
         if dict.count > 500 {
-            let trimmed = Dictionary(dict.prefix(400), uniquingKeysWith: { first, _ in first })
+            // 避免使用 Dictionary(_:uniquingKeysWith:) 在 Swift 5 模式下的重载歧义
+            var trimmed: [String: Int] = [:]
+            for (chapterID, position) in dict.prefix(400) {
+                trimmed[chapterID] = position
+            }
             UserDefaults.standard.set(trimmed, forKey: key(for: bookID))
         } else {
             UserDefaults.standard.set(dict, forKey: key(for: bookID))
