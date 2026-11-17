@@ -94,11 +94,13 @@ struct AppShell: View {
                     .badge(sourceStore.healthSummary.unavailableCount)
                 }
                 .tabBarMinimizeBehavior(.onScrollDown)
-                .tabViewBottomAccessory(isEnabled: player.isMiniPlayerVisible) {
-                    MiniPlayer(
-                        player: player,
-                        onExpand: { router.isPlayerPresented = true }
-                    )
+                .tabViewBottomAccessory {
+                    if player.isMiniPlayerVisible {
+                        MiniPlayer(
+                            player: player,
+                            onExpand: { router.isPlayerPresented = true }
+                        )
+                    }
                 }
             }
 

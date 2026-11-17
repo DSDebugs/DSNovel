@@ -122,7 +122,8 @@ struct DSBookCard: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                    .frame(width: side, minHeight: 34, alignment: .topLeading)
+                    .frame(width: side, alignment: .topLeading)
+                    .frame(minHeight: 34, alignment: .topLeading)
 
                 Text(model.progressSubtitle.isEmpty ? model.author : model.progressSubtitle)
                     .font(DSTypography.caption2.monospacedDigit())
