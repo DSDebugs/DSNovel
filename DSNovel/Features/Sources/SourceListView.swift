@@ -15,21 +15,23 @@ struct SourceListView: View {
 
     private var filterChips: [DSChipItem<SourceListFilter>] {
         let s = sourceStore.healthSummary
-        return [
+        var list: [DSChipItem<SourceListFilter>] = [
             DSChipItem(id: .all, title: "全部", count: s.totalCount),
             DSChipItem(id: .available, title: "可用", count: s.availableCount),
             DSChipItem(id: .needAuth, title: "需登录", count: s.needAuthCount),
             DSChipItem(id: .unavailable, title: "异常", count: s.unavailableCount)
         ]
+        if s.untestedCount > 0 {
+            list.append(DSChipItem(id: .untested, title: "未检测", count: s.untestedCount))
+        }
+        if s.stoppedCount > 0 {
+            list.append(DSChipItem(id: .disabled, title: "已停用", count: s.stoppedCount))
+        }
+        return list
     }
 
     var body: some View {
-        VStack(spacing: Spacing.s2) {
-            DSChipBar(
-                items: filterChips,
-                selection: $sourceStore.filter
-            )
-
+        Group {
             if sourceStore.allSources.isEmpty {
                 DSStateView(
                     kind: .noSource,
@@ -42,6 +44,7 @@ struct SourceListView: View {
                         Section("已置顶") {
                             ForEach(sourceStore.pinnedSources) { src in
                                 rowWithActions(src)
+                                    .listRowBackground(Color.dsSurfaceCard)
                             }
                         }
                     }
@@ -49,14 +52,27 @@ struct SourceListView: View {
                     Section("书源列表（\(sourceStore.filteredSources.count)）") {
                         ForEach(sourceStore.filteredSources) { src in
                             rowWithActions(src)
+                                .listRowBackground(Color.dsSurfaceCard)
                         }
                     }
                 }
                 .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
             }
         }
         .background(Color.dsSurfaceGrouped)
         .navigationTitle(isBatchMode ? "已选 \(selectedIDs.count) 项" : "书源")
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !sourceStore.allSources.isEmpty {
+                DSChipBar(
+                    items: filterChips,
+                    selection: $sourceStore.filter
+                )
+                .padding(.vertical, Spacing.s2)
+                .background(.bar)
+            }
+        }
         .searchable(text: $sourceStore.searchKeyword, prompt: "搜索书源名称或域名")
         .toolbarVisibility(isBatchMode ? .hidden : .visible, for: .tabBar)
         .toolbar {

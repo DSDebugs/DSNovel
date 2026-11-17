@@ -11,6 +11,8 @@ struct ShelfGrid: View {
     private let onDownloadUnread: (BookCardModel) -> Void
     private let onRemove: (BookCardModel) -> Void
 
+    @State private var containerWidth: CGFloat = 393
+
     init(
         models: [BookCardModel],
         isEditing: Bool,
@@ -34,17 +36,22 @@ struct ShelfGrid: View {
     }
 
     private let columns = [
-        GridItem(.flexible(), spacing: Spacing.gridColumnSpacing),
-        GridItem(.flexible(), spacing: Spacing.gridColumnSpacing),
-        GridItem(.flexible(), spacing: Spacing.gridColumnSpacing)
+        GridItem(.flexible(), spacing: Spacing.gridColumnSpacing, alignment: .top),
+        GridItem(.flexible(), spacing: Spacing.gridColumnSpacing, alignment: .top),
+        GridItem(.flexible(), spacing: Spacing.gridColumnSpacing, alignment: .top)
     ]
+
+    private var computedSide: CGFloat {
+        let usable = max(240, containerWidth - Spacing.pageHorizontal * 2)
+        return floor((usable - Spacing.gridColumnSpacing * 2) / 3.0)
+    }
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: Spacing.gridRowSpacing) {
             ForEach(models) { item in
                 DSBookCard(
                     model: item,
-                    side: 108,
+                    side: computedSide,
                     isEditing: isEditing,
                     isSelected: selectedIDs.contains(item.id),
                     onAction: { onSelectBook(item) }
@@ -80,5 +87,12 @@ struct ShelfGrid: View {
             }
         }
         .padding(.horizontal, Spacing.pageHorizontal)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { newWidth in
+            if abs(newWidth - containerWidth) > 1 {
+                containerWidth = newWidth
+            }
+        }
     }
 }

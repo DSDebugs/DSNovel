@@ -30,7 +30,7 @@ struct ContinueSection: View {
             )
             .padding(.horizontal, Spacing.pageHorizontal)
 
-            if !recentModels.isEmpty {
+            if recentModels.count >= 2 {
                 VStack(alignment: .leading, spacing: Spacing.s2) {
                     DSSectionHeader(
                         title: "最近在听",

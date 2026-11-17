@@ -117,7 +117,9 @@ final class LibraryStore {
         }
     }
 
+    private(set) var hasLoadedOnce: Bool = false
     private(set) var allShelfBooks: [Book] = []
+    private(set) var shelfBookIDs: Set<String> = []
     private(set) var shelfBooks: [Book] = []
     private(set) var recentBooks: [Book] = []
     private(set) var continueBook: Book?
@@ -177,11 +179,14 @@ final class LibraryStore {
         categories = (try? ctx.fetch(catDesc)) ?? []
 
         allShelfBooks = rawShelf.filter { !hiddenBookIDs.contains($0.id) }
+        shelfBookIDs = Set(allShelfBooks.map(\.id))
+        hasLoadedOnce = true
         let visibleHistory = rawHistory.filter { !hiddenBookIDs.contains($0.id) }
 
         continueBook = visibleHistory.first(where: { ($0.lastChapterID != nil) || $0.lastPositionMs > 0 }) ?? visibleHistory.first
         let continueID = continueBook?.id
-        recentBooks = Array(visibleHistory.filter { $0.id != continueID }.prefix(8))
+        // 最近在听仅展示未加入书架且非继续收听主卡的历史书籍（E-01）
+        recentBooks = Array(visibleHistory.filter { $0.id != continueID && !$0.inShelf }.prefix(8))
 
         recomputeDerived()
         scheduleBackfillChapterCountsIfNeeded()

@@ -38,7 +38,7 @@ struct AppShell: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            if sourceStore.allSources.filter(\.isEnabled).isEmpty && !dismissedOnboarding {
+            if !sourceStore.hasEnabledSource && sourceStore.hasLoadedOnce && !dismissedOnboarding {
                 OnboardingView(
                     hasSeededSource: !sourceStore.allSources.isEmpty,
                     onUseBuiltIn: {
@@ -55,61 +55,50 @@ struct AppShell: View {
                 )
             } else {
                 TabView(selection: tabSelectionBinding) {
-                    NavigationStack(path: $router.libraryPath) {
-                        LibraryRootView()
-                            .navigationDestination(for: Route.self) { route in
-                                destinationView(for: route)
-                            }
+                    Tab(ShellTab.discover.title, systemImage: ShellTab.discover.icon, value: ShellTab.discover) {
+                        NavigationStack(path: $router.discoverPath) {
+                            DiscoverRootView()
+                                .navigationDestination(for: Route.self) { route in
+                                    destinationView(for: route)
+                                }
+                        }
                     }
-                    .tabItem {
-                        Label(ShellTab.library.title, systemImage: ShellTab.library.icon)
+
+                    Tab(ShellTab.search.title, systemImage: ShellTab.search.icon, value: ShellTab.search) {
+                        NavigationStack(path: $router.searchPath) {
+                            SearchRootView()
+                                .navigationDestination(for: Route.self) { route in
+                                    destinationView(for: route)
+                                }
+                        }
+                    }
+
+                    Tab(ShellTab.library.title, systemImage: ShellTab.library.icon, value: ShellTab.library) {
+                        NavigationStack(path: $router.libraryPath) {
+                            LibraryRootView()
+                                .navigationDestination(for: Route.self) { route in
+                                    destinationView(for: route)
+                                }
+                        }
                     }
                     .badge(libraryStore.updatedCount)
-                    .tag(ShellTab.library)
 
-                    NavigationStack(path: $router.discoverPath) {
-                        DiscoverRootView()
-                            .navigationDestination(for: Route.self) { route in
-                                destinationView(for: route)
-                            }
+                    Tab(ShellTab.me.title, systemImage: ShellTab.me.icon, value: ShellTab.me) {
+                        NavigationStack(path: $router.mePath) {
+                            MeRootView()
+                                .navigationDestination(for: Route.self) { route in
+                                    destinationView(for: route)
+                                }
+                        }
                     }
-                    .tabItem {
-                        Label(ShellTab.discover.title, systemImage: ShellTab.discover.icon)
-                    }
-                    .tag(ShellTab.discover)
-
-                    NavigationStack(path: $router.mePath) {
-                        MeRootView()
-                            .navigationDestination(for: Route.self) { route in
-                                destinationView(for: route)
-                            }
-                    }
-                    .tabItem {
-                        Label(ShellTab.me.title, systemImage: ShellTab.me.icon)
-                    }
-                    .badge(sourceStore.healthSummary.needAuthCount + sourceStore.healthSummary.unavailableCount)
-                    .tag(ShellTab.me)
-
-                    NavigationStack(path: $router.searchPath) {
-                        SearchRootView()
-                            .navigationDestination(for: Route.self) { route in
-                                destinationView(for: route)
-                            }
-                    }
-                    .tabItem {
-                        Label(ShellTab.search.title, systemImage: ShellTab.search.icon)
-                    }
-                    .tag(ShellTab.search)
+                    .badge(sourceStore.healthSummary.unavailableCount)
                 }
-                .safeAreaInset(edge: .bottom) {
-                    if player.isMiniPlayerVisible {
-                        MiniPlayer(
-                            player: player,
-                            density: .expanded,
-                            onExpand: { router.isPlayerPresented = true }
-                        )
-                        .padding(.bottom, 52)
-                    }
+                .tabBarMinimizeBehavior(.onScrollDown)
+                .tabViewBottomAccessory(isEnabled: player.isMiniPlayerVisible) {
+                    MiniPlayer(
+                        player: player,
+                        onExpand: { router.isPlayerPresented = true }
+                    )
                 }
             }
 
@@ -135,17 +124,23 @@ struct AppShell: View {
                 DownloadManager.shared.pumpQueue()
             }
         }
+        .onChange(of: libraryStore.hasLoadedOnce) { _, loaded in
+            if loaded { resolveInitialTabIfNeeded() }
+        }
         .onAppear {
             libraryStore.modelContext = modelContext
             sourceStore.modelContext = modelContext
-            if !didSetInitialTab {
-                didSetInitialTab = true
-                if !libraryStore.allShelfBooks.isEmpty || libraryStore.continueBook != nil {
-                    router.selectedTab = .library
-                } else {
-                    router.selectedTab = .discover
-                }
-            }
+            resolveInitialTabIfNeeded()
+        }
+    }
+
+    private func resolveInitialTabIfNeeded() {
+        guard !didSetInitialTab, libraryStore.hasLoadedOnce else { return }
+        didSetInitialTab = true
+        if !libraryStore.allShelfBooks.isEmpty || libraryStore.continueBook != nil {
+            router.selectedTab = .library
+        } else {
+            router.selectedTab = .discover
         }
     }
 

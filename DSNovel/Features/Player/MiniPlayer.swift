@@ -49,55 +49,57 @@ struct MiniPlayerStaticContent: View, Equatable {
 
     var body: some View {
         let _ = MiniPlayerRenderCounter.shared.recordEvaluation()
-        HStack(spacing: Spacing.s3) {
-            DSCover(
-                url: coverURL,
-                title: bookTitle,
-                side: density == .expanded ? 36 : 28
-            )
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: Spacing.s1) {
-                    if isFailed {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 6, height: 6)
-                    }
-                    Text(isFailed ? "播放失败 · 点按重试" : chapterTitle)
-                        .font(DSTypography.cardTitle)
-                        .foregroundStyle(isFailed ? .red : .primary)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: Spacing.s1) {
+                if isFailed {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
                 }
+                Text(chapterTitle)
+                    .font(DSTypography.cardTitle)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
 
-                if density == .expanded {
-                    Text(bookTitle)
-                        .font(DSTypography.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            if density == .expanded {
+                Text(isFailed ? "播放失败 · 点按重试" : bookTitle)
+                    .font(DSTypography.caption)
+                    .foregroundStyle(isFailed ? .red : .secondary)
+                    .lineLimit(1)
             }
         }
     }
 }
 
 struct MiniPlayer: View {
+    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
     let player: PlayerEngine
-    let density: MiniPlayerDensity
     private let onExpand: () -> Void
 
     init(
         player: PlayerEngine = .shared,
-        density: MiniPlayerDensity = .expanded,
         onExpand: @escaping () -> Void
     ) {
         self.player = player
-        self.density = density
         self.onExpand = onExpand
+    }
+
+    private var density: MiniPlayerDensity {
+        placement == .inline ? .compact : .expanded
     }
 
     private var isFailed: Bool {
         if case .failed = player.state { return true }
         return false
+    }
+
+    private var canPlayPrev: Bool {
+        player.canPlayPreviousChapter
+    }
+
+    private var canPlayNext: Bool {
+        player.nextChapterAvailability != .none
     }
 
     var body: some View {
@@ -110,63 +112,118 @@ struct MiniPlayer: View {
                         onExpand()
                     }
                 } label: {
-                    MiniPlayerStaticContent(
-                        bookTitle: book.title,
-                        coverURL: book.cover,
-                        chapterTitle: chapter.title,
-                        isFailed: isFailed,
-                        density: density
-                    )
-                    .equatable()
+                    HStack(spacing: Spacing.s2) {
+                        MiniPlayerProgressRing(
+                            clock: player.clock,
+                            coverURL: book.cover,
+                            bookTitle: book.title,
+                            size: density == .expanded ? 40 : 28
+                        )
+
+                        MiniPlayerStaticContent(
+                            bookTitle: book.title,
+                            coverURL: book.cover,
+                            chapterTitle: chapter.title,
+                            isFailed: isFailed,
+                            density: density
+                        )
+                        .equatable()
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-
-                MiniPlayerProgressRing(
-                    clock: player.clock,
-                    isPlaying: player.state == .playing,
-                    isBuffering: player.isBuffering,
-                    onTogglePlay: {
-                        DSHapticPolicy.fire(.playPause)
-                        player.togglePlayPause()
-                    }
+                .gesture(
+                    DragGesture(minimumDistance: 20)
+                        .onEnded { value in
+                            if density == .expanded && value.translation.height < -30 {
+                                onExpand()
+                            } else if density == .compact && abs(value.translation.width) > 36 {
+                                DSHapticPolicy.fire(.chapterSwitch)
+                                if value.translation.width < 0 && canPlayNext {
+                                    player.playNextChapter()
+                                } else if value.translation.width > 0 && canPlayPrev {
+                                    player.playPreviousChapter()
+                                }
+                            }
+                        }
                 )
 
                 if density == .expanded {
                     Button {
-                        DSHapticPolicy.fire(.selection)
-                        player.skipForward(30)
+                        DSHapticPolicy.fire(.chapterSwitch)
+                        player.playPreviousChapter()
                     } label: {
-                        Image(systemName: "goforward.30")
-                            .font(DSTypography.body)
-                            .foregroundStyle(.primary)
-                            .frame(width: 40, height: 44)
+                        Image(systemName: "backward.end.fill")
+                            .font(DSTypography.subtitle.weight(.semibold))
+                            .foregroundStyle(canPlayPrev ? .primary : .tertiary)
+                            .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("快进 30 秒")
+                    .disabled(!canPlayPrev)
+                    .accessibilityLabel("上一章")
+                    .accessibilityIdentifier("miniplayer.prev")
                 }
+
+                Button {
+                    if isFailed {
+                        player.retryCurrentChapter()
+                    } else {
+                        DSHapticPolicy.fire(.playPause)
+                        player.togglePlayPause()
+                    }
+                } label: {
+                    Group {
+                        if player.isBuffering {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else if isFailed {
+                            Image(systemName: "arrow.clockwise")
+                                .font(DSTypography.body.weight(.semibold))
+                                .foregroundStyle(.red)
+                        } else {
+                            Image(systemName: player.state == .playing ? "pause.fill" : "play.fill")
+                                .font(DSTypography.body.weight(.semibold))
+                                .foregroundStyle(Color.dsAccent)
+                                .contentTransition(.symbolEffect(.replace))
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isFailed ? "重试" : (player.state == .playing ? "暂停" : "播放"))
+                .accessibilityIdentifier("miniplayer.play")
+
+                Button {
+                    DSHapticPolicy.fire(.chapterSwitch)
+                    player.playNextChapter()
+                } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(DSTypography.subtitle.weight(.semibold))
+                        .foregroundStyle(canPlayNext ? .primary : .tertiary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canPlayNext)
+                .accessibilityLabel("下一章")
+                .accessibilityIdentifier("miniplayer.next")
             }
             .padding(.horizontal, Spacing.s3)
-            .padding(.vertical, Spacing.s2)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(.regularMaterial)
-                    .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .strokeBorder(Color.dsSeparator.opacity(0.28), lineWidth: 0.5)
-            )
-            .padding(.horizontal, Spacing.pageHorizontal)
-            .accessibilityElement(children: .combine)
+            .frame(height: density == .expanded ? 52 : 44)
+            .accessibilityIdentifier("miniplayer.root")
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("正在播放：\(chapter.title)，\(book.title)")
             .accessibilityAction(named: "播放或暂停") {
                 player.togglePlayPause()
             }
+            .accessibilityAction(named: "上一章") {
+                if canPlayPrev { player.playPreviousChapter() }
+            }
             .accessibilityAction(named: "下一章") {
-                player.playNextChapter()
+                if canPlayNext { player.playNextChapter() }
             }
             .accessibilityAction(named: "展开播放器") {
                 onExpand()

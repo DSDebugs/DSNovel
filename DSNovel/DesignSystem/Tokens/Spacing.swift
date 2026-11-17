@@ -11,7 +11,8 @@ enum Spacing {
     static let s8: CGFloat = 48
 
     static let pageHorizontal: CGFloat = 16
-    static let sectionVertical: CGFloat = 28
+    static let sectionVertical: CGFloat = 20
     static let gridColumnSpacing: CGFloat = 12
-    static let gridRowSpacing: CGFloat = 20
+    static let gridRowSpacing: CGFloat = 16
+    static let largeCardRowSpacing: CGFloat = 20
 }

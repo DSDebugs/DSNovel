@@ -43,7 +43,7 @@ final class StoresTests: XCTestCase {
         // 1. 继续收听选择最近播放且有进度者 (b2)
         XCTAssertEqual(store.continueBook?.id, "s::2")
         // 2. recentBooks 不含主卡那本
-        XCTAssertEqual(store.recentBooks.map(\.id), ["s::1"])
+        XCTAssertEqual(store.recentBooks.map(\.id), [], "已在书架的书不应重复出现在最近在听中")
 
         // 3. 置顶永远在最前 + 最近播放排序
         store.sortOrder = .lastPlayed
@@ -234,5 +234,77 @@ final class StoresTests: XCTestCase {
         let lateBook = BookRef(sourceID: "s4", bookURL: "https://s4/1", title: "迟到结果")
         store.ingestBatchForTesting([lateBook], generation: gen)
         XCTAssertEqual(store.mergedItems.count, 2)
+    }
+
+    // MARK: - FIX-06 书源互斥五态口径与登录过期测试
+
+    @MainActor
+    func testFix06_SourceStoreMutuallyExclusiveClassificationAndAuthLifecycle() throws {
+        let container = try TestContainer.make()
+        let ctx = container.mainContext
+        let store = SourceStore()
+
+        // 1. healthy + requiresLogin + unlogged -> needAuth
+        let s1 = PluginRecord(id: "s1", packageID: "pkg", name: "带登录未登", version: "1.0", isEnabled: true, requiresLogin: true, loggedIn: false, lastCheckStatus: "healthy")
+        // 2. healthy + requiresLogin + loggedIn -> available
+        let s2 = PluginRecord(id: "s2", packageID: "pkg", name: "带登录已登", version: "1.0", isEnabled: true, requiresLogin: true, loggedIn: true, lastCheckStatus: "healthy")
+        // 3. unavailable + requiresLogin -> unavailable (异常优先于需登录)
+        let s3 = PluginRecord(id: "s3", packageID: "pkg", name: "异常优先", version: "1.0", isEnabled: true, requiresLogin: true, loggedIn: false, lastCheckStatus: "unavailable")
+        // 4. disabled -> disabled
+        let s4 = PluginRecord(id: "s4", packageID: "pkg", name: "已停用源", version: "1.0", isEnabled: false, requiresLogin: true, loggedIn: false, lastCheckStatus: "unavailable")
+        // 5. untested + no login -> untested
+        let s5 = PluginRecord(id: "s5", packageID: "pkg", name: "未检测源", version: "1.0", isEnabled: true, requiresLogin: false, loggedIn: false, lastCheckStatus: "untested")
+        // 6. untested + requiresLogin -> needAuth
+        let s6 = PluginRecord(id: "s6", packageID: "pkg", name: "未检带登录", version: "1.0", isEnabled: true, requiresLogin: true, loggedIn: false, lastCheckStatus: "untested")
+
+        for s in [s1, s2, s3, s4, s5, s6] { ctx.insert(s) }
+        try ctx.save()
+        store.modelContext = ctx
+
+        let sum = store.healthSummary
+        XCTAssertEqual(sum.totalCount, 6)
+        XCTAssertEqual(sum.availableCount, 1)
+        XCTAssertEqual(sum.needAuthCount, 2)
+        XCTAssertEqual(sum.unavailableCount, 1)
+        XCTAssertEqual(sum.untestedCount, 1)
+        XCTAssertEqual(sum.stoppedCount, 1)
+        XCTAssertEqual(sum.availableCount + sum.needAuthCount + sum.unavailableCount + sum.untestedCount + sum.stoppedCount, sum.totalCount)
+
+        // 登录成功 -> 移入可用
+        store.markLoggedIn(sourceID: "s1")
+        XCTAssertEqual(store.healthSummary.availableCount, 2)
+        XCTAssertEqual(store.healthSummary.needAuthCount, 1)
+
+        // 登录过期 -> 回到需登录
+        store.markAuthExpired(sourceID: "s1")
+        XCTAssertEqual(store.healthSummary.availableCount, 1)
+        XCTAssertEqual(store.healthSummary.needAuthCount, 2)
+
+        // 筛选后行数 == Chip 计数
+        store.filter = .needAuth
+        XCTAssertEqual(store.filteredSources.count, store.healthSummary.needAuthCount)
+        store.filter = .disabled
+        XCTAssertEqual(store.filteredSources.count, store.healthSummary.stoppedCount)
+    }
+
+    // MARK: - FIX-05 SearchStore 状态机与 reset() 测试
+
+    @MainActor
+    func testFix05_SearchStorePhaseAndReset() {
+        let store = SearchStore()
+        store.keyword = "诡秘之主"
+        let gen = store.searchGeneration
+        store.ingestBatchForTesting([BookRef(sourceID: "s1", bookURL: "u1", title: "诡秘之主")], generation: gen)
+        XCTAssertEqual(store.mergedItems.count, 1)
+
+        store.reset()
+        XCTAssertEqual(store.phase, .idle)
+        XCTAssertEqual(store.keyword, "")
+        XCTAssertTrue(store.mergedItems.isEmpty)
+        XCTAssertEqual(store.totalSourcesCount, 0)
+
+        // reset 后旧代数结果不污染
+        store.ingestBatchForTesting([BookRef(sourceID: "s1", bookURL: "u2", title: "旧结果")], generation: gen)
+        XCTAssertTrue(store.mergedItems.isEmpty)
     }
 }

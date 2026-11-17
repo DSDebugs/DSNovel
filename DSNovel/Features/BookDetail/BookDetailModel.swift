@@ -153,6 +153,14 @@ final class BookDetailModel {
         } catch {
             isLoadingChapters = false
             chapterError = error
+            if let pErr = error as? PluginError {
+                switch pErr {
+                case .needLogin, .needVerify:
+                    SourceStore.shared.markAuthExpired(sourceID: currentBookRef.sourceID)
+                default:
+                    break
+                }
+            }
         }
     }
 

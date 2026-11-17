@@ -159,12 +159,12 @@ final class Book {
 
     var episodeAndTimeProgressText: String {
         let timePart = formattedPositionText
-        if lastChapterIndex > 0 && totalChapters > 0 {
+        if let title = lastChapterTitle, !title.isEmpty {
+            return lastPositionMs > 0 ? "\(title) · \(timePart)" : title
+        } else if lastChapterIndex > 0 && totalChapters > 0 {
             return "第 \(lastChapterIndex)/\(totalChapters) 章 · \(timePart)"
         } else if lastChapterIndex > 0 {
             return "第 \(lastChapterIndex) 章 · \(timePart)"
-        } else if let title = lastChapterTitle, !title.isEmpty {
-            return "\(title) · \(timePart)"
         } else if totalChapters > 0 {
             return "共 \(totalChapters) 章 · 尚未收听"
         }
@@ -521,17 +521,17 @@ enum AppTab: Int, CaseIterable, Hashable {
 
 /// T2-02 新外壳四标签枚举：书架 · 发现 · 我的 · 搜索（role: .search）
 enum ShellTab: String, CaseIterable, Hashable, Sendable {
-    case library = "library"
     case discover = "discover"
-    case me = "me"
     case search = "search"
+    case library = "library"
+    case me = "me"
 
     var title: String {
         switch self {
-        case .library: return "书架"
         case .discover: return "发现"
-        case .me: return "我的"
         case .search: return "搜索"
+        case .library: return "书籍"
+        case .me: return "我的"
         }
     }
 

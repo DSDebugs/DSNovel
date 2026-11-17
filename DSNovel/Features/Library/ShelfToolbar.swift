@@ -62,7 +62,7 @@ struct ShelfToolbar: ToolbarContent {
                     }
                     Divider()
                     Button(action: onManageCategories) {
-                        Label("管理分类", systemImage: "folder.badge.gearshape")
+                        Label("新建分类", systemImage: "folder.badge.plus")
                     }
                     Button(action: onOpenHistory) {
                         Label("全部历史", systemImage: "clock.arrow.circlepath")

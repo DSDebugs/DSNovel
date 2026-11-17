@@ -30,10 +30,12 @@ struct HistoryView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
             }
         }
         .background(Color.dsSurfaceBase)
         .navigationTitle("播放历史")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("清空", role: .destructive) {

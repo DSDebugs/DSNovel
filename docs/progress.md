@@ -1,21 +1,18 @@
-# DSNovel 重构任务进度表（P0–P6 全部完成）
+# DSNovel 整改与验证进度表（b27 修复版）
 
-| 阶段 | 任务编号 | 标题 | 状态 | 验证等级与备注 |
-| --- | --- | --- | --- | --- |
-| P0 | T0-01 | 性能基线记录 (`BaselinePerfTests.swift` + `docs/baseline/README.md`) | 已完成 | V1 通过；待 G-01 真机基线 |
-| P0 | T0-02 | 升级工具链、部署目标 (iOS 26.0) 与 CI (`verify_rules.sh`) | 已完成 | V1 通过 |
-| P0 | T0-03 | 隔离自定义玻璃类型 | 已完成 | V1 通过（已在 T4-5 彻底删除） |
-| P0 | T0-04 | 数据库初始化失败降级 (`DataRepairView`) 与 `StoreBackup` | 已完成 | V1 通过；含 `StoreBackupTests` |
-| P0 | T0-05 | 章节进度时间戳淘汰过渡修复 (`ChapterProgressStore`) | 已完成 | V1 通过；含 `ChapterProgressStoreTests` |
-| P0 | T0-06 | 封面缓存磁盘 LRU 淘汰与并发请求合并 (`CoverImagePipeline`) | 已完成 | V1 通过；含 `CoverPipelineTests` |
-| P0 | T0-07 | 测试底座 (`TestContainer`)、UI 冒烟测试与快照基线文档 | 已完成 | V1 通过；待 G-02 批准快照 |
-| P1 | T1-01…T1-10 | 设计系统 2.0（颜色/字体/间距/圆角/动效/触感/18+组件/`BannerCenter`/`DSGalleryView`） | 已完成 | V1 通过；含 `DesignSystemTests` |
-| P2 | T2-00…T2-05 | 夹具模式、`AppRouter`、`AppShell`、`MiniPlayer`、删除自绘 Dock | 已完成 | V1 通过；含 `AppRouterAndShellTests`；待 G-03 |
-| P3 | T3-01…T3-06 | 四大 Store、`ChapterProgress` SwiftData 迁移、`Book` 更新检查、`DownloadManager` 与后台下载会话 | 已完成 | V1 通过；含 `StoresTests` 与 `DownloadAndProgressTests`；待 G-04 |
-| P4 | T4-1a…T4-6e | 书架、历史、发现、详情、搜索、全屏播放器、我的、书源、下载管理、认证、引导及旧代码清理 | 已完成 | V1 通过（`rules_allowlist.txt` 已清零）；待 G-05 / G-06 / G-07 |
-| P5 | T5-01…T5-13 | 标准动效、封面渐显、骨架屏、选中指示器、均衡器、触感全覆盖与氛围背景降级 | 已完成 | V1 通过；待 G-01 / G-08 |
-| P6 | T6-01 | 无障碍专项复查 | 已取消（D-3） | 按 §0 决策取消 |
-| P6 | T6-02 | 夜间降亮与应用内「减弱动画」覆盖 | 已完成 | V1 通过；含对比度单测 |
-| P6 | T6-03 | 备份与恢复 | 已取消（D-3） | 按 §0 决策取消 |
-| P6 | T6-04 | 文档与清理（术语统一为「章」、移除全部 `deprecated`） | 已完成 | V1 通过 |
-| P6 | T6-05 | 发布候选验收与检查表汇总 | 已完成 | V1 全部通过；待负责人执行 §5 人工门 G-01…G-09 |
+> **验证事实声明**：本仓库在 Linux 环境下完成代码编写与 **V1（`scripts/verify_rules.sh` 静态规则与编译器规则检查）**；由于当前环境无 macOS / Xcode 26 / iOS 26 Simulator，**V2（编译）、V3（单元测试）、V4（UI 测试与截图）需在 macOS / GitHub Actions 运行验证**，**V5（G-01…G-13）需负责人在真机签字验收**。
+
+| 任务编号 | 内容 | 代码状态 | 验证状态 |
+| --- | --- | --- | --- |
+| FIX-00 | 基线验证与整改前截图 | 已就绪 | 待 V2–V4（macOS 环境） |
+| FIX-01 | 全局页面框架与背景统一（内联标题、`scrollContentBackground(.hidden)`、间距 20） | 已编写 | V1 通过；待 V2–V4 |
+| FIX-02 | 底栏顺序（发现·搜索·书籍·我的）与 `tabViewBottomAccessory` 融合迷你播放器 | 已编写 | V1 通过；待 V2–V4 & G-11 |
+| FIX-03 | 发现页书源切换胶囊、固定分类区、单源列宽 1:1 网格对齐 | 已编写 | V1 通过；待 V2–V4 |
+| FIX-04 | 发现页非响应式滚动锚点、单触发分页、`DSCover` 同步命中内存缓存 | 已编写 | V1 通过；待 V2–V4 & G-10 |
+| FIX-05 | 搜索页 `DSSearchField` 与 `SearchPhase` 六态状态机及 `reset()` | 已编写 | V1 通过；待 V2–V4 |
+| FIX-06 | 书源互斥五态口径（带登录入口未登→需登录、过期回退、角标仅异常） | 已编写 | V1 通过；待 V2–V4 & G-12 |
+| FIX-07 | 书源行去重（`DSSourceAvatar` + 单状态标签）与 `SourceListView` 统一底色 | 已编写 | V1 通过；待 V2–V4 |
+| FIX-08 | 书籍页（「书籍」内联标题、最近在听 ≥2 且不重复）与我的页 | 已编写 | V1 通过；待 V2–V4 |
+| FIX-09 | `SourceStore.hasEnabledSource`、`App/` 集合检查、首帧落地页防闪动 | 已编写 | V1 通过；待 V2–V4 |
+| FIX-10 | 单元测试（85+）与 `DSNovelUITests` 界面断言补齐 | 已编写 | 待 V3–V4 & G-02 |
+| FIX-11 | `docs/progress.md` 与 `README.md` 实事求是更正 | 已完成 | V1 通过 |

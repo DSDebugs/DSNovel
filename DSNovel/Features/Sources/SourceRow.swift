@@ -21,17 +21,52 @@ struct SourceRow: View {
         self.onSelect = onSelect
     }
 
-    private var healthKind: DSSourceHealthKind {
-        DSSourceHealthKind(rawValue: source.lastCheckStatus) ?? .untested
+    private var displayStatus: SourceDisplayStatus {
+        SourceDisplayStatus.classify(source)
+    }
+
+    private var statusBadgeColor: Color {
+        switch displayStatus {
+        case .available:
+            return source.healthState == .slow ? .yellow : .green
+        case .needAuth:
+            return .orange
+        case .unavailable:
+            return .red
+        case .untested, .disabled:
+            return .secondary
+        }
+    }
+
+    private var statusIconName: String {
+        switch displayStatus {
+        case .available:
+            return source.healthState == .slow ? "tortoise.fill" : "checkmark.circle.fill"
+        case .needAuth:
+            return "person.badge.key"
+        case .unavailable:
+            return "exclamationmark.triangle.fill"
+        case .untested:
+            return "circle.dashed"
+        case .disabled:
+            return "pause.circle"
+        }
+    }
+
+    private var statusTitle: String {
+        if displayStatus == .available && source.healthState == .slow {
+            return "较慢"
+        }
+        return displayStatus.title
     }
 
     private var subtitleText: String {
         var parts: [String] = ["v\(source.version)"]
-        if source.lastLatencyMs > 0 {
+        if source.lastLatencyMs > 0 && source.isEnabled {
             parts.append("延迟 \(source.lastLatencyMs) ms")
         }
-        if !source.isEnabled {
-            parts.append("已停用")
+        if source.requiresLogin && source.loggedIn {
+            parts.append("已登录")
         }
         return parts.joined(separator: " · ")
     }
@@ -45,11 +80,7 @@ struct SourceRow: View {
                         .foregroundStyle(isSelected ? Color.dsAccent : .secondary)
                 }
 
-                DSSourceBadge(
-                    name: source.name,
-                    health: healthKind,
-                    latencyMs: source.lastLatencyMs > 0 ? source.lastLatencyMs : nil
-                )
+                DSSourceAvatar(name: source.name, size: 32)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(source.name)
@@ -62,17 +93,23 @@ struct SourceRow: View {
                         .lineLimit(1)
                 }
 
-                Spacer()
+                Spacer(minLength: Spacing.s2)
 
                 if isChecking {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Image(systemName: healthKind.iconName)
-                        .foregroundStyle(healthKind.statusColor)
-                        .symbolEffect(.pulse, isActive: isChecking)
+                    HStack(spacing: 4) {
+                        Image(systemName: statusIconName)
+                            .font(DSTypography.caption2)
+                        Text(statusTitle)
+                            .font(DSTypography.caption.weight(.medium))
+                    }
+                    .foregroundStyle(statusBadgeColor)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
             }
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

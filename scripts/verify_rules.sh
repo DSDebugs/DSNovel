@@ -67,7 +67,7 @@ check_grep_rule "no-legacy-glass" "LegacyGlass" "DSNovel"
 # 7. no-geometryreader-in-cells
 check_grep_rule "no-geometryreader-in-cells" "GeometryReader" "DSNovel/DesignSystem/Components" "DSNovel/Features/Discover"
 
-# 8. no-body-collection-ops (only on *View.swift under DSNovel/Features)
+# 8. no-body-collection-ops (on *View.swift under DSNovel/Features AND DSNovel/App)
 while IFS= read -r view_file; do
   [[ -z "$view_file" ]] && continue
   while IFS= read -r line; do
@@ -77,7 +77,7 @@ while IFS= read -r view_file; do
       TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
     fi
   done < <(grep -nE "\.filter\(|\.sorted\(|Dictionary\(grouping:" "$view_file" || true)
-done < <(find DSNovel/Features -type f -name "*View.swift" 2>/dev/null || true)
+done < <(find DSNovel/Features DSNovel/App -type f \( -name "*View.swift" -o -name "AppShell.swift" \) 2>/dev/null || true)
 
 # 9. no-ontapgesture-nav
 check_grep_rule "no-ontapgesture-nav" "onTapGesture" "DSNovel/Features" "DSNovel/DesignSystem/Components"
@@ -101,6 +101,33 @@ while IFS= read -r line; do
       ;;
   esac
 done < <(grep -rnE --include="*.swift" "DSNOVEL_UITEST" "DSNovel" || true)
+
+# 13. no-hardcoded-bottom-52 & no-bottom-safeareainset-miniplayer (FIX-02)
+check_grep_rule "no-hardcoded-bottom-52" "padding\(\.bottom, 52\)" "DSNovel"
+
+# 14. root-views-inline-or-hidden-nav (FIX-01)
+while IFS= read -r root_file; do
+  [[ -z "$root_file" ]] && continue
+  if ! grep -qE "navigationBarTitleDisplayMode\(\.inline\)|toolbar\(\.hidden, for: \.navigationBar\)" "$root_file"; then
+    echo "[FAIL] root-views-inline-or-hidden-nav -> ${root_file}"
+    TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
+  fi
+done < <(find DSNovel/Features -type f -name "*RootView.swift" 2>/dev/null || true)
+
+# 15. list-scroll-bg-hidden (FIX-01)
+while IFS= read -r list_file; do
+  [[ -z "$list_file" ]] && continue
+  if grep -qE "\.listStyle\(\.(insetGrouped|grouped)\)" "$list_file"; then
+    if ! grep -q "scrollContentBackground(.hidden)" "$list_file"; then
+      echo "[FAIL] list-scroll-bg-hidden -> ${list_file}"
+      TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
+    fi
+  fi
+done < <(find DSNovel/Features -type f -name "*.swift" 2>/dev/null || true)
+
+# 16. discover-no-cell-scroll-anchor & discover-no-body-set-map (FIX-04)
+check_grep_rule "discover-no-cell-scroll-anchor" "recordScrollAnchor" "DSNovel/Features/Discover/DiscoverContent.swift"
+check_grep_rule "discover-no-body-set-map" "Set\([^)]*\.map\(" "DSNovel/Features/Discover/DiscoverRootView.swift"
 
 if [[ $TOUCHED_VIOLATIONS -gt 0 ]]; then
   echo "verify_rules.sh failed with ${TOUCHED_VIOLATIONS} violation(s)."

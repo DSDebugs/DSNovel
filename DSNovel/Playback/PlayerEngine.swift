@@ -122,6 +122,14 @@ final class PlayerEngine {
         return false
     }
 
+    var canPlayPreviousChapter: Bool {
+        guard let current = currentChapter,
+              let idx = chapterQueue.firstIndex(where: { $0.id == current.id }) else {
+            return false
+        }
+        return idx > 0
+    }
+
     var nextChapterAvailability: NextChapterAvailability {
         guard let current = currentChapter,
               let idx = chapterQueue.firstIndex(where: { $0.id == current.id }),
@@ -550,6 +558,12 @@ final class PlayerEngine {
         } catch let pErr as PluginError {
             guard !Task.isCancelled, generation == playbackGeneration else { return }
             lastPluginError = pErr
+            switch pErr {
+            case .needLogin, .needVerify:
+                SourceStore.shared.markAuthExpired(sourceID: book.sourceID)
+            default:
+                break
+            }
             if !hasRetriedCurrentChapter, case .network = pErr {
                 hasRetriedCurrentChapter = true
                 await loadAndPlay(chapter: chapter, initialPositionMs: initialPositionMs, generation: generation)

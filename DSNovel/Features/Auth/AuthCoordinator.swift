@@ -43,12 +43,7 @@ final class AuthCoordinator {
     }
 
     func notifyLoginCompleted(sourceID: String) {
-        if let src = SourceStore.shared.source(for: sourceID) {
-            src.loggedIn = true
-            src.lastCheckStatus = SourceHealthState.healthy.rawValue
-            try? SourceStore.shared.modelContext?.save()
-            SourceStore.shared.recomputeDerived()
-        }
+        SourceStore.shared.markLoggedIn(sourceID: sourceID)
         lastCompletedSourceID = sourceID
         completionCount &+= 1
         activeAuthRequest = nil

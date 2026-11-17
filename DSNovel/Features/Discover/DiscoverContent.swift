@@ -6,12 +6,14 @@ struct DiscoverContent: View {
     let layoutStyle: DiscoverLayoutStyle
     let isLoadingMore: Bool
     let loadMoreFailed: Bool
-    @Binding var scrollAnchor: String?
+    @Binding var localScrollAnchor: String?
     private let onSelectBook: (BookRef) -> Void
     private let onAddToShelf: (BookRef) -> Void
     private let onCopyLink: (BookRef) -> Void
-    private let onAppearItem: (String) -> Void
+    private let onReachLoadMoreTrigger: (String) -> Void
     private let onRetryLoadMore: () -> Void
+
+    @State private var containerWidth: CGFloat = 393
 
     init(
         books: [BookRef],
@@ -19,11 +21,11 @@ struct DiscoverContent: View {
         layoutStyle: DiscoverLayoutStyle,
         isLoadingMore: Bool,
         loadMoreFailed: Bool,
-        scrollAnchor: Binding<String?>,
+        localScrollAnchor: Binding<String?>,
         onSelectBook: @escaping (BookRef) -> Void,
         onAddToShelf: @escaping (BookRef) -> Void,
         onCopyLink: @escaping (BookRef) -> Void,
-        onAppearItem: @escaping (String) -> Void,
+        onReachLoadMoreTrigger: @escaping (String) -> Void,
         onRetryLoadMore: @escaping () -> Void
     ) {
         self.books = books
@@ -31,28 +33,50 @@ struct DiscoverContent: View {
         self.layoutStyle = layoutStyle
         self.isLoadingMore = isLoadingMore
         self.loadMoreFailed = loadMoreFailed
-        self._scrollAnchor = scrollAnchor
+        self._localScrollAnchor = localScrollAnchor
         self.onSelectBook = onSelectBook
         self.onAddToShelf = onAddToShelf
         self.onCopyLink = onCopyLink
-        self.onAppearItem = onAppearItem
+        self.onReachLoadMoreTrigger = onReachLoadMoreTrigger
         self.onRetryLoadMore = onRetryLoadMore
     }
 
     private var columns: [GridItem] {
         switch layoutStyle {
         case .grid:
-            return Array(repeating: GridItem(.flexible(), spacing: Spacing.gridColumnSpacing), count: 3)
+            return Array(repeating: GridItem(.flexible(), spacing: Spacing.gridColumnSpacing, alignment: .top), count: 3)
         case .largeCard:
-            return Array(repeating: GridItem(.flexible(), spacing: Spacing.gridColumnSpacing), count: 2)
+            return Array(repeating: GridItem(.flexible(), spacing: Spacing.gridColumnSpacing, alignment: .top), count: 2)
         case .list:
-            return [GridItem(.flexible())]
+            return [GridItem(.flexible(), alignment: .top)]
         }
     }
 
+    private var computedCoverSide: CGFloat {
+        let usableWidth = max(240, containerWidth - Spacing.pageHorizontal * 2)
+        switch layoutStyle {
+        case .grid:
+            return floor((usableWidth - Spacing.gridColumnSpacing * 2) / 3.0)
+        case .largeCard:
+            return floor((usableWidth - Spacing.gridColumnSpacing) / 2.0)
+        case .list:
+            return 72
+        }
+    }
+
+    private var triggerBookID: String? {
+        guard !books.isEmpty else { return nil }
+        let idx = max(0, books.count - 6)
+        return books[idx].id
+    }
+
     var body: some View {
+        let _ = DiscoverRenderCounter.shared.recordContent()
+        let side = computedCoverSide
+        let rowSpacing = layoutStyle == .largeCard ? Spacing.largeCardRowSpacing : Spacing.gridRowSpacing
+
         ScrollView {
-            LazyVGrid(columns: columns, spacing: Spacing.gridRowSpacing) {
+            LazyVGrid(columns: columns, spacing: rowSpacing) {
                 ForEach(books) { ref in
                     let inShelf = shelfBookIDs.contains(ref.id)
                     let model = BookCardModel(
@@ -72,18 +96,17 @@ struct DiscoverContent: View {
                         } else {
                             DSBookCard(
                                 model: model,
-                                side: layoutStyle == .largeCard ? 156 : 108,
+                                side: side,
                                 onAction: { onSelectBook(ref) }
-                            )
-                            .containerRelativeFrame(
-                                .horizontal,
-                                count: layoutStyle == .largeCard ? 2 : 3,
-                                spacing: Spacing.gridColumnSpacing
                             )
                         }
                     }
                     .id(ref.id)
-                    .onAppear { onAppearItem(ref.id) }
+                    .onAppear {
+                        if ref.id == triggerBookID {
+                            onReachLoadMoreTrigger(ref.id)
+                        }
+                    }
                     .contextMenu {
                         Button {
                             onAddToShelf(ref)
@@ -102,6 +125,7 @@ struct DiscoverContent: View {
             }
             .scrollTargetLayout()
             .padding(.horizontal, Spacing.pageHorizontal)
+            .padding(.top, Spacing.s2)
 
             if isLoadingMore {
                 DSSkeleton(mode: .list(rows: 2))
@@ -113,6 +137,13 @@ struct DiscoverContent: View {
                     .padding(.vertical, Spacing.s4)
             }
         }
-        .scrollPosition(id: $scrollAnchor)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { newWidth in
+            if abs(newWidth - containerWidth) > 1 {
+                containerWidth = newWidth
+            }
+        }
+        .scrollPosition(id: $localScrollAnchor)
     }
 }

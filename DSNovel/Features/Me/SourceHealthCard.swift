@@ -51,7 +51,7 @@ struct SourceHealthCard: View {
                                 .font(DSTypography.sectionHeader.monospacedDigit())
                                 .foregroundStyle(.primary)
                                 .contentTransition(.numericText())
-                            Text("\(summary.needAuthCount) 个需登录 · \(summary.unavailableCount) 个异常")
+                            Text("\(summary.needAuthCount) 个需登录（可选） · \(summary.unavailableCount) 个异常")
                                 .font(DSTypography.numericFootnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -82,19 +82,19 @@ struct SourceHealthCard: View {
                     Divider()
                     Button(action: onHandleAttention) {
                         HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                            Text("存在需处理的书源")
+                            Image(systemName: summary.unavailableCount > 0 ? "exclamationmark.triangle.fill" : "person.badge.key")
+                                .foregroundStyle(summary.unavailableCount > 0 ? .red : .orange)
+                            Text(summary.unavailableCount > 0 ? "存在异常书源" : "存在需登录书源")
                                 .font(DSTypography.caption.weight(.medium))
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(summary.unavailableCount > 0 ? .red : .orange)
                             Spacer()
                             Text("去处理 ›")
                                 .font(DSTypography.caption.weight(.semibold))
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(summary.unavailableCount > 0 ? .red : .orange)
                         }
                         .padding(.horizontal, Spacing.s4)
                         .padding(.vertical, Spacing.s3)
-                        .background(Color.orange.opacity(0.10))
+                        .background((summary.unavailableCount > 0 ? Color.red : Color.orange).opacity(0.10))
                     }
                     .buttonStyle(.plain)
                 }

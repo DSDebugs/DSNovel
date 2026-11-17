@@ -1,3 +1,12 @@
+enum SearchPhase: String, Equatable, Sendable {
+    case idle
+    case typing
+    case searching
+    case results
+    case empty
+    case allFailed
+}
+
 import Foundation
 import Observation
 import SwiftData
@@ -41,6 +50,7 @@ final class SearchStore {
     var selectedSourceFilterID: String = "all"
     var hasScrolledPastFirstScreen: Bool = false
 
+    private(set) var phase: SearchPhase = .idle
     private(set) var isSearching: Bool = false
     private(set) var completedSourcesCount: Int = 0
     private(set) var totalSourcesCount: Int = 0
@@ -174,6 +184,7 @@ final class SearchStore {
         totalSourcesCount = sources.count
         elapsedSeconds = 0
         isSearching = !sources.isEmpty
+        phase = isSearching ? .searching : .empty
 
         guard !sources.isEmpty else { return }
         let startTime = Date().timeIntervalSince1970
@@ -212,6 +223,11 @@ final class SearchStore {
                         self.stagingBuffer.append(contentsOf: books)
                     case .failure(let err):
                         let kind = UserFacingError.from(err, sourceName: src.name)
+                        if case .needLogin = kind {
+                            SourceStore.shared.markAuthExpired(sourceID: src.id)
+                        } else if case .needVerify = kind {
+                            SourceStore.shared.markAuthExpired(sourceID: src.id)
+                        }
                         self.failedSources.append(
                             FailedSourceItem(
                                 sourceID: src.id,
@@ -235,6 +251,13 @@ final class SearchStore {
             self.isSearching = false
             if !self.hasScrolledPastFirstScreen && self.pendingHigherRelevanceCount > 0 {
                 self.applyRelevanceResort()
+            }
+            if !self.mergedItems.isEmpty {
+                self.phase = .results
+            } else if !self.failedSources.isEmpty {
+                self.phase = .allFailed
+            } else {
+                self.phase = .empty
             }
         }
     }
@@ -279,12 +302,38 @@ final class SearchStore {
         pendingHigherRelevanceCount = 0
     }
 
+
+    func updateTypingState(isFocused: Bool) {
+        let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            if phase != .idle {
+                reset()
+            }
+        } else if !isSearching && phase != .results && phase != .empty && phase != .allFailed {
+            phase = isFocused ? .typing : .idle
+        }
+    }
+
+    func reset() {
+        cancelCurrentSearch()
+        keyword = ""
+        mergedItems.removeAll()
+        failedSources.removeAll()
+        pendingHigherRelevanceCount = 0
+        completedSourcesCount = 0
+        totalSourcesCount = 0
+        elapsedSeconds = 0
+        selectedSourceFilterID = "all"
+        phase = .idle
+    }
+
     func cancelCurrentSearch() {
         activeTask?.cancel()
         activeTask = nil
         searchGeneration &+= 1
         stagingBuffer.removeAll()
         isSearching = false
+        if !mergedItems.isEmpty { phase = .results }
     }
 
     func skipFailedSource(_ sourceID: String) {

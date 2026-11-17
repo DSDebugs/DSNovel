@@ -9,11 +9,20 @@ struct DiscoverRootView: View {
     @State private var libraryStore = LibraryStore.shared
     @State private var settings = AppSettingsStore.shared
     @State private var showMoreSourcesSheet = false
+    @State private var localScrollAnchor: String?
 
     init() {}
 
     private var currentSourceName: String {
-        sourceStore.sourceName(for: discoverStore.currentSourceID)
+        let name = sourceStore.sourceName(for: discoverStore.currentSourceID)
+        return name.isEmpty ? "发现" : name
+    }
+
+    private var truncatedSourceTitle: String {
+        if currentSourceName.count > 8 {
+            return String(currentSourceName.prefix(8)) + "…"
+        }
+        return currentSourceName
     }
 
     private var sectionChips: [DSChipItem<Int>] {
@@ -29,89 +38,139 @@ struct DiscoverRootView: View {
     }
 
     var body: some View {
-        VStack(spacing: Spacing.s2) {
-            if !sectionChips.isEmpty {
-                DSChipBar(
-                    items: sectionChips,
-                    selection: Binding(
-                        get: { discoverStore.selectedSectionIndex },
-                        set: { idx in Task { await discoverStore.selectSection(idx) } }
-                    )
-                )
-            }
+        let _ = DiscoverRenderCounter.shared.recordRoot()
+        contentArea
+            .background(Color.dsSurfaceBase)
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if !sectionChips.isEmpty || tabChips.count > 1 {
+                    VStack(spacing: Spacing.s2) {
+                        if !sectionChips.isEmpty {
+                            DSChipBar(
+                                items: sectionChips,
+                                selection: Binding(
+                                    get: { discoverStore.selectedSectionIndex },
+                                    set: { idx in
+                                        discoverStore.saveAnchor(localScrollAnchor)
+                                        Task {
+                                            await discoverStore.selectSection(idx)
+                                            localScrollAnchor = discoverStore.savedScrollAnchor()
+                                        }
+                                    }
+                                )
+                            )
+                        }
 
-            if tabChips.count > 1 {
-                DSChipBar(
-                    items: tabChips,
-                    selection: Binding(
-                        get: { discoverStore.selectedTabIndex },
-                        set: { idx in Task { await discoverStore.selectTab(idx) } }
-                    )
-                )
-            }
-
-            contentArea
-        }
-        .background(Color.dsSurfaceBase)
-        .navigationTitle(currentSourceName.isEmpty ? "发现" : currentSourceName)
-        .toolbarTitleMenu {
-            SourceTitleMenu(
-                sources: sourceStore.discoverableSources,
-                currentSourceID: discoverStore.currentSourceID,
-                onSelectSource: { sid in Task { await discoverStore.switchSource(to: sid) } },
-                onMoreSources: { showMoreSourcesSheet = true },
-                onManageSources: { AppRouter.shared.open(.sourceList) }
-            )
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Picker("视图", selection: $settings.discoverLayout) {
-                        ForEach(DiscoverLayoutStyle.allCases) { style in
-                            Text(style.title).tag(style)
+                        if tabChips.count > 1 {
+                            DSChipBar(
+                                items: tabChips,
+                                selection: Binding(
+                                    get: { discoverStore.selectedTabIndex },
+                                    set: { idx in
+                                        discoverStore.saveAnchor(localScrollAnchor)
+                                        Task {
+                                            await discoverStore.selectTab(idx)
+                                            localScrollAnchor = discoverStore.savedScrollAnchor()
+                                        }
+                                    }
+                                )
+                            )
                         }
                     }
-                } label: {
-                    Image(systemName: "square.grid.2x2")
+                    .padding(.vertical, Spacing.s2)
+                    .background(.bar)
                 }
-                .accessibilityLabel("切换视图")
             }
-        }
-        .refreshable {
-            await discoverStore.loadFirstPage(forceReload: true)
-        }
-        .sheet(isPresented: $showMoreSourcesSheet) {
-            DSSheetScaffold(title: "选择书源", onClose: { showMoreSourcesSheet = false }) {
-                List(sourceStore.discoverableSources) { src in
-                    Button {
-                        showMoreSourcesSheet = false
-                        Task { await discoverStore.switchSource(to: src.id) }
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Menu {
+                        SourceTitleMenu(
+                            sources: sourceStore.discoverableSources,
+                            currentSourceID: discoverStore.currentSourceID,
+                            onSelectSource: { sid in
+                                discoverStore.saveAnchor(localScrollAnchor)
+                                Task {
+                                    await discoverStore.switchSource(to: sid)
+                                    localScrollAnchor = discoverStore.savedScrollAnchor()
+                                }
+                            },
+                            onMoreSources: { showMoreSourcesSheet = true },
+                            onManageSources: { AppRouter.shared.open(.sourceList) }
+                        )
                     } label: {
-                        HStack {
-                            DSSourceBadge(
-                                name: src.name,
-                                health: DSSourceHealthKind(rawValue: src.lastCheckStatus) ?? .untested,
-                                latencyMs: src.lastLatencyMs > 0 ? src.lastLatencyMs : nil
-                            )
-                            Spacer()
-                            if src.id == discoverStore.currentSourceID {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(Color.dsAccent)
+                        HStack(spacing: 4) {
+                            Text(truncatedSourceTitle)
+                                .font(DSTypography.rowTitle)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(DSTypography.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, Spacing.s3)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(Color.dsSurfaceGrouped))
+                    }
+                    .accessibilityIdentifier("discover.sourceSwitcher")
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Picker("视图", selection: $settings.discoverLayout) {
+                            ForEach(DiscoverLayoutStyle.allCases) { style in
+                                Text(style.title).tag(style)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "square.grid.2x2")
+                    }
+                    .accessibilityLabel("切换视图")
+                }
+            }
+            .refreshable {
+                await discoverStore.loadFirstPage(forceReload: true)
+            }
+            .sheet(isPresented: $showMoreSourcesSheet) {
+                DSSheetScaffold(title: "选择书源", onClose: { showMoreSourcesSheet = false }) {
+                    List(sourceStore.discoverableSources) { src in
+                        Button {
+                            showMoreSourcesSheet = false
+                            discoverStore.saveAnchor(localScrollAnchor)
+                            Task {
+                                await discoverStore.switchSource(to: src.id)
+                                localScrollAnchor = discoverStore.savedScrollAnchor()
+                            }
+                        } label: {
+                            HStack {
+                                DSSourceBadge(
+                                    name: src.name,
+                                    health: DSSourceHealthKind(rawValue: src.lastCheckStatus) ?? .untested,
+                                    latencyMs: src.lastLatencyMs > 0 ? src.lastLatencyMs : nil
+                                )
+                                Spacer()
+                                if src.id == discoverStore.currentSourceID {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(Color.dsAccent)
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        .task {
-            sourceStore.modelContext = modelContext
-            libraryStore.modelContext = modelContext
-            if discoverStore.currentSourceID.isEmpty,
-               let first = sourceStore.discoverableSources.first {
-                discoverStore.currentSourceID = first.id
+            .onDisappear {
+                discoverStore.saveAnchor(localScrollAnchor)
             }
-            await discoverStore.loadCategoryMenusAndFirstPage(forceReload: false)
-        }
+            .task {
+                sourceStore.modelContext = modelContext
+                libraryStore.modelContext = modelContext
+                if discoverStore.currentSourceID.isEmpty,
+                   let first = sourceStore.discoverableSources.first {
+                    discoverStore.currentSourceID = first.id
+                }
+                await discoverStore.loadCategoryMenusAndFirstPage(forceReload: false)
+                localScrollAnchor = discoverStore.savedScrollAnchor()
+            }
     }
 
     @ViewBuilder
@@ -147,17 +206,13 @@ struct DiscoverRootView: View {
                 onSecondary: { Task { await discoverStore.loadFirstPage(forceReload: true) } }
             )
         } else {
-            let shelfSet = Set(libraryStore.allShelfBooks.map(\.id))
             DiscoverContent(
                 books: discoverStore.currentBooks,
-                shelfBookIDs: shelfSet,
+                shelfBookIDs: libraryStore.shelfBookIDs,
                 layoutStyle: settings.discoverLayout,
                 isLoadingMore: discoverStore.isLoadingMore,
                 loadMoreFailed: discoverStore.loadMoreFailed,
-                scrollAnchor: Binding(
-                    get: { discoverStore.currentScrollAnchor },
-                    set: { discoverStore.currentScrollAnchor = $0 }
-                ),
+                localScrollAnchor: $localScrollAnchor,
                 onSelectBook: { ref in AppRouter.shared.open(.book(ref)) },
                 onAddToShelf: { ref in addRefToShelf(ref) },
                 onCopyLink: { ref in
@@ -165,8 +220,7 @@ struct DiscoverRootView: View {
                     DSHapticPolicy.fire(.selection)
                     BannerCenter.shared.show("已复制", kind: .info)
                 },
-                onAppearItem: { itemID in
-                    discoverStore.recordScrollAnchor(itemID)
+                onReachLoadMoreTrigger: { itemID in
                     Task { await discoverStore.loadNextPageIfNeeded(currentItemID: itemID) }
                 },
                 onRetryLoadMore: {

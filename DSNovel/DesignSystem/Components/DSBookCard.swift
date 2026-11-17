@@ -78,7 +78,7 @@ struct DSBookCard: View {
 
     init(
         model: BookCardModel,
-        side: CGFloat = 104,
+        side: CGFloat = 108,
         isEditing: Bool = false,
         isSelected: Bool = false,
         onAction: @escaping () -> Void = {}
@@ -118,14 +118,14 @@ struct DSBookCard: View {
                 }
 
                 Text(model.title)
-                    .font(DSTypography.cardTitle)
+                    .font(.footnote.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                    .frame(width: side, alignment: .leading)
+                    .frame(width: side, minHeight: 34, alignment: .topLeading)
 
                 Text(model.progressSubtitle.isEmpty ? model.author : model.progressSubtitle)
-                    .font(DSTypography.caption.monospacedDigit())
+                    .font(DSTypography.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .frame(width: side, alignment: .leading)
@@ -136,19 +136,4 @@ struct DSBookCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.accessibilitySummary)
     }
-}
-
-#Preview("Light") {
-    DSBookCard(model: BookCardModel(id: "1", title: "诡秘之主", author: "爱潜水的乌贼", progressFraction: 0.35, lastChapterIndex: 102, totalChapters: 2059, progressSubtitle: "第 102/2059 章", isDownloaded: true))
-        .preferredColorScheme(.light)
-}
-
-#Preview("Dark") {
-    DSBookCard(model: BookCardModel(id: "2", title: "人间失格", author: "太宰治", hasUpdate: true, isPinned: true), isEditing: true, isSelected: true)
-        .preferredColorScheme(.dark)
-}
-
-#Preview("AX") {
-    DSBookCard(model: BookCardModel(id: "3", title: "全唐诗", author: "李白"))
-        .environment(\.sizeCategory, .accessibilityExtraExtraLarge)
 }

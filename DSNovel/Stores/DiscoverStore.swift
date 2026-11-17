@@ -7,6 +7,19 @@ struct DiscoverCategorySlotKey: Hashable, Equatable, Sendable {
     let tabIndex: Int
 }
 
+final class DiscoverRenderCounter: @unchecked Sendable {
+    static let shared = DiscoverRenderCounter()
+    private(set) var rootBodyEvaluations: Int = 0
+    private(set) var contentBodyEvaluations: Int = 0
+
+    func recordRoot() { rootBodyEvaluations += 1 }
+    func recordContent() { contentBodyEvaluations += 1 }
+    func reset() {
+        rootBodyEvaluations = 0
+        contentBodyEvaluations = 0
+    }
+}
+
 @MainActor
 @Observable
 final class DiscoverStore {
@@ -26,7 +39,9 @@ final class DiscoverStore {
     private(set) var booksBySlot: [DiscoverCategorySlotKey: [BookRef]] = [:]
     private(set) var nextPageBySlot: [DiscoverCategorySlotKey: String] = [:]
     private(set) var currentPageNumBySlot: [DiscoverCategorySlotKey: Int] = [:]
-    private var scrollAnchorBySlot: [DiscoverCategorySlotKey: String] = [:]
+
+    /// 滚动位置非响应式缓存：读写不触发 SwiftUI body 重算（FIX-04）
+    @ObservationIgnored private var scrollAnchorBySlot: [DiscoverCategorySlotKey: String] = [:]
 
     private(set) var isLoadingInitial: Bool = false
     private(set) var isLoadingMore: Bool = false
@@ -75,14 +90,13 @@ final class DiscoverStore {
         return !next.isEmpty
     }
 
-    var currentScrollAnchor: String? {
-        get { scrollAnchorBySlot[currentSlotKey] }
-        set { scrollAnchorBySlot[currentSlotKey] = newValue }
+    func saveAnchor(_ bookID: String?, for key: DiscoverCategorySlotKey? = nil) {
+        let target = key ?? currentSlotKey
+        scrollAnchorBySlot[target] = bookID
     }
 
     func recordScrollAnchor(_ bookID: String?, for key: DiscoverCategorySlotKey? = nil) {
-        let target = key ?? currentSlotKey
-        scrollAnchorBySlot[target] = bookID
+        saveAnchor(bookID, for: key)
     }
 
     func savedScrollAnchor(for key: DiscoverCategorySlotKey? = nil) -> String? {
@@ -145,6 +159,14 @@ final class DiscoverStore {
         } catch {
             isLoadingInitial = false
             lastError = error
+            if let pErr = error as? PluginError {
+                switch pErr {
+                case .needLogin, .needVerify:
+                    SourceStore.shared.markAuthExpired(sourceID: sid)
+                default:
+                    break
+                }
+            }
         }
     }
 
@@ -177,6 +199,14 @@ final class DiscoverStore {
         } catch {
             isLoadingInitial = false
             lastError = error
+            if let pErr = error as? PluginError {
+                switch pErr {
+                case .needLogin, .needVerify:
+                    SourceStore.shared.markAuthExpired(sourceID: slot.sourceID)
+                default:
+                    break
+                }
+            }
         }
     }
 

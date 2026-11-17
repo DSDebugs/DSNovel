@@ -37,9 +37,7 @@ struct LibraryRootView: View {
 
                 DSChipBar(
                     items: LibraryCardMapper.makeFilterChips(from: libraryStore),
-                    selection: $libraryStore.selectedFilter,
-                    trailingActionTitle: "＋",
-                    onTrailingAction: { showNewCategoryAlert = true }
+                    selection: $libraryStore.selectedFilter
                 )
 
                 mainShelfContent
@@ -53,7 +51,8 @@ struct LibraryRootView: View {
             }
         }
         .background(Color.dsSurfaceBase)
-        .navigationTitle(isEditing ? "已选 \(selectedIDs.count) 项" : "书架")
+        .navigationTitle(isEditing ? "已选 \(selectedIDs.count) 项" : "书籍")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbarVisibility(isEditing ? .hidden : .visible, for: .tabBar)
         .toolbar {
             ShelfToolbar(

@@ -9,6 +9,7 @@ struct SearchRootView: View {
     @State private var searchStore = SearchStore.shared
     @State private var sourceStore = SourceStore.shared
     @State private var showFailedSheet = false
+    @FocusState private var isSearchFocused: Bool
 
     init() {}
 
@@ -17,77 +18,119 @@ struct SearchRootView: View {
     }
 
     var body: some View {
-        VStack(spacing: Spacing.s2) {
-            if searchStore.mergedItems.isEmpty && !searchStore.isSearching && searchStore.totalSourcesCount == 0 {
-                preSearchView
-            } else {
-                searchResultsView
+        phaseContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.dsSurfaceBase)
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: Spacing.s2) {
+                    DSSearchField(
+                        text: $searchStore.keyword,
+                        isFocused: $isSearchFocused,
+                        onSubmit: {
+                            isSearchFocused = false
+                            searchStore.submit(sources: activeSources, modelContext: modelContext)
+                        },
+                        onClear: {
+                            searchStore.reset()
+                        },
+                        onCancel: {
+                            searchStore.reset()
+                        }
+                    )
+
+                    if !sourceStore.searchableSources.isEmpty {
+                        SearchScopeBar(
+                            selectedScope: $searchStore.selectedScope,
+                            groups: sourceStore.groups,
+                            activeSourceCount: activeSources.count,
+                            onManageSources: { AppRouter.shared.open(.sourceList) }
+                        )
+                    }
+                }
+                .padding(.vertical, Spacing.s2)
+                .background(.bar)
             }
-        }
-        .background(Color.dsSurfaceBase)
-        .navigationTitle("搜索")
-        .searchable(text: $searchStore.keyword, prompt: "搜索书名、作者或演播")
-        .onSubmit(of: .search) {
-            searchStore.submit(sources: activeSources, modelContext: modelContext)
-        }
-        .sheet(isPresented: $showFailedSheet) {
-            FailedSourcesSheet(
-                failedSources: searchStore.failedSources,
-                onLogin: { item in
-                    AuthCoordinator.shared.presentLogin(forSourceID: item.sourceID)
-                },
-                onRetryAll: {
+            .onChange(of: searchStore.keyword) { _, newValue in
+                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    searchStore.reset()
+                } else {
+                    searchStore.updateTypingState(isFocused: isSearchFocused)
+                }
+            }
+            .onChange(of: searchStore.selectedScope) { _, _ in
+                if searchStore.phase == .results || searchStore.phase == .empty || searchStore.phase == .allFailed {
                     searchStore.submit(sources: activeSources, modelContext: modelContext)
-                },
-                onSkipSource: { item in
-                    searchStore.skipFailedSource(item.sourceID)
-                },
-                onClose: { showFailedSheet = false }
+                }
+            }
+            .sheet(isPresented: $showFailedSheet) {
+                FailedSourcesSheet(
+                    failedSources: searchStore.failedSources,
+                    onLogin: { item in
+                        AuthCoordinator.shared.presentLogin(forSourceID: item.sourceID)
+                    },
+                    onRetryAll: {
+                        searchStore.submit(sources: activeSources, modelContext: modelContext)
+                    },
+                    onSkipSource: { item in
+                        searchStore.skipFailedSource(item.sourceID)
+                    },
+                    onClose: { showFailedSheet = false }
+                )
+            }
+            .onAppear {
+                sourceStore.modelContext = modelContext
+            }
+    }
+
+    @ViewBuilder
+    private var phaseContent: some View {
+        if sourceStore.searchableSources.isEmpty {
+            DSStateView(
+                kind: .noSource,
+                onPrimary: { AppRouter.shared.open(.sourceImport) },
+                onSecondary: { AppRouter.shared.open(.sourceList) }
             )
-        }
-        .onAppear {
-            sourceStore.modelContext = modelContext
+        } else {
+            switch searchStore.phase {
+            case .idle:
+                idleView
+            case .typing:
+                typingSuggestionsView
+            case .searching, .results:
+                resultsView
+            case .empty:
+                DSStateView(
+                    kind: .empty,
+                    onPrimary: {
+                        searchStore.selectedScope = .all
+                        searchStore.submit(sources: activeSources, modelContext: modelContext)
+                    },
+                    onSecondary: { AppRouter.shared.open(.sourceList) }
+                )
+            case .allFailed:
+                DSStateView(
+                    kind: .error(detail: "全部书源检索失败"),
+                    onPrimary: { showFailedSheet = true },
+                    onSecondary: { searchStore.submit(sources: activeSources, modelContext: modelContext) }
+                )
+            }
         }
     }
 
-    private var preSearchView: some View {
+    private var idleView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.sectionVertical) {
-                if sourceStore.searchableSources.isEmpty {
-                    DSStateView(
-                        kind: .noSource,
-                        onPrimary: { AppRouter.shared.open(.sourceImport) },
-                        onSecondary: { AppRouter.shared.open(.sourceList) }
-                    )
+                if histories.isEmpty {
+                    Text("输入书名、作者或演播名称开始搜索")
+                        .font(DSTypography.subtitle)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, Spacing.pageHorizontal)
                 } else {
-                    SearchScopeBar(
-                        selectedScope: $searchStore.selectedScope,
-                        groups: sourceStore.groups,
-                        activeSourceCount: activeSources.count,
-                        onManageSources: { AppRouter.shared.open(.sourceList) }
-                    )
-
-                    let suggestions = searchStore.prefixSuggestions(from: histories)
-                    if !suggestions.isEmpty {
-                        VStack(alignment: .leading, spacing: Spacing.s2) {
-                            DSSectionHeader(title: "输入建议")
-                            ForEach(suggestions, id: \.self) { sug in
-                                Button {
-                                    searchStore.submit(keyword: sug, sources: activeSources, modelContext: modelContext)
-                                } label: {
-                                    Label(sug, systemImage: "magnifyingglass")
-                                        .font(DSTypography.body)
-                                        .padding(.horizontal, Spacing.pageHorizontal)
-                                        .padding(.vertical, Spacing.s1)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-
                     SearchHistoryChips(
                         histories: histories,
                         onTapKeyword: { kw in
+                            isSearchFocused = false
                             searchStore.submit(keyword: kw, sources: activeSources, modelContext: modelContext)
                         },
                         onDeleteKeyword: { item in
@@ -106,7 +149,46 @@ struct SearchRootView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    private var searchResultsView: some View {
+    private var typingSuggestionsView: some View {
+        let suggestions = searchStore.prefixSuggestions(from: histories)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.s2) {
+                if suggestions.isEmpty {
+                    Button {
+                        isSearchFocused = false
+                        searchStore.submit(sources: activeSources, modelContext: modelContext)
+                    } label: {
+                        Label("搜索「\(searchStore.keyword)」", systemImage: "magnifyingglass")
+                            .font(DSTypography.body)
+                            .foregroundStyle(Color.dsAccent)
+                            .padding(.horizontal, Spacing.pageHorizontal)
+                            .padding(.vertical, Spacing.s2)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    DSSectionHeader(title: "历史联想")
+                    ForEach(suggestions, id: \.self) { sug in
+                        Button {
+                            isSearchFocused = false
+                            searchStore.submit(keyword: sug, sources: activeSources, modelContext: modelContext)
+                        } label: {
+                            Label(sug, systemImage: "magnifyingglass")
+                                .font(DSTypography.body)
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, Spacing.pageHorizontal)
+                                .padding(.vertical, Spacing.s2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.vertical, Spacing.s2)
+        }
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    private var resultsView: some View {
         VStack(spacing: Spacing.s2) {
             SearchProgressHeader(
                 isSearching: searchStore.isSearching,
@@ -127,21 +209,6 @@ struct SearchRootView: View {
 
             if searchStore.isSearching && searchStore.mergedItems.isEmpty {
                 DSSkeleton(mode: .list(rows: 6))
-            } else if searchStore.mergedItems.isEmpty && !searchStore.failedSources.isEmpty {
-                DSStateView(
-                    kind: .error(detail: "全部书源检索失败"),
-                    onPrimary: { showFailedSheet = true },
-                    onSecondary: { searchStore.submit(sources: activeSources, modelContext: modelContext) }
-                )
-            } else if searchStore.mergedItems.isEmpty {
-                DSStateView(
-                    kind: .empty,
-                    onPrimary: {
-                        searchStore.selectedScope = .all
-                        searchStore.submit(sources: activeSources, modelContext: modelContext)
-                    },
-                    onSecondary: { AppRouter.shared.open(.sourceList) }
-                )
             } else {
                 ScrollView {
                     LazyVStack(spacing: Spacing.s2) {

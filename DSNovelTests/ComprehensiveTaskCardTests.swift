@@ -304,7 +304,8 @@ final class ComprehensiveTaskCardTests: XCTestCase {
     }
 
     func testT2_02_ShellTabTitlesAndIcons() {
-        XCTAssertEqual(ShellTab.library.title, "书架")
+        XCTAssertEqual(ShellTab.library.title, "书籍")
+        XCTAssertEqual(ShellTab.allCases, [.discover, .search, .library, .me])
         XCTAssertEqual(ShellTab.discover.title, "发现")
         XCTAssertEqual(ShellTab.me.title, "我的")
         XCTAssertEqual(ShellTab.search.title, "搜索")

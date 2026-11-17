@@ -26,6 +26,7 @@ struct DSCover: View {
     private let onImageLoaded: ((UIImage) -> Void)?
 
     @State private var loadedImage: UIImage?
+    @State private var loadedURL: String = ""
     @State private var animateAppearance = false
 
     init(
@@ -50,10 +51,17 @@ struct DSCover: View {
         Radius.cover(forSide: side)
     }
 
+    private var effectiveImage: UIImage? {
+        if loadedURL == url, let loadedImage {
+            return loadedImage
+        }
+        return CoverImagePipeline.shared.cachedInMemory(for: url, side: side)
+    }
+
     var body: some View {
         let visibleBadges = Self.topTwoBadges(badges)
         ZStack(alignment: .topTrailing) {
-            coverBody
+            coverBody(image: effectiveImage)
                 .frame(width: side, height: side)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .overlay(
@@ -65,18 +73,22 @@ struct DSCover: View {
         }
         .frame(width: side, height: side)
         .task(id: url) {
-            animateAppearance = false
-            if let mem = CoverImagePipeline.shared.cachedInMemory(for: url) {
+            if let mem = CoverImagePipeline.shared.cachedInMemory(for: url, side: side) {
                 loadedImage = mem
+                loadedURL = url
                 onImageLoaded?(mem)
                 return
             }
-            loadedImage = nil
+            if loadedURL != url {
+                loadedImage = nil
+                animateAppearance = false
+            }
             if let fetched = await CoverImagePipeline.shared.image(
                 for: url,
                 targetSize: CGSize(width: side, height: side)
             ) {
                 loadedImage = fetched
+                loadedURL = url
                 withAnimation(Motion.resolve(.easeOut(duration: 0.25), reduce: reduceMotion)) {
                     animateAppearance = true
                 }
@@ -86,8 +98,8 @@ struct DSCover: View {
     }
 
     @ViewBuilder
-    private var coverBody: some View {
-        if let image = loadedImage {
+    private func coverBody(image: UIImage?) -> some View {
+        if let image {
             let isAspectNearlySquare: Bool = {
                 guard image.size.height > 0 else { return true }
                 let ratio = image.size.width / image.size.height
@@ -106,7 +118,6 @@ struct DSCover: View {
                         .scaledToFit()
                         .frame(width: side, height: side)
                 }
-                .scaleEffect(animateAppearance && !reduceMotion ? 1.0 : 1.0)
             } else {
                 Image(uiImage: image)
                     .resizable()
@@ -172,19 +183,4 @@ struct DSCover: View {
         .frame(width: side, height: side)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
-}
-
-#Preview("Light") {
-    DSCover(url: "", title: "全唐诗", side: 108, badges: [.progress(0.45), .downloaded, .updated])
-        .preferredColorScheme(.light)
-}
-
-#Preview("Dark") {
-    DSCover(url: "", title: "茶花女", side: 108, badges: [.vip])
-        .preferredColorScheme(.dark)
-}
-
-#Preview("AX") {
-    DSCover(url: "", title: "孙子兵法", side: 108, badges: [.updated])
-        .environment(\.sizeCategory, .accessibilityExtraExtraLarge)
 }

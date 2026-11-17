@@ -2,43 +2,36 @@ import SwiftUI
 
 struct MiniPlayerProgressRing: View {
     let clock: PlaybackClock
-    let isPlaying: Bool
-    let isBuffering: Bool
-    private let onTogglePlay: () -> Void
+    let coverURL: String
+    let bookTitle: String
+    let size: CGFloat
 
     init(
         clock: PlaybackClock,
-        isPlaying: Bool,
-        isBuffering: Bool,
-        onTogglePlay: @escaping () -> Void
+        coverURL: String,
+        bookTitle: String,
+        size: CGFloat
     ) {
         self.clock = clock
-        self.isPlaying = isPlaying
-        self.isBuffering = isBuffering
-        self.onTogglePlay = onTogglePlay
+        self.coverURL = coverURL
+        self.bookTitle = bookTitle
+        self.size = size
     }
 
     var body: some View {
-        Button(action: onTogglePlay) {
-            ZStack {
-                DSProgress(
-                    value: clock.progressFraction,
-                    style: .ring(size: 34, lineWidth: 2.5)
-                )
-                if isBuffering {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(DSTypography.caption.weight(.bold))
-                        .foregroundStyle(.primary)
-                        .contentTransition(.symbolEffect(.replace))
-                }
-            }
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
+        ZStack {
+            DSCover(
+                url: coverURL,
+                title: bookTitle,
+                side: size - 6
+            )
+            .clipShape(Circle())
+
+            DSProgress(
+                value: clock.progressFraction,
+                style: .ring(size: size, lineWidth: 2.5)
+            )
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(isPlaying ? "暂停" : "播放")
+        .frame(width: size, height: size)
     }
 }

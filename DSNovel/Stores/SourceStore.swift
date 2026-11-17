@@ -2,6 +2,40 @@ import Foundation
 import Observation
 import SwiftData
 
+enum SourceDisplayStatus: String, CaseIterable, Equatable, Sendable {
+    case disabled
+    case unavailable
+    case needAuth
+    case untested
+    case available
+
+    var title: String {
+        switch self {
+        case .disabled: return "已停用"
+        case .unavailable: return "异常"
+        case .needAuth: return "需登录"
+        case .untested: return "未检测"
+        case .available: return "可用"
+        }
+    }
+
+    static func classify(_ source: PluginRecord) -> SourceDisplayStatus {
+        if !source.isEnabled {
+            return .disabled
+        }
+        if source.healthState == .unavailable {
+            return .unavailable
+        }
+        if (source.requiresLogin && !source.loggedIn) || source.healthState == .needAuth {
+            return .needAuth
+        }
+        if source.healthState == .untested {
+            return .untested
+        }
+        return .available
+    }
+}
+
 struct SourceHealthSummary: Equatable, Hashable, Sendable {
     var totalCount: Int
     var enabledCount: Int
@@ -9,6 +43,7 @@ struct SourceHealthSummary: Equatable, Hashable, Sendable {
     var needAuthCount: Int
     var unavailableCount: Int
     var untestedCount: Int
+    var stoppedCount: Int
 
     static let empty = SourceHealthSummary(
         totalCount: 0,
@@ -16,7 +51,8 @@ struct SourceHealthSummary: Equatable, Hashable, Sendable {
         availableCount: 0,
         needAuthCount: 0,
         unavailableCount: 0,
-        untestedCount: 0
+        untestedCount: 0,
+        stoppedCount: 0
     )
 }
 
@@ -25,6 +61,8 @@ enum SourceListFilter: String, CaseIterable, Identifiable, Hashable, Sendable {
     case available = "available"
     case needAuth = "needAuth"
     case unavailable = "unavailable"
+    case untested = "untested"
+    case disabled = "disabled"
 
     var id: String { rawValue }
     var title: String {
@@ -33,6 +71,8 @@ enum SourceListFilter: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .available: return "可用"
         case .needAuth: return "需登录"
         case .unavailable: return "异常"
+        case .untested: return "未检测"
+        case .disabled: return "已停用"
         }
     }
 }
@@ -74,6 +114,7 @@ final class SourceStore {
         didSet { recomputeDerived() }
     }
 
+    private(set) var hasLoadedOnce: Bool = false
     private(set) var allSources: [PluginRecord] = []
     private(set) var groups: [PluginGroup] = []
     private(set) var filteredSources: [PluginRecord] = []
@@ -84,6 +125,10 @@ final class SourceStore {
     private(set) var healthSummary: SourceHealthSummary = .empty
     private(set) var checkingSourceIDs: Set<String> = []
     private(set) var isCheckingAll: Bool = false
+
+    var hasEnabledSource: Bool {
+        healthSummary.enabledCount > 0
+    }
 
     var customHealthChecker: (@Sendable (String) async -> SourceHealthCheckResult)?
     private var saveObserver: NSObjectProtocol?
@@ -121,6 +166,7 @@ final class SourceStore {
         let grpDesc = FetchDescriptor<PluginGroup>(sortBy: [SortDescriptor(\PluginGroup.order)])
         allSources = (try? ctx.fetch(srcDesc)) ?? []
         groups = (try? ctx.fetch(grpDesc)) ?? []
+        hasLoadedOnce = true
         recomputeDerived()
     }
 
@@ -140,49 +186,54 @@ final class SourceStore {
         var needAuth = 0
         var unavailable = 0
         var untested = 0
-        var attentionList: [PluginRecord] = []
+        var stopped = 0
+        var unavailableList: [PluginRecord] = []
+        var needAuthList: [PluginRecord] = []
 
-        for s in enabled {
-            switch s.healthState {
-            case .healthy, .slow:
-                available += 1
-            case .needAuth:
-                needAuth += 1
-                attentionList.append(s)
+        for s in sortedAll {
+            switch SourceDisplayStatus.classify(s) {
+            case .disabled:
+                stopped += 1
             case .unavailable:
                 unavailable += 1
-                attentionList.append(s)
+                unavailableList.append(s)
+            case .needAuth:
+                needAuth += 1
+                needAuthList.append(s)
             case .untested:
-                if s.requiresLogin && !s.loggedIn {
-                    needAuth += 1
-                    attentionList.append(s)
-                } else {
-                    untested += 1
-                }
+                untested += 1
+            case .available:
+                available += 1
             }
         }
 
         healthSummary = SourceHealthSummary(
-            totalCount: allSources.count,
+            totalCount: sortedAll.count,
             enabledCount: enabled.count,
             availableCount: available,
             needAuthCount: needAuth,
             unavailableCount: unavailable,
-            untestedCount: untested
+            untestedCount: untested,
+            stoppedCount: stopped
         )
-        needAttention = attentionList
+        needAttention = unavailableList + needAuthList
 
         let kw = searchKeyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let filtered = sortedAll.filter { s in
+            let status = SourceDisplayStatus.classify(s)
             switch filter {
             case .all:
                 break
             case .available:
-                if !s.isHealthyOrSlow { return false }
+                if status != .available { return false }
             case .needAuth:
-                if s.healthState != .needAuth && !(s.requiresLogin && !s.loggedIn) { return false }
+                if status != .needAuth { return false }
             case .unavailable:
-                if s.healthState != .unavailable { return false }
+                if status != .unavailable { return false }
+            case .untested:
+                if status != .untested { return false }
+            case .disabled:
+                if status != .disabled { return false }
             }
             switch capabilityScope {
             case .all:
@@ -202,6 +253,23 @@ final class SourceStore {
         pinnedSources = filtered.filter(\.isPinned)
     }
 
+    func markLoggedIn(sourceID: String) {
+        guard let src = source(for: sourceID) else { return }
+        src.loggedIn = true
+        if src.healthState == .needAuth {
+            src.lastCheckStatus = SourceHealthState.healthy.rawValue
+        }
+        try? modelContext?.save()
+        recomputeDerived()
+    }
+
+    func markAuthExpired(sourceID: String) {
+        guard let src = source(for: sourceID), src.loggedIn else { return }
+        src.loggedIn = false
+        try? modelContext?.save()
+        recomputeDerived()
+    }
+
     func sourceName(for sourceID: String) -> String {
         allSources.first(where: { $0.id == sourceID })?.name ?? sourceID
     }
@@ -209,8 +277,6 @@ final class SourceStore {
     func source(for sourceID: String) -> PluginRecord? {
         allSources.first(where: { $0.id == sourceID })
     }
-
-    // MARK: - 批量管理与健康检测（并发 3，单源超时 8 秒）
 
     func setEnabled(_ enabled: Bool, forIDs ids: Set<String>) {
         for s in allSources where ids.contains(s.id) {

@@ -139,7 +139,9 @@ struct DownloadsRootView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
         .navigationTitle("下载管理")
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             downloadManager.modelContext = modelContext
         }

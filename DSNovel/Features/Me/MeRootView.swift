@@ -62,8 +62,10 @@ struct MeRootView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
         .background(Color.dsSurfaceGrouped)
         .navigationTitle("我的")
+        .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
             "确认清理预缓存音频与封面临时缓存？",
             isPresented: $showClearCacheConfirm,

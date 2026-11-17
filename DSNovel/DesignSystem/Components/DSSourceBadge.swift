@@ -28,6 +28,30 @@ enum DSSourceHealthKind: String, CaseIterable, Equatable, Sendable {
     }
 }
 
+struct DSSourceAvatar: View {
+    let name: String
+    let size: CGFloat
+
+    init(name: String, size: CGFloat = 32) {
+        self.name = name
+        self.size = size
+    }
+
+    private var initialText: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "源" }
+        return String(first)
+    }
+
+    var body: some View {
+        Text(initialText)
+            .font(size >= 30 ? DSTypography.cardTitle : DSTypography.caption.weight(.bold))
+            .foregroundStyle(Color.dsOnAccent)
+            .frame(width: size, height: size)
+            .background(Circle().fill(Color.dsAccent))
+    }
+}
+
 struct DSSourceBadge: View {
     let name: String
     let health: DSSourceHealthKind
@@ -43,19 +67,9 @@ struct DSSourceBadge: View {
         self.latencyMs = latencyMs
     }
 
-    private var initialText: String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let first = trimmed.first else { return "源" }
-        return String(first)
-    }
-
     var body: some View {
         HStack(spacing: Spacing.s2) {
-            Text(initialText)
-                .font(DSTypography.caption.weight(.bold))
-                .foregroundStyle(Color.dsOnAccent)
-                .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.dsAccent))
+            DSSourceAvatar(name: name, size: 22)
 
             Text(name)
                 .font(DSTypography.subtitle.weight(.medium))
@@ -79,19 +93,4 @@ struct DSSourceBadge: View {
                 .fill(Color.dsSurfaceGrouped)
         )
     }
-}
-
-#Preview("Light") {
-    DSSourceBadge(name: "博看有声", health: .healthy, latencyMs: 128)
-        .preferredColorScheme(.light)
-}
-
-#Preview("Dark") {
-    DSSourceBadge(name: "有听网", health: .needAuth)
-        .preferredColorScheme(.dark)
-}
-
-#Preview("AX") {
-    DSSourceBadge(name: "悦听吧", health: .slow, latencyMs: 860)
-        .environment(\.sizeCategory, .accessibilityExtraExtraLarge)
 }
