@@ -1,5 +1,78 @@
 import SwiftUI
 
+enum AudioSoundEffectPreset: String, CaseIterable, Identifiable, Codable, Sendable {
+    case clearVoice = "clearVoice"
+    case surround3D = "surround3D"
+    case valleyReverb = "valleyReverb"
+    case smartDenoise = "smartDenoise"
+    case sleepAid = "sleepAid"
+    case bassBoost = "bassBoost"
+    case theater = "theater"
+    case vinyl = "vinyl"
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .clearVoice: return "清澈人声"
+        case .surround3D: return "环绕立体声"
+        case .valleyReverb: return "山谷混响"
+        case .smartDenoise: return "智能降噪"
+        case .sleepAid: return "助眠音效"
+        case .bassBoost: return "超重低音"
+        case .theater: return "剧院混响"
+        case .vinyl: return "黑胶复古"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .clearVoice: return "人声更突出明亮，感染力十足"
+        case .surround3D: return "双耳立体声场拓宽和增强，沉浸包围感"
+        case .valleyReverb: return "给人以空旷开阔、深远的空间听感"
+        case .smartDenoise: return "保留人声与背景音，降低底噪与齿音"
+        case .sleepAid: return "柔和低频滤波，伴你舒适入眠"
+        case .bassBoost: return "更深厚深邃、富有弹性的低音"
+        case .theater: return "提升空间混响感，让声音空灵悠扬"
+        case .vinyl: return "模拟复古黑胶温暖质感，听感醇厚"
+        }
+    }
+    var badge: String? {
+        switch self {
+        case .clearVoice, .surround3D, .bassBoost, .theater, .vinyl: return "限免"
+        case .sleepAid: return "NEW"
+        default: return nil
+        }
+    }
+}
+
+enum AudioQualityTier: String, CaseIterable, Identifiable, Codable, Sendable {
+    case ultra = "ultra"
+    case high = "high"
+    case standard = "standard"
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .ultra: return "超高音质"
+        case .high: return "高清音质"
+        case .standard: return "标准音质"
+        }
+    }
+    var shortBadge: String {
+        switch self {
+        case .ultra: return "超清"
+        case .high: return "高清"
+        case .standard: return "标准"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .ultra: return "声音细节体验增强 96kbps"
+        case .high: return "兼顾收听体验和省流需求 48kbps"
+        case .standard: return "播放流畅 更节省流量 24kbps"
+        }
+    }
+}
+
 enum AudioChannelMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case music = "music"
     case spokenAudio = "spokenAudio"
@@ -191,6 +264,12 @@ final class AppSettingsStore {
     var reduceMotionOverride: Bool {
         didSet { defaults.set(reduceMotionOverride, forKey: "reduceMotionOverride") }
     }
+    var soundEffectPreset: AudioSoundEffectPreset {
+        didSet { defaults.set(soundEffectPreset.rawValue, forKey: "soundEffectPreset") }
+    }
+    var audioQualityTier: AudioQualityTier {
+        didSet { defaults.set(audioQualityTier.rawValue, forKey: "audioQualityTier") }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -221,6 +300,8 @@ final class AppSettingsStore {
         self.currentDiscoverSourceID = defaults.string(forKey: "currentDiscoverSourceID") ?? ""
         self.nightDimEnabled = defaults.object(forKey: "nightDimEnabled") as? Bool ?? false
         self.reduceMotionOverride = defaults.object(forKey: "reduceMotionOverride") as? Bool ?? false
+        self.soundEffectPreset = AudioSoundEffectPreset(rawValue: defaults.string(forKey: "soundEffectPreset") ?? "") ?? .clearVoice
+        self.audioQualityTier = AudioQualityTier(rawValue: defaults.string(forKey: "audioQualityTier") ?? "") ?? .high
     }
 
     func resetAll() {
@@ -242,5 +323,7 @@ final class AppSettingsStore {
         currentDiscoverSourceID = ""
         nightDimEnabled = false
         reduceMotionOverride = false
+        soundEffectPreset = .clearVoice
+        audioQualityTier = .high
     }
 }

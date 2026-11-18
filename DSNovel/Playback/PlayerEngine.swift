@@ -252,6 +252,14 @@ final class PlayerEngine {
             state = .playing
             isCurrentItemReady = true
             if clock.durationSec <= 0 { clock.durationSec = 600 }
+            AudioSubtitleEngine.shared.loadOrTranscribe(
+                book: book,
+                chapter: startChapter,
+                asset: nil,
+                playURL: nil,
+                headers: [:],
+                durationHintSec: clock.durationSec
+            )
             updateNowPlayingInfo()
             return
         }
@@ -542,8 +550,17 @@ final class PlayerEngine {
 
             let asset = Self.makeStreamAsset(url: playURL, headers: headers, kind: streamKind)
             let item = AVPlayerItem(asset: asset)
-            item.audioTimePitchAlgorithm = .timeDomain // 人声倍速更自然（4.3 节）
-            item.preferredForwardBufferDuration = 15
+            item.audioTimePitchAlgorithm = AppSettingsStore.shared.soundEffectPreset == .clearVoice ? .timeDomain : .spectral
+            item.preferredForwardBufferDuration = AppSettingsStore.shared.audioQualityTier == .ultra ? 30 : 15
+
+            AudioSubtitleEngine.shared.loadOrTranscribe(
+                book: book,
+                chapter: chapter,
+                asset: asset,
+                playURL: playURL,
+                headers: headers,
+                durationHintSec: max(clock.durationSec, chapter.hintDurationSec)
+            )
 
             loadedItem = item
             isPlayingLocalFile = usingLocal

@@ -8,6 +8,7 @@ struct SearchRootView: View {
 
     @State private var searchStore = SearchStore.shared
     @State private var sourceStore = SourceStore.shared
+    @State private var discoverStore = DiscoverStore.shared
     @State private var showFailedSheet = false
     @FocusState private var isSearchFocused: Bool
 
@@ -78,9 +79,15 @@ struct SearchRootView: View {
                     onClose: { showFailedSheet = false }
                 )
             }
-            .task {
+            .task(id: discoverStore.currentSourceID) {
                 sourceStore.modelContext = modelContext
                 await searchStore.loadHotBooksIfNeeded(sources: sourceStore.discoverableSources)
+            }
+            .onAppear {
+                sourceStore.modelContext = modelContext
+                Task {
+                    await searchStore.loadHotBooksIfNeeded(sources: sourceStore.discoverableSources)
+                }
             }
     }
 

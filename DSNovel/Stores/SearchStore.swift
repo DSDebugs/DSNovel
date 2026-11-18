@@ -62,6 +62,7 @@ final class SearchStore {
 
     private(set) var hotBooks: [BookRef] = []
     private(set) var isLoadingHotBooks: Bool = false
+    private(set) var hotBooksSourceID: String = ""
     private(set) var hotBooksSourceName: String = ""
 
     private var activeTask: Task<Void, Never>?
@@ -156,20 +157,32 @@ final class SearchStore {
     }
 
     func loadHotBooksIfNeeded(sources: [PluginRecord], forceReload: Bool = false) async {
-        if !forceReload && !hotBooks.isEmpty { return }
-        if isLoadingHotBooks { return }
         let discoverable = sources.filter { $0.isEnabled && $0.discoverable }
-        let preferredID = AppSettingsStore.shared.currentDiscoverSourceID
+        let preferredID = DiscoverStore.shared.currentSourceID.isEmpty
+            ? AppSettingsStore.shared.currentDiscoverSourceID
+            : DiscoverStore.shared.currentSourceID
         guard let target = discoverable.first(where: { $0.id == preferredID }) ?? discoverable.first else {
             hotBooks = []
+            hotBooksSourceID = ""
             hotBooksSourceName = ""
             return
         }
 
+        let sourceChanged = (hotBooksSourceID != target.id)
+        if !forceReload && !sourceChanged && !hotBooks.isEmpty { return }
+        if isLoadingHotBooks && !sourceChanged { return }
+
         if !forceReload && DiscoverStore.shared.currentSourceID == target.id && !DiscoverStore.shared.currentBooks.isEmpty {
             hotBooks = Array(DiscoverStore.shared.currentBooks.prefix(20))
+            hotBooksSourceID = target.id
             hotBooksSourceName = target.name
             return
+        }
+
+        if sourceChanged {
+            hotBooks = []
+            hotBooksSourceID = target.id
+            hotBooksSourceName = target.name
         }
 
         isLoadingHotBooks = true
@@ -189,6 +202,7 @@ final class SearchStore {
                 }
             }
             hotBooks = Array(books.prefix(20))
+            hotBooksSourceID = target.id
             hotBooksSourceName = target.name
         } catch {
             if hotBooks.isEmpty {

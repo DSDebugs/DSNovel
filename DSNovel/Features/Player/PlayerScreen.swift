@@ -1,10 +1,13 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 enum PlayerActiveSheet: String, Identifiable {
     case speed
     case sleep
     case chapters
+    case soundEffect
+    case quality
     case more
 
     var id: String { rawValue }
@@ -16,8 +19,11 @@ struct PlayerScreen: View {
     @Environment(\.dsReduceMotion) private var reduceMotion
 
     @State private var player = PlayerEngine.shared
+    @State private var subtitleEngine = AudioSubtitleEngine.shared
     @State private var libraryStore = LibraryStore.shared
     @State private var sourceStore = SourceStore.shared
+    @State private var settings = AppSettingsStore.shared
+    @State private var pageMode: PlayerCenterPageMode = .subtitle
     @State private var activeSheet: PlayerActiveSheet?
     @State private var ambientColor: Color = .dsAccent
     @State private var heartBounceCount: Int = 0
@@ -37,31 +43,49 @@ struct PlayerScreen: View {
                 isPlaying: player.state == .playing
             )
 
-            VStack(spacing: Spacing.s4) {
+            VStack(spacing: Spacing.s3) {
                 PlayerHeader(
+                    pageMode: $pageMode,
                     sleepOption: player.sleepOption,
                     sleepRemainingSec: player.sleepRemainingSec,
                     onDismiss: { dismiss() },
                     onOpenSleepSheet: { activeSheet = .sleep },
+                    onShare: { shareCurrentEpisode() },
                     onOpenMoreSheet: { activeSheet = .more }
                 )
 
-                Spacer(minLength: 0)
-
-                coverSection
+                centerStage
 
                 if case .failed = player.state {
                     errorInlineCard
                         .padding(.horizontal, Spacing.pageHorizontal)
                 }
 
-                infoRow
+                PlayerSecondaryRow(
+                    speed: player.speed,
+                    isSubtitleActive: pageMode == .subtitle,
+                    soundEffectTitle: settings.soundEffectPreset.title,
+                    onDownloadCurrent: { downloadCurrentEpisode() },
+                    onOpenSpeed: { activeSheet = .speed },
+                    onOpenSoundEffect: { activeSheet = .soundEffect },
+                    onToggleSubtitle: {
+                        DSHapticPolicy.fire(.selection)
+                        withAnimation(Motion.snappy) {
+                            pageMode = (pageMode == .subtitle) ? .cover : .subtitle
+                        }
+                    },
+                    onOpenMore: { activeSheet = .more }
+                )
 
                 DSScrubber(
                     currentTimeSec: player.clock.currentTimeSec,
                     durationSec: player.clock.durationSec,
                     bufferedFraction: player.bufferedRange,
-                    onSeek: { sec in player.seek(to: sec) }
+                    qualityLabel: settings.audioQualityTier.shortBadge,
+                    onSeek: { sec in player.seek(to: sec) },
+                    onSkipBackward: { player.skipBackward(15) },
+                    onSkipForward: { player.skipForward(15) },
+                    onTapQuality: { activeSheet = .quality }
                 )
                 .padding(.horizontal, Spacing.pageHorizontal)
 
@@ -69,67 +93,119 @@ struct PlayerScreen: View {
                     isPlaying: player.state == .playing,
                     isBuffering: player.isBuffering,
                     canPlayNext: player.nextChapterAvailability != .none,
+                    sleepOption: player.sleepOption,
+                    sleepRemainingSec: player.sleepRemainingSec,
+                    onOpenSleep: { activeSheet = .sleep },
                     onPreviousChapter: {
                         DSHapticPolicy.fire(.chapterSwitch)
                         player.playPreviousChapter()
                     },
-                    onSkipBackward: { player.skipBackward(15) },
                     onTogglePlay: {
                         DSHapticPolicy.fire(.playPause)
                         player.togglePlayPause()
                     },
-                    onSkipForward: { player.skipForward(30) },
                     onNextChapter: {
                         DSHapticPolicy.fire(.chapterSwitch)
                         player.playNextChapter()
-                    }
+                    },
+                    onOpenChapters: { activeSheet = .chapters }
                 )
 
-                PlayerSecondaryRow(
-                    speed: player.speed,
-                    sleepOption: player.sleepOption,
-                    onOpenSpeed: { activeSheet = .speed },
-                    onOpenSleep: { activeSheet = .sleep },
-                    onOpenChapters: { activeSheet = .chapters },
-                    onOpenMore: { activeSheet = .more }
+                PlayerBottomAlbumBar(
+                    book: player.currentBook,
+                    sourceName: sourceStore.sourceName(for: player.currentBook?.sourceID ?? ""),
+                    inShelf: currentBookInShelf,
+                    heartBounceCount: heartBounceCount,
+                    onOpenBookDetail: { openCurrentBookDetail() },
+                    onToggleShelf: { toggleShelf() }
                 )
-
-                Spacer(minLength: Spacing.s2)
+                .padding(.horizontal, Spacing.pageHorizontal)
+                .padding(.bottom, Spacing.s2)
             }
             .offset(y: max(0, dragOffset))
             .animation(Motion.resolve(Motion.follow, reduce: reduceMotion), value: dragOffset)
         }
         .environment(\.colorScheme, .dark)
         .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .speed:
-                SpeedSheet(player: player, onClose: { activeSheet = nil })
-            case .sleep:
-                SleepSheet(player: player, onClose: { activeSheet = nil })
-            case .chapters:
-                ChapterListView(
-                    chapters: player.chapterQueue,
-                    currentChapterID: player.currentChapter?.id,
-                    isPlaying: player.state == .playing,
-                    onSelectChapter: { ch in
-                        if let book = player.currentBook {
-                            player.startPlayback(book: book, chapters: player.chapterQueue, startChapter: ch)
-                        }
-                    },
-                    onClose: { activeSheet = nil }
-                )
-            case .more:
-                MoreSheet(
-                    player: player,
-                    onSwitchSource: {
-                        dismiss()
-                        if let book = player.currentBook {
-                            AppRouter.shared.open(.book(book))
-                        }
-                    },
-                    onClose: { activeSheet = nil }
+            sheetView(for: sheet)
+        }
+        .task(id: player.currentChapter?.id) {
+            if let book = player.currentBook, let ch = player.currentChapter, subtitleEngine.currentChapterID != ch.id {
+                subtitleEngine.loadOrTranscribe(
+                    book: book,
+                    chapter: ch,
+                    asset: nil,
+                    playURL: nil,
+                    headers: [:],
+                    durationHintSec: max(player.clock.durationSec, ch.hintDurationSec)
                 )
             }
+        }
+    }
+
+    @ViewBuilder
+    private func sheetView(for sheet: PlayerActiveSheet) -> some View {
+        switch sheet {
+        case .speed:
+            SpeedSheet(player: player, onClose: { activeSheet = nil })
+        case .sleep:
+            SleepSheet(player: player, onClose: { activeSheet = nil })
+        case .chapters:
+            ChapterListView(
+                chapters: player.chapterQueue,
+                currentChapterID: player.currentChapter?.id,
+                isPlaying: player.state == .playing,
+                onSelectChapter: { ch in
+                    if let book = player.currentBook {
+                        player.startPlayback(book: book, chapters: player.chapterQueue, startChapter: ch)
+                    }
+                },
+                onClose: { activeSheet = nil }
+            )
+        case .soundEffect:
+            SoundEffectSheet(initialTab: .effect, onClose: { activeSheet = nil })
+        case .quality:
+            SoundEffectSheet(initialTab: .quality, onClose: { activeSheet = nil })
+        case .more:
+            MoreSheet(
+                player: player,
+                inShelf: currentBookInShelf,
+                onToggleShelf: { toggleShelf() },
+                onOpenSoundEffect: { activeSheet = .soundEffect },
+                onOpenSleep: { activeSheet = .sleep },
+                onSwitchSource: { openCurrentBookDetail() },
+                onSearchNarrator: { narrator in
+                    dismiss()
+                    AppRouter.shared.searchByNarrator(narrator)
+                },
+                onClose: { activeSheet = nil }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var centerStage: some View {
+        switch pageMode {
+        case .cover:
+            VStack(spacing: Spacing.s3) {
+                Spacer(minLength: 0)
+                coverSection
+                infoRow
+                Spacer(minLength: 0)
+            }
+        case .subtitle:
+            PlayerSubtitleDeck(
+                book: player.currentBook,
+                chapter: player.currentChapter,
+                inShelf: currentBookInShelf,
+                cues: subtitleEngine.cues,
+                activeCueIndex: subtitleEngine.activeCueIndex(at: player.clock.currentTimeSec),
+                engineState: subtitleEngine.state,
+                onToggleShelf: { toggleShelf() },
+                onOpenBookDetail: { openCurrentBookDetail() },
+                onSeekToCue: { cue in player.seek(to: cue.startTimeSec) }
+            )
+            .frame(maxHeight: .infinity)
         }
     }
 
@@ -142,7 +218,7 @@ struct PlayerScreen: View {
         return DSCover(
             url: player.currentBook?.cover ?? "",
             title: player.currentBook?.title ?? "有声书",
-            side: 280,
+            side: 256,
             onImageLoaded: { img in
                 ambientColor = CoverAmbientColor.color(from: img, cacheKey: player.currentBookID)
             }
@@ -166,11 +242,9 @@ struct PlayerScreen: View {
                     if value.translation.height > 120 || value.predictedEndTranslation.height > 320 {
                         dismiss()
                     } else if abs(value.translation.width) > 70 && abs(value.translation.width) > abs(value.translation.height) {
-                        DSHapticPolicy.fire(.chapterSwitch)
-                        if value.translation.width < 0 {
-                            player.playNextChapter()
-                        } else {
-                            player.playPreviousChapter()
+                        DSHapticPolicy.fire(.selection)
+                        withAnimation(Motion.snappy) {
+                            pageMode = (pageMode == .cover) ? .subtitle : .cover
                         }
                     }
                 }
@@ -190,13 +264,9 @@ struct PlayerScreen: View {
                 }
                 .buttonStyle(.plain)
 
-                Text(player.currentBook?.title ?? "")
-                    .font(DSTypography.cardTitle)
-                    .foregroundStyle(.white.opacity(0.75))
-                    .lineLimit(1)
-
                 if let narrator = player.currentBook?.author, !narrator.isEmpty {
                     Button {
+                        dismiss()
                         AppRouter.shared.searchByNarrator(narrator)
                     } label: {
                         HStack(spacing: 4) {
@@ -211,20 +281,7 @@ struct PlayerScreen: View {
                     .buttonStyle(.plain)
                 }
             }
-
             Spacer()
-
-            Button {
-                toggleShelf()
-            } label: {
-                Image(systemName: currentBookInShelf ? "heart.fill" : "heart")
-                    .font(.title3)
-                    .foregroundStyle(currentBookInShelf ? Color.dsAccent : .white.opacity(0.85))
-                    .symbolEffect(.bounce, value: heartBounceCount)
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(currentBookInShelf ? "已在书架" : "加入书架")
         }
         .padding(.horizontal, Spacing.pageHorizontal)
     }
@@ -260,13 +317,29 @@ struct PlayerScreen: View {
                     player.retryCurrentChapter()
                 }
             },
-            onSecondary: {
-                dismiss()
-                if let book = player.currentBook {
-                    AppRouter.shared.open(.book(book))
-                }
-            }
+            onSecondary: { openCurrentBookDetail() }
         )
+    }
+
+    private func openCurrentBookDetail() {
+        dismiss()
+        if let book = player.currentBook {
+            AppRouter.shared.open(.book(book))
+        }
+    }
+
+    private func downloadCurrentEpisode() {
+        guard let book = player.currentBook, let ch = player.currentChapter else { return }
+        DSHapticPolicy.fire(.success)
+        DownloadManager.shared.enqueueChapters([ch], for: book, kind: "manual")
+        BannerCenter.shared.show("已加入下载：\(ch.title)", kind: .success)
+    }
+
+    private func shareCurrentEpisode() {
+        guard let book = player.currentBook, let ch = player.currentChapter else { return }
+        UIPasteboard.general.string = "\(book.title) - \(ch.title) \(book.bookURL)"
+        DSHapticPolicy.fire(.selection)
+        BannerCenter.shared.show("已复制章节分享链接", kind: .info)
     }
 
     private func toggleShelf() {
@@ -295,7 +368,7 @@ struct PlayerScreen: View {
             try? modelContext.save()
             heartBounceCount &+= 1
             DSHapticPolicy.fire(.success)
-            BannerCenter.shared.show("已加入书架", kind: .success)
+            BannerCenter.shared.show("已订阅到书架", kind: .success)
             libraryStore.refreshNow()
         }
     }
