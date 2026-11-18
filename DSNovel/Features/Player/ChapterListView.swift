@@ -149,7 +149,7 @@ struct ChapterListView: View {
                                     .font(DSTypography.rowTitle)
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
-                                Text(book.lastChapterTitle.isEmpty ? "第 \(max(1, book.lastChapterIndex)) 章" : book.lastChapterTitle)
+                                Text((book.lastChapterTitle ?? "").isEmpty ? "第 \(max(1, book.lastChapterIndex)) 章" : (book.lastChapterTitle ?? ""))
                                     .font(DSTypography.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
