@@ -12,9 +12,10 @@ struct ChapterListView: View {
     @State private var browserModel: BookDetailModel
     @State private var listModel: PlayerChapterListModel
     @State private var showSearchField: Bool = false
+    @FocusState private var isSearchFocused: Bool
 
     init(
-        book: BookRef? = PlayerEngine.shared.currentBook,
+        book: BookRef? = nil,
         chapters: [ChapterDTO],
         currentChapterID: String?,
         isPlaying: Bool,
@@ -62,7 +63,8 @@ struct ChapterListView: View {
                     if showSearchField {
                         DSSearchField(
                             text: $browserModel.chapterSearchKeyword,
-                            placeholder: "搜索章节号或标题关键词"
+                            isFocused: $isSearchFocused,
+                            prompt: "搜索章节号或标题关键词"
                         )
                         .padding(.horizontal, Spacing.pageHorizontal)
                         .padding(.bottom, Spacing.s2)
