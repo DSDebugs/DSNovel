@@ -195,6 +195,7 @@ struct BookDetailView: View {
                 },
                 onSelectSnapshot: { snap in
                     DSHapticPolicy.fire(.chapterSwitch)
+                    player.candidateAlternatives = detailModel.alternatives
                     if player.currentBookID == detailModel.currentBookRef.id, player.currentChapter?.id == snap.chapter.id {
                         player.togglePlayPause()
                     } else {
@@ -214,6 +215,7 @@ struct BookDetailView: View {
     private func startOrResumePlayback() {
         guard !detailModel.chapters.isEmpty else { return }
         DSHapticPolicy.fire(.playPause)
+        player.candidateAlternatives = detailModel.alternatives
         let target = detailModel.chapters.first(where: { $0.id == savedBook?.lastChapterID }) ?? detailModel.chapters[0]
         player.startPlayback(book: detailModel.currentBookRef, chapters: detailModel.chapters, startChapter: target, initialPositionMs: savedBook?.lastPositionMs ?? 0)
     }

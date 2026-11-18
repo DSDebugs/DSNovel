@@ -2,107 +2,123 @@ import SwiftUI
 
 struct PlayerSecondaryRow: View {
     let speed: Double
-    let isSubtitleActive: Bool
-    let soundEffectTitle: String
-    private let onDownloadCurrent: () -> Void
+    let effectPreset: AudioEffectPreset
+    let sleepOption: SleepTimerOption
+    let sleepRemainingSec: Int
+    let currentChapterIndex: Int
+    let totalChapters: Int
     private let onOpenSpeed: () -> Void
-    private let onOpenSoundEffect: () -> Void
-    private let onToggleSubtitle: () -> Void
-    private let onOpenMore: () -> Void
+    private let onOpenAudioEffects: () -> Void
+    private let onOpenSleep: () -> Void
+    private let onOpenChapters: () -> Void
 
     init(
         speed: Double,
-        isSubtitleActive: Bool = true,
-        soundEffectTitle: String = "音效",
-        onDownloadCurrent: @escaping () -> Void = {},
+        effectPreset: AudioEffectPreset = .original,
+        sleepOption: SleepTimerOption,
+        sleepRemainingSec: Int = 0,
+        currentChapterIndex: Int = 0,
+        totalChapters: Int = 0,
         onOpenSpeed: @escaping () -> Void,
-        onOpenSoundEffect: @escaping () -> Void = {},
-        onToggleSubtitle: @escaping () -> Void = {},
-        onOpenMore: @escaping () -> Void
+        onOpenAudioEffects: @escaping () -> Void = {},
+        onOpenSleep: @escaping () -> Void,
+        onOpenChapters: @escaping () -> Void,
+        onOpenMore: @escaping () -> Void = {}
     ) {
         self.speed = speed
-        self.isSubtitleActive = isSubtitleActive
-        self.soundEffectTitle = soundEffectTitle
-        self.onDownloadCurrent = onDownloadCurrent
+        self.effectPreset = effectPreset
+        self.sleepOption = sleepOption
+        self.sleepRemainingSec = sleepRemainingSec
+        self.currentChapterIndex = currentChapterIndex
+        self.totalChapters = totalChapters
         self.onOpenSpeed = onOpenSpeed
-        self.onOpenSoundEffect = onOpenSoundEffect
-        self.onToggleSubtitle = onToggleSubtitle
-        self.onOpenMore = onOpenMore
+        self.onOpenAudioEffects = onOpenAudioEffects
+        self.onOpenSleep = onOpenSleep
+        self.onOpenChapters = onOpenChapters
+    }
+
+    private var sleepDisplayLabel: String {
+        guard sleepOption != .off else { return "定时" }
+        if sleepRemainingSec > 0 {
+            return PlaybackClock.formatSeconds(Double(sleepRemainingSec))
+        }
+        return sleepOption.label
+    }
+
+    private var chaptersDisplayLabel: String {
+        if totalChapters > 0 && currentChapterIndex > 0 {
+            return "\(currentChapterIndex)/\(totalChapters)"
+        } else if totalChapters > 0 {
+            return "共\(totalChapters)章"
+        }
+        return "目录"
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            actionIcon(
-                icon: "arrow.down.to.line",
-                badge: nil,
-                isActive: false,
-                label: "下载本集",
-                action: onDownloadCurrent
-            )
-
-            actionIcon(
-                icon: "gauge.with.dots.needle.33percent",
-                badge: String(format: "%.2gx", speed),
+        HStack(spacing: Spacing.s3) {
+            secondaryButton(
+                icon: "speedometer",
+                label: PlayerSpeedFormatter.format(speed),
                 isActive: abs(speed - 1.0) > 0.01,
-                label: "播放倍速",
+                accessibilityTitle: "播放倍速 \(PlayerSpeedFormatter.format(speed))",
                 action: onOpenSpeed
             )
-
-            actionIcon(
-                icon: "waveform.circle",
-                badge: soundEffectTitle,
-                isActive: true,
-                label: "音质音效",
-                action: onOpenSoundEffect
+            secondaryButton(
+                icon: effectPreset.iconName,
+                label: effectPreset.shortBadge,
+                isActive: effectPreset != .original,
+                accessibilityTitle: "音质与音效 \(effectPreset.title)",
+                action: onOpenAudioEffects
             )
-
-            actionIcon(
-                icon: isSubtitleActive ? "captions.bubble.fill" : "captions.bubble",
-                badge: "AI文稿",
-                isActive: isSubtitleActive,
-                label: "切换文稿字幕",
-                action: onToggleSubtitle
+            secondaryButton(
+                icon: sleepOption == .off ? "moon" : "moon.fill",
+                label: sleepDisplayLabel,
+                isActive: sleepOption != .off,
+                accessibilityTitle: "睡眠定时 \(sleepDisplayLabel)",
+                action: onOpenSleep
             )
-
-            actionIcon(
-                icon: "ellipsis.circle",
-                badge: nil,
+            secondaryButton(
+                icon: "list.bullet",
+                label: chaptersDisplayLabel,
                 isActive: false,
-                label: "更多设置",
-                action: onOpenMore
+                accessibilityTitle: "章节目录 \(chaptersDisplayLabel)",
+                action: onOpenChapters
             )
         }
         .padding(.horizontal, Spacing.pageHorizontal)
     }
 
-    private func actionIcon(
+    private func secondaryButton(
         icon: String,
-        badge: String?,
-        isActive: Bool,
         label: String,
+        isActive: Bool,
+        accessibilityTitle: String,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            ZStack(alignment: .topTrailing) {
+            VStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.title3)
-                    .foregroundStyle(isActive ? .white : .white.opacity(0.78))
-                    .frame(width: 44, height: 40)
-
-                if let badge, !badge.isEmpty {
-                    Text(badge)
-                        .font(DSTypography.caption2.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.white.opacity(0.18)))
-                        .offset(x: 8, y: -2)
-                }
+                    .font(DSTypography.body.weight(.semibold))
+                Text(label)
+                    .font(DSTypography.numericCaption)
+                    .lineLimit(1)
             }
+            .foregroundStyle(isActive ? Color.dsAccent : .white.opacity(0.92))
             .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
+            .padding(.vertical, Spacing.s3)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .fill(isActive ? Color.dsAccent.opacity(0.18) : Color.white.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .strokeBorder(
+                        isActive ? Color.dsAccent.opacity(0.55) : Color.white.opacity(0.08),
+                        lineWidth: 0.8
+                    )
+            )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(label)
+        .accessibilityLabel(accessibilityTitle)
     }
 }

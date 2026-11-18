@@ -43,7 +43,7 @@ struct SourceSwitchSheet: View {
                         }
 
                         if idx == 0 {
-                            DSBadge("最匹配", style: .accent)
+                            DSBadge("当前书源", style: .accent)
                         }
 
                         Spacer()
@@ -55,6 +55,10 @@ struct SourceSwitchSheet: View {
                     }
                 }
             }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Color.dsSurfaceGrouped)
         }
+        .presentationDetents([.medium, .large])
     }
 }

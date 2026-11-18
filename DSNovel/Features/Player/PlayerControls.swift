@@ -3,112 +3,106 @@ import SwiftUI
 struct PlayerControls: View {
     let isPlaying: Bool
     let isBuffering: Bool
+    let canPlayPrevious: Bool
     let canPlayNext: Bool
-    let sleepOption: SleepTimerOption
-    let sleepRemainingSec: Int
-    private let onOpenSleep: () -> Void
     private let onPreviousChapter: () -> Void
+    private let onSkipBackward: () -> Void
     private let onTogglePlay: () -> Void
+    private let onSkipForward: () -> Void
     private let onNextChapter: () -> Void
-    private let onOpenChapters: () -> Void
 
     init(
         isPlaying: Bool,
         isBuffering: Bool,
+        canPlayPrevious: Bool = true,
         canPlayNext: Bool,
-        sleepOption: SleepTimerOption = .off,
-        sleepRemainingSec: Int = 0,
-        onOpenSleep: @escaping () -> Void = {},
         onPreviousChapter: @escaping () -> Void,
-        onSkipBackward: @escaping () -> Void = {},
+        onSkipBackward: @escaping () -> Void,
         onTogglePlay: @escaping () -> Void,
-        onSkipForward: @escaping () -> Void = {},
-        onNextChapter: @escaping () -> Void,
-        onOpenChapters: @escaping () -> Void = {}
+        onSkipForward: @escaping () -> Void,
+        onNextChapter: @escaping () -> Void
     ) {
         self.isPlaying = isPlaying
         self.isBuffering = isBuffering
+        self.canPlayPrevious = canPlayPrevious
         self.canPlayNext = canPlayNext
-        self.sleepOption = sleepOption
-        self.sleepRemainingSec = sleepRemainingSec
-        self.onOpenSleep = onOpenSleep
         self.onPreviousChapter = onPreviousChapter
+        self.onSkipBackward = onSkipBackward
         self.onTogglePlay = onTogglePlay
+        self.onSkipForward = onSkipForward
         self.onNextChapter = onNextChapter
-        self.onOpenChapters = onOpenChapters
-        _ = onSkipBackward
-        _ = onSkipForward
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Button(action: onOpenSleep) {
-                VStack(spacing: 2) {
-                    Image(systemName: sleepOption == .off ? "clock.badge.checkmark" : "moon.zzz.fill")
-                        .font(.title3)
-                        .foregroundStyle(sleepOption == .off ? .white.opacity(0.85) : Color.dsAccent)
-                    if sleepOption != .off {
-                        Text(sleepRemainingSec > 0 ? PlaybackClock.formatSeconds(Double(sleepRemainingSec)) : sleepOption.label)
-                            .font(DSTypography.caption2.monospacedDigit())
-                            .foregroundStyle(Color.dsAccent)
-                    }
-                }
-                .frame(maxWidth: .infinity, minHeight: 48)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("定时关闭")
-
+        HStack(spacing: Spacing.s5) {
             Button(action: onPreviousChapter) {
                 Image(systemName: "backward.end.fill")
-                    .font(.title2)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .font(.title3)
+                    .foregroundStyle(canPlayPrevious ? .white : .white.opacity(0.32))
+                    .frame(width: 48, height: 48)
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .disabled(!canPlayPrevious)
             .accessibilityLabel("上一章")
+            .accessibilityHint(canPlayPrevious ? "切换到上一章" : "当前已是第一章")
+
+            Button(action: onSkipBackward) {
+                Image(systemName: "gobackward.15")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .frame(width: 48, height: 48)
+                    .background(Circle().fill(Color.white.opacity(0.08)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("后退 15 秒")
 
             Button(action: onTogglePlay) {
                 ZStack {
                     Circle()
-                        .fill(Color.white.opacity(0.18))
-                        .frame(width: 68, height: 68)
+                        .fill(Color.dsAccent)
+                        .frame(width: 74, height: 74)
+                        .shadow(color: Color.dsAccent.opacity(0.42), radius: 14, x: 0, y: 6)
 
                     if isBuffering {
                         ProgressView()
-                            .tint(.white)
+                            .tint(Color.dsOnAccent)
                     } else {
                         Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                             .font(.title.weight(.bold))
-                            .foregroundStyle(.white)
-                            .offset(x: isPlaying ? 0 : 2)
+                            .foregroundStyle(Color.dsOnAccent)
                             .contentTransition(.symbolEffect(.replace))
                     }
                 }
-                .frame(maxWidth: .infinity)
             }
             .buttonStyle(.dsCard)
             .accessibilityLabel(isPlaying ? "暂停" : "播放")
+            .accessibilityValue(isBuffering ? "正在缓冲" : (isPlaying ? "播放中" : "已暂停"))
+
+            Button(action: onSkipForward) {
+                Image(systemName: "goforward.30")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .frame(width: 48, height: 48)
+                    .background(Circle().fill(Color.white.opacity(0.08)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("前进 30 秒")
 
             Button(action: onNextChapter) {
                 Image(systemName: "forward.end.fill")
-                    .font(.title2)
-                    .foregroundStyle(canPlayNext ? .white : .white.opacity(0.35))
-                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .font(.title3)
+                    .foregroundStyle(canPlayNext ? .white : .white.opacity(0.32))
+                    .frame(width: 48, height: 48)
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .disabled(!canPlayNext)
             .accessibilityLabel("下一章")
-
-            Button(action: onOpenChapters) {
-                Image(systemName: "list.bullet.indent")
-                    .font(.title3)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .frame(maxWidth: .infinity, minHeight: 48)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("播放列表")
+            .accessibilityHint(canPlayNext ? "切换到下一章" : "当前已是最后一章")
         }
-        .padding(.horizontal, Spacing.pageHorizontal)
-        .padding(.vertical, Spacing.s1)
+        .padding(.vertical, Spacing.s2)
     }
 }

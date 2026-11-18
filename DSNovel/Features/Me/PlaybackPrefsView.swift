@@ -11,8 +11,26 @@ struct PlaybackPrefsView: View {
         Group {
             Picker("默认倍速", selection: $settings.defaultSpeed) {
                 ForEach(SpeedSheet.presets, id: \.self) { spd in
-                    Text(String(format: "%.2gx", spd)).tag(spd)
+                    Text(PlayerSpeedFormatter.format(spd)).tag(spd)
                 }
+            }
+
+            Picker("在线与下载音质", selection: $settings.audioQualityTier) {
+                ForEach(AudioQualityTier.allCases) { tier in
+                    Text(tier.title).tag(tier)
+                }
+            }
+            .onChange(of: settings.audioQualityTier) { _, newTier in
+                PlayerEngine.shared.setAudioQualityTier(newTier, reloadCurrent: false)
+            }
+
+            Picker("听书音效模式", selection: $settings.audioEffectPreset) {
+                ForEach(AudioEffectPreset.allCases) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+            .onChange(of: settings.audioEffectPreset) { _, newPreset in
+                PlayerEngine.shared.setAudioEffectPreset(newPreset)
             }
 
             Toggle("睡眠定时结束前渐弱", isOn: $settings.sleepFadeOutEnabled)

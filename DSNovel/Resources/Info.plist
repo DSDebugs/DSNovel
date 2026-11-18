@@ -20,8 +20,6 @@
     <string>1.0.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>使用系统本地语音识别为您实时生成有声书同步文稿与字幕</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSAppTransportSecurity</key>

@@ -1,126 +1,135 @@
 import SwiftUI
 
-enum PlayerCenterPageMode: Int, CaseIterable {
-    case cover = 0
-    case subtitle = 1
-
-    var title: String {
-        switch self {
-        case .cover: return "封面"
-        case .subtitle: return "文稿"
-        }
-    }
-}
-
 struct PlayerHeader: View {
-    @Binding var pageMode: PlayerCenterPageMode
+    let sourceName: String
+    let streamBadgeText: String
     let sleepOption: SleepTimerOption
     let sleepRemainingSec: Int
     private let onDismiss: () -> Void
+    private let onOpenSourceSwitch: () -> Void
+    private let onOpenAudioEffects: () -> Void
     private let onOpenSleepSheet: () -> Void
-    private let onShare: () -> Void
     private let onOpenMoreSheet: () -> Void
 
     init(
-        pageMode: Binding<PlayerCenterPageMode> = .constant(.subtitle),
+        sourceName: String = "",
+        streamBadgeText: String = "HQ 128k",
         sleepOption: SleepTimerOption,
         sleepRemainingSec: Int,
         onDismiss: @escaping () -> Void,
+        onOpenSourceSwitch: @escaping () -> Void = {},
+        onOpenAudioEffects: @escaping () -> Void = {},
         onOpenSleepSheet: @escaping () -> Void,
-        onShare: @escaping () -> Void = {},
         onOpenMoreSheet: @escaping () -> Void
     ) {
-        self._pageMode = pageMode
+        self.sourceName = sourceName
+        self.streamBadgeText = streamBadgeText
         self.sleepOption = sleepOption
         self.sleepRemainingSec = sleepRemainingSec
         self.onDismiss = onDismiss
+        self.onOpenSourceSwitch = onOpenSourceSwitch
+        self.onOpenAudioEffects = onOpenAudioEffects
         self.onOpenSleepSheet = onOpenSleepSheet
-        self.onShare = onShare
         self.onOpenMoreSheet = onOpenMoreSheet
     }
 
     var body: some View {
-        VStack(spacing: Spacing.s1) {
+        VStack(spacing: Spacing.s2) {
             Capsule()
                 .fill(Color.white.opacity(0.35))
                 .frame(width: 36, height: 5)
                 .padding(.top, Spacing.s2)
+                .accessibilityHidden(true)
 
-            HStack {
+            HStack(spacing: Spacing.s2) {
                 Button(action: onDismiss) {
                     Image(systemName: "chevron.down")
                         .font(DSTypography.rowTitle)
                         .foregroundStyle(.white)
                         .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+                        .background(Circle().fill(Color.white.opacity(0.10)))
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("收起播放器")
 
-                Spacer()
+                Spacer(minLength: 4)
 
-                HStack(spacing: Spacing.s3) {
-                    ForEach(PlayerCenterPageMode.allCases, id: \.rawValue) { mode in
-                        let isSelected = (pageMode == mode)
-                        Button {
-                            DSHapticPolicy.fire(.selection)
-                            withAnimation(Motion.snappy) {
-                                pageMode = mode
+                HStack(spacing: 6) {
+                    if !sourceName.isEmpty {
+                        Button(action: onOpenSourceSwitch) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "antenna.radiowaves.left.and.right")
+                                    .font(DSTypography.caption2)
+                                Text(sourceName)
+                                    .lineLimit(1)
                             }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Circle()
-                                    .fill(isSelected ? Color.white : Color.white.opacity(0.35))
-                                    .frame(width: 6, height: 6)
-                                Text(mode.title)
-                                    .font(DSTypography.cardTitle.weight(isSelected ? .semibold : .regular))
-                                    .foregroundStyle(isSelected ? .white : .white.opacity(0.55))
-                            }
-                            .padding(.vertical, 6)
+                            .font(DSTypography.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .padding(.horizontal, Spacing.s2)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(Color.white.opacity(0.14)))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("当前书源 \(sourceName)，点击切换书源")
                     }
 
+                    Button(action: onOpenAudioEffects) {
+                        HStack(spacing: 3) {
+                            Image(systemName: streamBadgeText == "本地离线" ? "checkmark.circle.fill" : "waveform.badge.magnifyingglass")
+                                .font(DSTypography.caption2)
+                            Text(streamBadgeText)
+                                .lineLimit(1)
+                        }
+                        .font(DSTypography.caption2.weight(.semibold))
+                        .foregroundStyle(Color.dsAccent)
+                        .padding(.horizontal, Spacing.s2)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule().fill(Color.dsAccent.opacity(0.18))
+                        )
+                        .overlay(
+                            Capsule().strokeBorder(Color.dsAccent.opacity(0.45), lineWidth: 0.5)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("当前音质 \(streamBadgeText)，点击打开音质与音效设置")
+
                     if sleepOption != .off {
+                        let sleepLabel = sleepRemainingSec > 0
+                            ? PlaybackClock.formatSeconds(Double(sleepRemainingSec))
+                            : sleepOption.label
                         Button(action: onOpenSleepSheet) {
                             HStack(spacing: 4) {
                                 Image(systemName: "moon.fill")
-                                Text(sleepRemainingSec > 0 ? PlaybackClock.formatSeconds(Double(sleepRemainingSec)) : sleepOption.label)
+                                Text(sleepLabel)
                                     .monospacedDigit()
+                                    .lineLimit(1)
                             }
-                            .font(DSTypography.caption2.weight(.semibold))
+                            .font(DSTypography.caption.weight(.semibold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, Spacing.s2)
-                            .padding(.vertical, 4)
+                            .padding(.vertical, 5)
                             .background(Capsule().fill(Color.white.opacity(0.18)))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("睡眠定时")
+                        .accessibilityValue("剩余 \(sleepLabel)")
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 4)
 
-                HStack(spacing: 4) {
-                    Button(action: onShare) {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(DSTypography.body)
-                            .foregroundStyle(.white.opacity(0.9))
-                            .frame(width: 40, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("分享当前章节")
-
-                    Button(action: onOpenMoreSheet) {
-                        Image(systemName: "ellipsis")
-                            .font(DSTypography.rowTitle)
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("更多选项")
+                Button(action: onOpenMoreSheet) {
+                    Image(systemName: "ellipsis")
+                        .font(DSTypography.rowTitle)
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Circle().fill(Color.white.opacity(0.10)))
+                        .contentShape(Circle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("更多播放设置")
             }
             .padding(.horizontal, Spacing.pageHorizontal)
         }

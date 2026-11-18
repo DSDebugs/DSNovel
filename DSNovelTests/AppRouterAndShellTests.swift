@@ -79,24 +79,4 @@ final class AppRouterAndShellTests: XCTestCase {
         SearchStore.shared.reset()
         router.resetForTesting()
     }
-
-    @MainActor
-    func testAudioSubtitleEngineFallbackAndActiveCueLookup() {
-        let engine = AudioSubtitleEngine()
-        let book = BookRef(
-            sourceID: "xmly",
-            bookURL: "https://e.com/1",
-            title: "凡人修仙传",
-            author: "光合积木",
-            intro: "一股辛辣的气味冲了上来。他抬起头望了一下莫大夫，对方正似笑非笑地看着他。他略微犹豫了一下，有些怀疑此药。"
-        )
-        let chapter = ChapterDTO(id: "c25", title: "第25集 暗算与獠牙", url: "https://e.com/c25", index: 24, hintDurationSec: 120)
-        let cues = AudioSubtitleEngine.makeFallbackCues(book: book, chapter: chapter, durationSec: 120)
-        XCTAssertGreaterThanOrEqual(cues.count, 4)
-
-        engine.loadOrTranscribe(book: book, chapter: chapter, asset: nil, playURL: nil, headers: [:], durationHintSec: 120)
-        XCTAssertFalse(engine.cues.isEmpty)
-        let idx0 = engine.activeCueIndex(at: 1.0)
-        XCTAssertEqual(idx0, 0)
-    }
 }

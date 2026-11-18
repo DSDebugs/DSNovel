@@ -53,7 +53,6 @@ targets:
         CFBundleShortVersionString: "1.0.0"
         CFBundleVersion: "1"
         LSRequiresIPhoneOS: true
-        NSSpeechRecognitionUsageDescription: 使用系统本地语音识别为您实时生成有声书同步文稿与字幕
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
           UISceneConfigurations: {}

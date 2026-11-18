@@ -23,35 +23,25 @@ struct DSScrubber: View {
     let currentTimeSec: Double
     let durationSec: Double
     let bufferedFraction: Double
-    let qualityLabel: String
     private let onSeek: (Double) -> Void
-    private let onSkipBackward: (() -> Void)?
-    private let onSkipForward: (() -> Void)?
-    private let onTapQuality: (() -> Void)?
 
     @State private var isDragging = false
     @State private var isFineMode = false
     @State private var dragPreviewSec: Double = 0
+    @State private var fineAnchorSec: Double = 0
+    @State private var fineAnchorFraction: Double = 0
     @State private var minuteBucket: Int = 0
 
     init(
         currentTimeSec: Double,
         durationSec: Double,
         bufferedFraction: Double = 0,
-        qualityLabel: String = "高清",
-        onSeek: @escaping (Double) -> Void = { _ in },
-        onSkipBackward: (() -> Void)? = nil,
-        onSkipForward: (() -> Void)? = nil,
-        onTapQuality: (() -> Void)? = nil
+        onSeek: @escaping (Double) -> Void = { _ in }
     ) {
         self.currentTimeSec = currentTimeSec
         self.durationSec = durationSec
         self.bufferedFraction = bufferedFraction
-        self.qualityLabel = qualityLabel
         self.onSeek = onSeek
-        self.onSkipBackward = onSkipBackward
-        self.onSkipForward = onSkipForward
-        self.onTapQuality = onTapQuality
     }
 
     private var displayedSec: Double {
@@ -63,25 +53,65 @@ struct DSScrubber: View {
         return min(max(displayedSec / durationSec, 0), 1)
     }
 
+    private var clampedBufferedFraction: Double {
+        min(max(bufferedFraction, progressFraction), 1.0)
+    }
+
+    private var bufferedPercentText: String {
+        let pct = Int((clampedBufferedFraction * 100.0).rounded())
+        return "已缓冲 \(min(max(pct, 0), 100))%"
+    }
+
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: Spacing.s2) {
-                if let onSkipBackward {
-                    Button(action: onSkipBackward) {
-                        Image(systemName: "gobackward.15")
-                            .font(DSTypography.subtitle)
-                            .foregroundStyle(.white.opacity(0.75))
-                            .frame(width: 28, height: 28)
+        VStack(spacing: Spacing.s2) {
+            if isDragging {
+                HStack(spacing: Spacing.s2) {
+                    Image(systemName: isFineMode ? "scope" : "waveform")
+                        .font(DSTypography.caption2)
+                        .foregroundStyle(Color.dsAccent)
+                    Text("\(Self.formatTime(displayedSec)) / \(Self.formatTime(durationSec))")
+                        .font(DSTypography.numericCaption.weight(.semibold))
+                        .foregroundStyle(.white)
+                    if isFineMode {
+                        Text("1/4x 精细")
+                            .font(DSTypography.caption2.weight(.semibold))
+                            .foregroundStyle(Color.dsAccent)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("后退 15 秒")
                 }
+                .padding(.horizontal, Spacing.s3)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule().fill(Color.black.opacity(0.45))
+                )
+                .overlay(
+                    Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+                )
+            }
+
+            ZStack(alignment: .center) {
+                ProgressView(value: clampedBufferedFraction, total: 1.0)
+                    .tint(Color.white.opacity(0.28))
+                    .scaleEffect(x: 1.0, y: isDragging ? 1.5 : 1.0)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
 
                 Slider(
                     value: Binding(
                         get: { progressFraction },
                         set: { newFraction in
-                            let newSec = newFraction * max(durationSec, 1)
+                            let safeDur = max(durationSec, 1)
+                            let newSec: Double
+                            if isFineMode {
+                                let deltaRatio = newFraction - fineAnchorFraction
+                                newSec = DSScrubberLogic.mapDragDelta(
+                                    startSeconds: fineAnchorSec,
+                                    deltaRatio: deltaRatio,
+                                    durationSeconds: safeDur,
+                                    isFineScrubbing: true
+                                )
+                            } else {
+                                newSec = newFraction * safeDur
+                            }
                             if DSScrubberLogic.crossedWholeMinute(from: dragPreviewSec, to: newSec) {
                                 minuteBucket = Int(newSec / 60.0)
                                 DSHapticPolicy.fire(.scrubberMinuteTick)
@@ -94,70 +124,81 @@ struct DSScrubber: View {
                         isDragging = editing
                         if editing {
                             dragPreviewSec = currentTimeSec
+                            fineAnchorSec = currentTimeSec
+                            fineAnchorFraction = progressFraction
                         } else {
                             onSeek(dragPreviewSec)
-                            isFineMode = false
                         }
                     }
                 )
                 .tint(Color.dsAccent)
-                .scaleEffect(x: 1.0, y: isDragging ? 1.15 : 1.0)
+                .scaleEffect(x: 1.0, y: isDragging ? 1.16 : 1.0)
                 .simultaneousGesture(
                     LongPressGesture(minimumDuration: 0.45)
                         .onEnded { _ in
                             isFineMode = true
+                            fineAnchorSec = displayedSec
+                            fineAnchorFraction = progressFraction
                             DSHapticPolicy.fire(.selection)
                         }
                 )
-
-                if let onSkipForward {
-                    Button(action: onSkipForward) {
-                        Image(systemName: "goforward.15")
-                            .font(DSTypography.subtitle)
-                            .foregroundStyle(.white.opacity(0.75))
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("前进 15 秒")
-                }
             }
 
             HStack {
                 Text(Self.formatTime(displayedSec))
                     .font(DSTypography.numericCaption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.78))
                     .contentTransition(.numericText())
 
                 Spacer()
 
-                if isFineMode {
-                    Text("精细拖动 (1/4)")
-                        .font(DSTypography.caption2)
-                        .foregroundStyle(Color.dsAccent)
-                } else if let onTapQuality {
-                    Button(action: onTapQuality) {
-                        Text(qualityLabel)
-                            .font(DSTypography.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.white.opacity(0.10)))
+                Button {
+                    isFineMode.toggle()
+                    fineAnchorSec = displayedSec
+                    fineAnchorFraction = progressFraction
+                    DSHapticPolicy.fire(.selection)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isFineMode ? "scope" : "arrow.left.and.right.circle")
+                            .font(DSTypography.caption2)
+                        Text(isFineMode ? "精细拖动 (1/4x)" : bufferedPercentText)
+                            .font(DSTypography.caption2.weight(isFineMode ? .semibold : .regular))
                     }
-                    .buttonStyle(.plain)
+                    .foregroundStyle(isFineMode ? Color.dsAccent : .white.opacity(0.65))
+                    .padding(.horizontal, Spacing.s2)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule().fill(isFineMode ? Color.dsAccent.opacity(0.18) : Color.white.opacity(0.08))
+                    )
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isFineMode ? "已开启四分之一精细拖动，点击恢复标准拖动" : "点击开启精细拖动模式")
 
                 Spacer()
 
-                Text(Self.formatTime(max(0, durationSec)))
+                Text("-" + Self.formatTime(max(0, durationSec - displayedSec)))
                     .font(DSTypography.numericCaption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.78))
                     .contentTransition(.numericText())
             }
-            .padding(.horizontal, onSkipBackward != nil ? 34 : 0)
         }
         .transaction { tx in
             if !isDragging {
                 tx.animation = nil
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("播放进度")
+        .accessibilityValue("已播放 \(Self.formatTime(displayedSec))，总时长 \(Self.formatTime(durationSec))，\(bufferedPercentText)")
+        .accessibilityAdjustableAction { direction in
+            let safeDur = max(durationSec, 1)
+            switch direction {
+            case .increment:
+                onSeek(min(safeDur, currentTimeSec + 15))
+            case .decrement:
+                onSeek(max(0, currentTimeSec - 15))
+            @unknown default:
+                break
             }
         }
     }
@@ -173,4 +214,25 @@ struct DSScrubber: View {
         }
         return String(format: "%02d:%02d", m, s)
     }
+}
+
+#Preview("Light") {
+    DSScrubber(currentTimeSec: 165, durationSec: 1200, bufferedFraction: 0.45)
+        .padding()
+        .background(Color.black)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Dark") {
+    DSScrubber(currentTimeSec: 420, durationSec: 1800, bufferedFraction: 0.72)
+        .padding()
+        .background(Color.black)
+        .preferredColorScheme(.dark)
+}
+
+#Preview("AX") {
+    DSScrubber(currentTimeSec: 90, durationSec: 600, bufferedFraction: 0.6)
+        .padding()
+        .background(Color.black)
+        .environment(\.sizeCategory, .accessibilityExtraExtraLarge)
 }

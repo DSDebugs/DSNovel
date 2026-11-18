@@ -4,9 +4,11 @@ enum PlayerAmbientFallbackPolicy {
     static func shouldUseStaticGradient(
         isLowPowerMode: Bool,
         reduceMotion: Bool,
-        exceededFrameBudget: Bool = false
+        exceededFrameBudget: Bool = false,
+        thermalState: ProcessInfo.ThermalState = .nominal
     ) -> Bool {
-        isLowPowerMode || reduceMotion || exceededFrameBudget
+        let isThermalConstrained = (thermalState == .serious || thermalState == .critical)
+        return isLowPowerMode || reduceMotion || exceededFrameBudget || isThermalConstrained
     }
 
     static func coverScale(for state: PlaybackState, isPressed: Bool, reduceMotion: Bool) -> CGFloat {
@@ -27,9 +29,11 @@ struct PlayerAmbientBackground: View {
     }
 
     var body: some View {
+        let info = ProcessInfo.processInfo
         let useStatic = PlayerAmbientFallbackPolicy.shouldUseStaticGradient(
-            isLowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
-            reduceMotion: reduceMotion
+            isLowPowerMode: info.isLowPowerModeEnabled,
+            reduceMotion: reduceMotion,
+            thermalState: info.thermalState
         )
         Group {
             if useStatic || !isPlaying {
