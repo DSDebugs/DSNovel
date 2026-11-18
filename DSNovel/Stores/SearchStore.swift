@@ -182,7 +182,7 @@ final class SearchStore {
             } else {
                 let sections = try await PluginRuntime.shared.discoverSections(sourceID: target.id)
                 if let firstTab = sections.first?.tabs.first {
-                    let page = try await PluginRuntime.shared.discoverPage(sourceID: target.id, tabURL: firstTab.url, page: 1)
+                    let page = try await PluginRuntime.shared.discoverList(sourceID: target.id, tabURL: firstTab.url)
                     books = page.books
                 } else {
                     books = []
