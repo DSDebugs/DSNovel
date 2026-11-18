@@ -44,7 +44,7 @@ struct DSBottomBar: View {
             tabButton(for: .me, badge: meBadge)
         }
         .padding(.horizontal, Spacing.s3)
-        .frame(height: 58)
+        .frame(height: 60)
         .background {
             Capsule(style: .continuous)
                 .fill(.regularMaterial)

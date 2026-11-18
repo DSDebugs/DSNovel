@@ -23,12 +23,19 @@ struct ContinueSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s4) {
-            DSContinueCard(
-                model: continueModel,
-                onOpenDetail: { onOpenBook(continueModel.id) },
-                onTogglePlay: onTogglePlay
-            )
-            .padding(.horizontal, Spacing.pageHorizontal)
+            VStack(alignment: .leading, spacing: Spacing.s2) {
+                DSSectionHeader(
+                    title: "继续收听",
+                    actionTitle: recentModels.count < 2 ? "全部历史 ›" : nil,
+                    onAction: recentModels.count < 2 ? onOpenHistory : nil
+                )
+                DSContinueCard(
+                    model: continueModel,
+                    onOpenDetail: { onOpenBook(continueModel.id) },
+                    onTogglePlay: onTogglePlay
+                )
+                .padding(.horizontal, Spacing.pageHorizontal)
+            }
 
             if recentModels.count >= 2 {
                 VStack(alignment: .leading, spacing: Spacing.s2) {

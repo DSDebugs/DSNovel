@@ -100,12 +100,11 @@ struct MiniPlayer: View {
                 isBuffering: player.isBuffering,
                 isFailed: isFailed,
                 hasActiveBook: hasActiveOrRecent,
-                size: 52
+                size: 46
             )
-            .shadow(color: .black.opacity(0.14), radius: 6, y: 2)
+            .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
         }
         .buttonStyle(.dsCard)
-        .offset(y: -4)
         .accessibilityIdentifier("miniplayer.root")
         .accessibilityLabel(accessibilityText)
         .accessibilityAction(named: "播放或暂停") {

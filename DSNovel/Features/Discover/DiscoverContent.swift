@@ -6,7 +6,7 @@ struct DiscoverContent: View {
     let layoutStyle: DiscoverLayoutStyle
     let isLoadingMore: Bool
     let loadMoreFailed: Bool
-    @Binding var localScrollAnchor: String?
+    private let onRefresh: (() async -> Void)?
     private let onSelectBook: (BookRef) -> Void
     private let onAddToShelf: (BookRef) -> Void
     private let onCopyLink: (BookRef) -> Void
@@ -21,7 +21,8 @@ struct DiscoverContent: View {
         layoutStyle: DiscoverLayoutStyle,
         isLoadingMore: Bool,
         loadMoreFailed: Bool,
-        localScrollAnchor: Binding<String?>,
+        localScrollAnchor: Binding<String?> = .constant(nil),
+        onRefresh: (() async -> Void)? = nil,
         onSelectBook: @escaping (BookRef) -> Void,
         onAddToShelf: @escaping (BookRef) -> Void,
         onCopyLink: @escaping (BookRef) -> Void,
@@ -33,7 +34,8 @@ struct DiscoverContent: View {
         self.layoutStyle = layoutStyle
         self.isLoadingMore = isLoadingMore
         self.loadMoreFailed = loadMoreFailed
-        self._localScrollAnchor = localScrollAnchor
+        _ = localScrollAnchor
+        self.onRefresh = onRefresh
         self.onSelectBook = onSelectBook
         self.onAddToShelf = onAddToShelf
         self.onCopyLink = onCopyLink
@@ -123,7 +125,6 @@ struct DiscoverContent: View {
                     }
                 }
             }
-            .scrollTargetLayout()
             .padding(.horizontal, Spacing.pageHorizontal)
             .padding(.top, Spacing.s2)
 
@@ -137,6 +138,9 @@ struct DiscoverContent: View {
                     .padding(.vertical, Spacing.s4)
             }
         }
+        .refreshable {
+            await onRefresh?()
+        }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { newWidth in
@@ -144,6 +148,5 @@ struct DiscoverContent: View {
                 containerWidth = newWidth
             }
         }
-        .scrollPosition(id: $localScrollAnchor)
     }
 }

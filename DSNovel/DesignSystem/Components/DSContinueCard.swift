@@ -16,35 +16,43 @@ struct DSContinueCard: View {
     }
 
     var body: some View {
-        HStack(spacing: Spacing.s4) {
+        HStack(spacing: Spacing.s3) {
             Button(action: onOpenDetail) {
-                HStack(spacing: Spacing.s4) {
+                HStack(spacing: Spacing.s3) {
                     DSCover(
                         url: model.coverURL,
                         title: model.title,
-                        side: 80,
+                        side: 64,
                         badges: model.badges
                     )
 
-                    VStack(alignment: .leading, spacing: Spacing.s1) {
+                    VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: Spacing.s2) {
-                            Text("继续收听")
-                                .font(DSTypography.caption.weight(.semibold))
+                            Text(model.isPlaying ? "正在播放" : "继续收听")
+                                .font(DSTypography.caption2.weight(.semibold))
                                 .foregroundStyle(Color.dsAccent)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.dsAccent.opacity(0.12)))
+
                             if model.isPlaying {
                                 DSEqualizer(isPlaying: true)
                             }
                         }
 
                         Text(model.title)
-                            .font(DSTypography.bookTitleMedium)
+                            .font(DSTypography.rowTitle)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
 
                         Text(model.progressSubtitle.isEmpty ? model.author : model.progressSubtitle)
-                            .font(DSTypography.numericFootnote)
+                            .font(DSTypography.numericCaption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+
+                        if model.progressFraction > 0 {
+                            DSProgress(value: model.progressFraction, style: .bar(height: 3))
+                        }
                     }
 
                     Spacer(minLength: 0)
@@ -55,22 +63,24 @@ struct DSContinueCard: View {
 
             Button(action: onTogglePlay) {
                 Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.dsOnAccent)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 36, height: 36)
                     .background(Circle().fill(Color.dsAccent))
+                    .frame(minWidth: 44, minHeight: 44)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(model.isPlaying ? "暂停播放" : "继续收听")
         }
-        .padding(Spacing.s4)
+        .padding(.horizontal, Spacing.s3)
+        .padding(.vertical, Spacing.s3)
         .background(
-            RoundedRectangle(cornerRadius: Radius.heroCard, style: .continuous)
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                 .fill(Color.dsSurfaceCard)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: Radius.heroCard, style: .continuous)
-                .strokeBorder(Color.dsSeparator.opacity(0.25), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(Color.dsAccent.opacity(0.18), lineWidth: 1)
         )
         .accessibilityElement(children: .contain)
     }

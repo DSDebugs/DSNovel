@@ -9,6 +9,23 @@ struct WebAuthSessionRequest: Identifiable {
     let initialURL: String
     let expectedCookieName: String?
     let onCompleted: () -> Void
+    let onCancelled: (() -> Void)?
+
+    init(
+        sourceID: String,
+        title: String,
+        initialURL: String,
+        expectedCookieName: String? = nil,
+        onCompleted: @escaping () -> Void,
+        onCancelled: (() -> Void)? = nil
+    ) {
+        self.sourceID = sourceID
+        self.title = title
+        self.initialURL = initialURL
+        self.expectedCookieName = expectedCookieName
+        self.onCompleted = onCompleted
+        self.onCancelled = onCancelled
+    }
 }
 
 /// 内嵌 WKWebView 网页登录与安全验证弹层：双向同步 HTTPCookieStorage 与 WKHTTPCookieStore，支持 loginDesktop UA 切换、loginScript 自动注入与按源精准校验登录状态
@@ -142,6 +159,12 @@ struct WebAuthSheet: View {
         let isPureVerify = session.title.contains("验证") && !session.title.contains("登录")
 
         Task { @MainActor in
+            if isCancel {
+                session.onCancelled?()
+                dismiss()
+                return
+            }
+
             _ = await CookieSync.pullFromWebView()
             let verifyResult = await PluginRuntime.shared.verifyLoginStatus(sourceID: session.sourceID)
 
@@ -154,30 +177,32 @@ struct WebAuthSheet: View {
 
             case .notLoggedIn:
                 CookieSync.setVerifiedLogin(sourceID: session.sourceID, nickname: nil)
-                if isCancel {
-                    session.onCompleted()
-                    dismiss()
-                } else if isPureVerify {
+                SourceStore.shared.markAuthExpired(sourceID: session.sourceID)
+                if isPureVerify {
                     ToastManager.shared.show("已完成网页验证")
-                    session.onCompleted()
-                    dismiss()
                 } else {
-                    ToastManager.shared.show("尚未检测到该书源的登录状态")
-                    session.onCompleted()
-                    dismiss()
+                    ToastManager.shared.show("未检测到登录状态，请确认已登录后再点完成")
                 }
+                session.onCancelled?()
+                dismiss()
 
             case .noCheckMethod:
-                // 对未定义 checkLogin() 的书源（如懒人听书），仅在用户主动点击「完成」且该站点已有 Cookie 时标记为该源已登录
-                if !isCancel && CookieSync.hasCookies(for: targetURL) {
+                // 对未定义 checkLogin() 的书源，仅在用户主动点击「完成」且该站点已有 Cookie 时标记为该源已登录
+                if CookieSync.hasCookies(for: targetURL) {
                     if !isPureVerify {
                         CookieSync.setVerifiedLogin(sourceID: session.sourceID, nickname: "已授权")
                         ToastManager.shared.show("已保存当前书源登录凭证")
+                        session.onCompleted()
                     } else {
                         ToastManager.shared.show("已完成网页验证")
+                        session.onCancelled?()
                     }
+                } else {
+                    CookieSync.setVerifiedLogin(sourceID: session.sourceID, nickname: nil)
+                    SourceStore.shared.markAuthExpired(sourceID: session.sourceID)
+                    ToastManager.shared.show("未检测到登录凭证，请确认已登录后再点完成")
+                    session.onCancelled?()
                 }
-                session.onCompleted()
                 dismiss()
             }
         }

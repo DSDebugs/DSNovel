@@ -55,6 +55,7 @@ final class DiscoverStore {
     private(set) var searchError: Error?
     @ObservationIgnored private var searchGeneration: UInt64 = 0
     @ObservationIgnored private var searchTask: Task<Void, Never>?
+    @ObservationIgnored private var loadGeneration: UInt64 = 0
 
     var customSourceSearchLoader: ((String, String) async throws -> [BookRef])?
     var customMenusLoader: ((String) async throws -> [DiscoverSectionDTO])?
@@ -252,14 +253,19 @@ final class DiscoverStore {
     func loadFirstPage(forceReload: Bool = false) async {
         let slot = currentSlotKey
         if !forceReload, let cached = booksBySlot[slot], !cached.isEmpty {
+            isLoadingInitial = false
+            lastError = nil
             return
         }
         let tabs = currentTabs
         guard tabs.indices.contains(slot.tabIndex) else {
             booksBySlot[slot] = []
             nextPageBySlot[slot] = nil
+            isLoadingInitial = false
             return
         }
+        loadGeneration &+= 1
+        let gen = loadGeneration
         let tabURL = tabs[slot.tabIndex].url
         isLoadingInitial = true
         lastError = nil
@@ -271,11 +277,13 @@ final class DiscoverStore {
             } else {
                 page = try await PluginRuntime.shared.discoverList(sourceID: slot.sourceID, tabURL: tabURL)
             }
+            guard !Task.isCancelled, loadGeneration == gen, currentSlotKey == slot else { return }
             booksBySlot[slot] = page.books
             nextPageBySlot[slot] = page.nextPageURL
             currentPageNumBySlot[slot] = 1
             isLoadingInitial = false
         } catch {
+            guard !Task.isCancelled, loadGeneration == gen, currentSlotKey == slot else { return }
             isLoadingInitial = false
             lastError = error
             if let pErr = error as? PluginError {

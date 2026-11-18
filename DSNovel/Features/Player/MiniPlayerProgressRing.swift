@@ -22,7 +22,7 @@ struct MiniPlayerProgressRing: View {
         isBuffering: Bool,
         isFailed: Bool,
         hasActiveBook: Bool,
-        size: CGFloat = 52
+        size: CGFloat = 46
     ) {
         self.clock = clock
         self.coverURL = coverURL
@@ -35,36 +35,38 @@ struct MiniPlayerProgressRing: View {
     }
 
     var body: some View {
+        let coverSide = max(32, size - 6)
+        let ringDiameter = max(36, size - 2.5)
         ZStack {
             if hasActiveBook {
-                spinningCover
+                spinningCover(coverSide: coverSide)
                 if isBuffering {
                     Circle()
                         .fill(Color.black.opacity(0.35))
-                        .frame(width: size - 6, height: size - 6)
+                        .frame(width: coverSide, height: coverSide)
                     ProgressView()
                         .tint(.white)
                         .controlSize(.small)
                 } else if isFailed {
                     Circle()
                         .fill(Color.black.opacity(0.45))
-                        .frame(width: size - 6, height: size - 6)
+                        .frame(width: coverSide, height: coverSide)
                     Image(systemName: "arrow.clockwise")
-                        .font(DSTypography.cardTitle)
+                        .font(DSTypography.caption)
                         .foregroundStyle(.white)
                 } else if !isPlaying {
                     Circle()
                         .fill(Color.black.opacity(0.28))
-                        .frame(width: size - 6, height: size - 6)
+                        .frame(width: coverSide, height: coverSide)
                     Image(systemName: "play.fill")
-                        .font(DSTypography.cardTitle)
+                        .font(DSTypography.caption)
                         .foregroundStyle(.white)
                         .offset(x: 1)
                 }
 
                 DSProgress(
                     value: clock.progressFraction,
-                    style: .ring(size: size, lineWidth: 2.5)
+                    style: .ring(size: ringDiameter, lineWidth: 2.5)
                 )
             } else {
                 Circle()
@@ -75,7 +77,7 @@ struct MiniPlayerProgressRing: View {
                             .strokeBorder(Color.dsSeparator.opacity(0.35), lineWidth: 1)
                     )
                 Image(systemName: "play.fill")
-                    .font(DSTypography.cardTitle)
+                    .font(DSTypography.caption)
                     .foregroundStyle(Color.dsAccent)
                     .offset(x: 1)
             }
@@ -98,7 +100,7 @@ struct MiniPlayerProgressRing: View {
     }
 
     @ViewBuilder
-    private var spinningCover: some View {
+    private func spinningCover(coverSide: CGFloat) -> some View {
         if isPlaying && !reduceMotion, let start = spinStartDate {
             TimelineView(.periodic(from: start, by: 1.0 / 30.0)) { context in
                 let elapsed = max(0, context.date.timeIntervalSince(start))
@@ -106,7 +108,7 @@ struct MiniPlayerProgressRing: View {
                 DSCover(
                     url: coverURL,
                     title: bookTitle,
-                    side: size - 6
+                    side: coverSide
                 )
                 .clipShape(Circle())
                 .rotationEffect(.degrees(angle))
@@ -115,7 +117,7 @@ struct MiniPlayerProgressRing: View {
             DSCover(
                 url: coverURL,
                 title: bookTitle,
-                side: size - 6
+                side: coverSide
             )
             .clipShape(Circle())
             .rotationEffect(.degrees(baseAngleDegrees))

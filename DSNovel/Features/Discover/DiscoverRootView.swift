@@ -9,7 +9,6 @@ struct DiscoverRootView: View {
     @State private var libraryStore = LibraryStore.shared
     @State private var settings = AppSettingsStore.shared
     @State private var showMoreSourcesSheet = false
-    @State private var localScrollAnchor: String?
     @FocusState private var isSearchFocused: Bool
 
     init() {}
@@ -39,75 +38,62 @@ struct DiscoverRootView: View {
 
     var body: some View {
         let _ = DiscoverRenderCounter.shared.recordRoot()
-        contentArea
-            .background(Color.dsSurfaceBase)
-            .toolbar(.hidden, for: .navigationBar)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                DiscoverHeaderBar(
-                    currentSourceName: currentSourceName,
-                    sourceTwoCharBadge: DiscoverStore.twoCharBadge(for: currentSourceName),
-                    searchKeyword: $discoverStore.searchKeyword,
-                    isSearchActive: discoverStore.isSearchActive,
-                    layoutStyle: $settings.discoverLayout,
-                    sectionChips: sectionChips,
-                    tabChips: tabChips,
-                    selectedSectionIndex: discoverStore.selectedSectionIndex,
-                    selectedTabIndex: discoverStore.selectedTabIndex,
-                    currentSectionTitle: currentSectionTitle,
-                    isSearchFocused: $isSearchFocused,
-                    onOpenSourcePicker: { showMoreSourcesSheet = true },
-                    onSubmitSearch: {
-                        isSearchFocused = false
-                        discoverStore.submitSourceSearch()
-                    },
-                    onClearSearch: {
-                        isSearchFocused = false
-                        discoverStore.clearSourceSearch()
-                    },
-                    onSelectSection: { idx in
-                        discoverStore.saveAnchor(localScrollAnchor)
-                        Task {
-                            await discoverStore.selectSection(idx)
-                            localScrollAnchor = discoverStore.savedScrollAnchor()
-                        }
-                    },
-                    onSelectTab: { idx in
-                        discoverStore.saveAnchor(localScrollAnchor)
-                        Task {
-                            await discoverStore.selectTab(idx)
-                            localScrollAnchor = discoverStore.savedScrollAnchor()
-                        }
-                    }
-                )
-            }
-            .refreshable {
-                if discoverStore.isSearchActive {
+        VStack(spacing: 0) {
+            DiscoverHeaderBar(
+                currentSourceName: currentSourceName,
+                sourceTwoCharBadge: DiscoverStore.twoCharBadge(for: currentSourceName),
+                searchKeyword: $discoverStore.searchKeyword,
+                isSearchActive: discoverStore.isSearchActive,
+                layoutStyle: $settings.discoverLayout,
+                sectionChips: sectionChips,
+                tabChips: tabChips,
+                selectedSectionIndex: discoverStore.selectedSectionIndex,
+                selectedTabIndex: discoverStore.selectedTabIndex,
+                currentSectionTitle: currentSectionTitle,
+                isSearchFocused: $isSearchFocused,
+                onOpenSourcePicker: { showMoreSourcesSheet = true },
+                onSubmitSearch: {
+                    isSearchFocused = false
                     discoverStore.submitSourceSearch()
-                } else {
-                    await discoverStore.loadFirstPage(forceReload: true)
-                }
-            }
-            .sheet(isPresented: $showMoreSourcesSheet) {
-                sourcePickerSheet
-            }
-            .onChange(of: discoverStore.searchKeyword) { _, newValue in
-                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && discoverStore.isSearchActive {
+                },
+                onClearSearch: {
+                    isSearchFocused = false
                     discoverStore.clearSourceSearch()
+                },
+                onSelectSection: { idx in
+                    Task {
+                        await discoverStore.selectSection(idx)
+                    }
+                },
+                onSelectTab: { idx in
+                    Task {
+                        await discoverStore.selectTab(idx)
+                    }
                 }
+            )
+
+            contentArea
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .background(Color.dsSurfaceBase)
+        .toolbar(.hidden, for: .navigationBar)
+        .sheet(isPresented: $showMoreSourcesSheet) {
+            sourcePickerSheet
+        }
+        .onChange(of: discoverStore.searchKeyword) { _, newValue in
+            if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && discoverStore.isSearchActive {
+                discoverStore.clearSourceSearch()
             }
-            .onDisappear {
-                discoverStore.saveAnchor(localScrollAnchor)
+        }
+        .task {
+            sourceStore.modelContext = modelContext
+            libraryStore.modelContext = modelContext
+            if discoverStore.currentSourceID.isEmpty,
+               let first = sourceStore.discoverableSources.first {
+                discoverStore.currentSourceID = first.id
             }
-            .task {
-                sourceStore.modelContext = modelContext
-                libraryStore.modelContext = modelContext
-                if discoverStore.currentSourceID.isEmpty,
-                   let first = sourceStore.discoverableSources.first {
-                    discoverStore.currentSourceID = first.id
-                }
-                await discoverStore.loadCategoryMenusAndFirstPage(forceReload: false)
-                localScrollAnchor = discoverStore.savedScrollAnchor()
-            }
+            await discoverStore.loadCategoryMenusAndFirstPage(forceReload: false)
+        }
     }
 
     private var sourcePickerSheet: some View {
@@ -119,10 +105,8 @@ struct DiscoverRootView: View {
                         ForEach(section.sources) { src in
                             Button {
                                 showMoreSourcesSheet = false
-                                discoverStore.saveAnchor(localScrollAnchor)
                                 Task {
                                     await discoverStore.switchSource(to: src.id)
-                                    localScrollAnchor = discoverStore.savedScrollAnchor()
                                 }
                             } label: {
                                 HStack {
@@ -152,37 +136,44 @@ struct DiscoverRootView: View {
     @ViewBuilder
     private var contentArea: some View {
         if sourceStore.discoverableSources.isEmpty {
-            DSStateView(
-                kind: .noSource,
-                onPrimary: { AppRouter.shared.open(.sourceImport) },
-                onSecondary: { AppRouter.shared.open(.sourceList) }
-            )
+            centeredState {
+                DSStateView(
+                    kind: .noSource,
+                    onPrimary: { AppRouter.shared.open(.sourceImport) },
+                    onSecondary: { AppRouter.shared.open(.sourceList) }
+                )
+            }
         } else if discoverStore.isSearchActive {
             scopedSearchContent
         } else if discoverStore.isLoadingInitial && discoverStore.currentBooks.isEmpty {
             DSSkeleton(mode: .grid)
                 .padding(.top, Spacing.s3)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else if let err = discoverStore.lastError, discoverStore.currentBooks.isEmpty {
             let kind = UserFacingError.from(err, sourceName: currentSourceName)
-            DSStateView(
-                kind: kind,
-                onPrimary: {
-                    if case .needLogin = kind {
-                        AuthCoordinator.shared.presentLogin(forSourceID: discoverStore.currentSourceID)
-                    } else if case .needVerify = kind {
-                        AuthCoordinator.shared.presentLogin(forSourceID: discoverStore.currentSourceID)
-                    } else {
-                        Task { await discoverStore.loadCategoryMenusAndFirstPage(forceReload: true) }
-                    }
-                },
-                onSecondary: { showMoreSourcesSheet = true }
-            )
+            centeredState {
+                DSStateView(
+                    kind: kind,
+                    onPrimary: {
+                        if case .needLogin = kind {
+                            AuthCoordinator.shared.presentLogin(forSourceID: discoverStore.currentSourceID)
+                        } else if case .needVerify = kind {
+                            AuthCoordinator.shared.presentLogin(forSourceID: discoverStore.currentSourceID)
+                        } else {
+                            Task { await discoverStore.loadCategoryMenusAndFirstPage(forceReload: true) }
+                        }
+                    },
+                    onSecondary: { showMoreSourcesSheet = true }
+                )
+            }
         } else if discoverStore.currentBooks.isEmpty {
-            DSStateView(
-                kind: .empty,
-                onPrimary: { showMoreSourcesSheet = true },
-                onSecondary: { Task { await discoverStore.loadFirstPage(forceReload: true) } }
-            )
+            centeredState {
+                DSStateView(
+                    kind: .empty,
+                    onPrimary: { showMoreSourcesSheet = true },
+                    onSecondary: { Task { await discoverStore.loadFirstPage(forceReload: true) } }
+                )
+            }
         } else {
             discoverBooksGrid(books: discoverStore.currentBooks, isPaged: true)
         }
@@ -193,28 +184,42 @@ struct DiscoverRootView: View {
         if discoverStore.isSearchingInSource && discoverStore.searchResults.isEmpty {
             DSSkeleton(mode: .list(rows: 6))
                 .padding(.top, Spacing.s3)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else if let err = discoverStore.searchError, discoverStore.searchResults.isEmpty {
             let kind = UserFacingError.from(err, sourceName: currentSourceName)
-            DSStateView(
-                kind: kind,
-                onPrimary: {
-                    if case .needLogin = kind {
-                        AuthCoordinator.shared.presentLogin(forSourceID: discoverStore.currentSourceID)
-                    } else {
-                        discoverStore.submitSourceSearch()
-                    }
-                },
-                onSecondary: { discoverStore.clearSourceSearch() }
-            )
+            centeredState {
+                DSStateView(
+                    kind: kind,
+                    onPrimary: {
+                        if case .needLogin = kind {
+                            AuthCoordinator.shared.presentLogin(forSourceID: discoverStore.currentSourceID)
+                        } else {
+                            discoverStore.submitSourceSearch()
+                        }
+                    },
+                    onSecondary: { discoverStore.clearSourceSearch() }
+                )
+            }
         } else if discoverStore.searchResults.isEmpty {
-            DSStateView(
-                kind: .empty,
-                onPrimary: { discoverStore.clearSourceSearch() },
-                onSecondary: { discoverStore.submitSourceSearch() }
-            )
+            centeredState {
+                DSStateView(
+                    kind: .empty,
+                    onPrimary: { discoverStore.clearSourceSearch() },
+                    onSecondary: { discoverStore.submitSourceSearch() }
+                )
+            }
         } else {
             discoverBooksGrid(books: discoverStore.searchResults, isPaged: false)
         }
+    }
+
+    private func centeredState<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack {
+            Spacer(minLength: Spacing.s6)
+            content()
+            Spacer(minLength: Spacing.s6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func discoverBooksGrid(books: [BookRef], isPaged: Bool) -> some View {
@@ -224,7 +229,13 @@ struct DiscoverRootView: View {
             layoutStyle: settings.discoverLayout,
             isLoadingMore: isPaged ? discoverStore.isLoadingMore : false,
             loadMoreFailed: isPaged ? discoverStore.loadMoreFailed : false,
-            localScrollAnchor: $localScrollAnchor,
+            onRefresh: {
+                if discoverStore.isSearchActive {
+                    discoverStore.submitSourceSearch()
+                } else {
+                    await discoverStore.loadFirstPage(forceReload: true)
+                }
+            },
             onSelectBook: { ref in AppRouter.shared.open(.book(ref)) },
             onAddToShelf: { ref in addRefToShelf(ref) },
             onCopyLink: { ref in

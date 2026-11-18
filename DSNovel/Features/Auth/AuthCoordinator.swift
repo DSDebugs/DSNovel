@@ -38,6 +38,11 @@ final class AuthCoordinator {
                 Task { @MainActor in
                     self?.notifyLoginCompleted(sourceID: sourceID)
                 }
+            },
+            onCancelled: { [weak self] in
+                Task { @MainActor in
+                    self?.notifyLoginCancelledOrFailed()
+                }
             }
         )
     }
