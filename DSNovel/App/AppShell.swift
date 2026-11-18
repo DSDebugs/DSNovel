@@ -146,8 +146,8 @@ struct AppShell: View {
     @ViewBuilder
     private func destinationView(for route: Route) -> some View {
         switch route {
-        case .book(let ref, let alternatives):
-            BookDetailView(book: ref, alternatives: alternatives)
+        case .book(let ref, let preferDownloaded):
+            BookDetailView(book: ref, preferDownloaded: preferDownloaded)
         case .history:
             HistoryView()
         case .downloads, .downloadManager:

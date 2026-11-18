@@ -11,7 +11,10 @@ struct ChapterListView: View {
 
     @State private var browserModel: BookDetailModel
     @State private var listModel: PlayerChapterListModel
+    @State private var downloadManager = DownloadManager.shared
+    @State private var player = PlayerEngine.shared
     @State private var showSearchField: Bool = false
+    @State private var pendingDeleteSnapshot: ChapterRowSnapshot?
     @FocusState private var isSearchFocused: Bool
 
     init(
@@ -54,11 +57,19 @@ struct ChapterListView: View {
     }
 
     var body: some View {
-        let snapshots = listModel.visibleSnapshots(from: browserModel, isPlaying: isPlaying)
+        let _ = downloadManager.stateVersion
+        let livePosMs = (player.currentBookID == listModel.book.id) ? max(0, Int(player.clock.currentTimeSec * 1000)) : nil
+        let snapshots = listModel.visibleSnapshots(
+            from: browserModel,
+            isPlaying: isPlaying,
+            currentPlayingPositionMs: livePosMs
+        )
+        let downloadedCount = downloadManager.summariesByBookID[listModel.book.id]?.completedCount ?? 0
+
         DSSheetScaffold(title: "章节目录（共 \(chapters.count) 章）", onClose: onClose) {
             ScrollViewReader { proxy in
                 VStack(spacing: 0) {
-                    controlBar(proxy: proxy)
+                    controlBar(proxy: proxy, downloadedCount: downloadedCount)
 
                     if showSearchField {
                         DSSearchField(
@@ -66,7 +77,6 @@ struct ChapterListView: View {
                             isFocused: $isSearchFocused,
                             prompt: "搜索章节号或标题关键词"
                         )
-                        .padding(.horizontal, Spacing.pageHorizontal)
                         .padding(.bottom, Spacing.s2)
                     }
 
@@ -91,7 +101,15 @@ struct ChapterListView: View {
                                     onClose()
                                 },
                                 onDownloadAction: {
-                                    listModel.toggleDownload(snap)
+                                    let realState = downloadManager.downloadState(
+                                        bookID: listModel.book.id,
+                                        chapterID: snap.chapter.id
+                                    )
+                                    if realState == .completed {
+                                        pendingDeleteSnapshot = snap
+                                    } else {
+                                        listModel.startOrRetryDownload(snap)
+                                    }
                                 }
                             )
                             .listRowInsets(EdgeInsets())
@@ -120,6 +138,26 @@ struct ChapterListView: View {
                         }
                     }
                 }
+                .confirmationDialog(
+                    pendingDeleteSnapshot.map { "确认删除「\($0.chapter.title)」的离线音频文件？" } ?? "确认删除该章离线文件？",
+                    isPresented: Binding(
+                        get: { pendingDeleteSnapshot != nil },
+                        set: { if !$0 { pendingDeleteSnapshot = nil } }
+                    ),
+                    titleVisibility: .visible
+                ) {
+                    Button("删除离线文件", role: .destructive) {
+                        if let snap = pendingDeleteSnapshot {
+                            listModel.confirmDeleteDownload(snap)
+                        }
+                        pendingDeleteSnapshot = nil
+                    }
+                    Button("取消", role: .cancel) {
+                        pendingDeleteSnapshot = nil
+                    }
+                } message: {
+                    Text("删除后将释放本地空间，再次收听该章需联网或重新下载。")
+                }
                 .onAppear {
                     listModel.reloadDownloadMap()
                     if let currentChapterID {
@@ -138,18 +176,43 @@ struct ChapterListView: View {
     }
 
     @ViewBuilder
-    private func controlBar(proxy: ScrollViewProxy) -> some View {
+    private func controlBar(proxy: ScrollViewProxy, downloadedCount: Int) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Spacing.s2) {
-                if browserModel.segments.count > 1 {
+                Button {
+                    DSHapticPolicy.fire(.selection)
+                    listModel.onlyDownloadedFilter.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: listModel.onlyDownloadedFilter ? "checkmark.circle.fill" : "checkmark.circle")
+                        Text(downloadedCount > 0 ? "已下载章节 (\(downloadedCount))" : "已下载章节")
+                    }
+                    .font(DSTypography.caption.weight(.semibold))
+                    .foregroundStyle(listModel.onlyDownloadedFilter ? Color.dsOnAccent : .primary)
+                    .padding(.horizontal, Spacing.s3)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule().fill(listModel.onlyDownloadedFilter ? Color.dsAccent : Color.dsSurfaceCard)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                if browserModel.segments.count > 1 && !listModel.onlyDownloadedFilter {
                     Menu {
+                        Button {
+                            listModel.onlyDownloadedFilter = true
+                        } label: {
+                            Label("已下载章节（\(downloadedCount) 章）", systemImage: "checkmark.circle")
+                        }
+                        Divider()
                         ForEach(Array(browserModel.segments.enumerated()), id: \.offset) { idx, seg in
                             Button {
+                                listModel.onlyDownloadedFilter = false
                                 browserModel.selectedSegmentIndex = idx
                             } label: {
                                 HStack {
                                     Text("第 \(seg.label) 章")
-                                    if idx == browserModel.selectedSegmentIndex {
+                                    if idx == browserModel.selectedSegmentIndex && !listModel.onlyDownloadedFilter {
                                         Image(systemName: "checkmark")
                                     }
                                 }
@@ -211,24 +274,6 @@ struct ChapterListView: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    DSHapticPolicy.fire(.selection)
-                    listModel.onlyDownloadedFilter.toggle()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark.circle")
-                        Text("仅看已下")
-                    }
-                    .font(DSTypography.caption.weight(.medium))
-                    .foregroundStyle(listModel.onlyDownloadedFilter ? Color.dsAccent : .primary)
-                    .padding(.horizontal, Spacing.s3)
-                    .padding(.vertical, 6)
-                    .background(
-                        Capsule().fill(listModel.onlyDownloadedFilter ? Color.dsAccent.opacity(0.16) : Color.dsSurfaceCard)
-                    )
-                }
-                .buttonStyle(.plain)
-
-                Button {
                     onClose()
                     onOpenBatchDownload()
                 } label: {
@@ -251,13 +296,14 @@ struct ChapterListView: View {
 
     private func locateCurrentChapter(proxy: ScrollViewProxy) {
         guard let currentChapterID else { return }
+        DSHapticPolicy.fire(.selection)
         browserModel.chapterSearchKeyword = ""
         listModel.onlyDownloadedFilter = false
         if let segIdx = PlayerChapterListModel.segmentIndex(for: currentChapterID, in: chapters, pageSize: 100),
            browserModel.segments.indices.contains(segIdx) {
             browserModel.selectedSegmentIndex = segIdx
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
             withAnimation(Motion.snappy) {
                 proxy.scrollTo(currentChapterID, anchor: .center)
             }

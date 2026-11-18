@@ -26,6 +26,35 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
     let isFinished: Bool
     let isVIP: Bool
     let downloadState: ChapterDownloadState
+    let downloadedBytes: Int64
+    let isDeleting: Bool
+    let downloadStatusNote: String?
+
+    init(
+        chapter: ChapterDTO,
+        displayIndex: Int,
+        isCurrentPlayingChapter: Bool,
+        isEnginePlaying: Bool,
+        savedPositionMs: Int,
+        isFinished: Bool,
+        isVIP: Bool,
+        downloadState: ChapterDownloadState,
+        downloadedBytes: Int64 = 0,
+        isDeleting: Bool = false,
+        downloadStatusNote: String? = nil
+    ) {
+        self.chapter = chapter
+        self.displayIndex = displayIndex
+        self.isCurrentPlayingChapter = isCurrentPlayingChapter
+        self.isEnginePlaying = isEnginePlaying
+        self.savedPositionMs = savedPositionMs
+        self.isFinished = isFinished
+        self.isVIP = isVIP
+        self.downloadState = downloadState
+        self.downloadedBytes = downloadedBytes
+        self.isDeleting = isDeleting
+        self.downloadStatusNote = downloadStatusNote
+    }
 
     var progressFraction: Double {
         guard savedPositionMs > 0 else { return 0 }
@@ -41,8 +70,28 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
         if savedPositionMs > 0 {
             parts.append("听至 \(ChapterProgressStore.formattedPosition(ms: savedPositionMs))")
         }
-        if downloadState == .completed {
-            parts.append("已下载")
+        if isDeleting {
+            parts.append("删除中…")
+        } else {
+            switch downloadState {
+            case .completed:
+                if downloadedBytes > 0 {
+                    let sizeStr = ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file)
+                    parts.append("已下载 · \(sizeStr)")
+                } else {
+                    parts.append("已下载")
+                }
+            case .downloading(let p):
+                if let note = downloadStatusNote, !note.isEmpty {
+                    parts.append(note)
+                } else {
+                    parts.append("下载中 \(Int((p * 100).rounded()))%")
+                }
+            case .failed:
+                parts.append("下载失败 · 点击重试")
+            case .notDownloaded:
+                break
+            }
         }
         return parts.joined(separator: " · ")
     }
@@ -52,24 +101,30 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
 @Observable
 final class BookDetailModel {
     var currentBookRef: BookRef
-    var alternatives: [BookRef]
+    let preferDownloadedOnAppear: Bool
     private(set) var cleanedIntro: String = ""
     private(set) var statusText: String = ""
     private(set) var chapters: [ChapterDTO] = []
     private(set) var segments: [ChapterSegmentItem] = []
     var selectedSegmentIndex: Int = 0
+    /// 是否处于「已下载章节」展示模式（书籍有已下载章节时默认开启以优先展示已下载章节）
+    var isShowingDownloadedOnly: Bool = false
     var isAscending: Bool = true
     var chapterSearchKeyword: String = ""
     private(set) var isLoadingChapters: Bool = false
     private(set) var chapterError: Error?
     private(set) var finishedChapterIDs: Set<String> = []
+    private(set) var didApplyInitialPresentation: Bool = false
 
     var customDetailLoader: ((BookRef) async throws -> BookDetailDTO)?
 
-    init(book: BookRef, alternatives: [BookRef] = []) {
+    init(book: BookRef, preferDownloaded: Bool = false) {
         self.currentBookRef = book
-        self.alternatives = alternatives
+        self.preferDownloadedOnAppear = preferDownloaded
         self.cleanedIntro = Self.cleanHTML(book.intro)
+        if preferDownloaded {
+            self.isShowingDownloadedOnly = true
+        }
     }
 
     nonisolated static func buildSegments(totalCount: Int, pageSize: Int = 50) -> [ChapterSegmentItem] {
@@ -84,26 +139,6 @@ final class BookDetailModel {
         return list
     }
 
-    /// T4-3 换源进度匹配算法：标题相同 → 序号相同 → 都不匹配则保持当前有效序号（钳制在合法范围）
-    nonisolated static func matchChapterIndexForSourceSwitch(
-        currentIndex: Int,
-        currentTitle: String,
-        targetChapters: [ChapterDTO]
-    ) -> Int {
-        guard !targetChapters.isEmpty else { return 0 }
-        let normalizedCurrent = currentTitle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !normalizedCurrent.isEmpty,
-           let matchedByTitle = targetChapters.firstIndex(where: {
-               $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedCurrent
-           }) {
-            return matchedByTitle
-        }
-        if targetChapters.indices.contains(currentIndex) {
-            return currentIndex
-        }
-        return min(max(0, currentIndex), targetChapters.count - 1)
-    }
-
     nonisolated static func cleanHTML(_ raw: String) -> String {
         guard !raw.isEmpty else { return "暂无作品简介" }
         let stripped = raw
@@ -113,6 +148,7 @@ final class BookDetailModel {
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "([0-9]+)\\s*集", with: "$1 章", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return stripped.isEmpty ? "暂无作品简介" : stripped
     }
@@ -125,6 +161,34 @@ final class BookDetailModel {
         }
     }
 
+    /// 初始展示优先级决策：有已下载章节（或由已下载书籍页进入）时优先展示「已下载章节」，同时将百章分段自动对齐至当前收听进度所在区间
+    func applyInitialPresentationIfNeeded(
+        downloadedCount: Int,
+        activeDownloadCount: Int,
+        activeChapterID: String?,
+        savedChapterID: String?,
+        savedChapterIndex: Int?
+    ) {
+        guard !chapters.isEmpty else { return }
+        if let targetID = activeChapterID ?? savedChapterID,
+           let idx = chapters.firstIndex(where: { $0.id == targetID }) {
+            let segIdx = idx / 100
+            if segments.indices.contains(segIdx) {
+                selectedSegmentIndex = segIdx
+            }
+        } else if let savedIdx = savedChapterIndex, savedIdx > 0 {
+            let segIdx = min(max(0, savedIdx - 1), max(0, chapters.count - 1)) / 100
+            if segments.indices.contains(segIdx) {
+                selectedSegmentIndex = segIdx
+            }
+        }
+        guard !didApplyInitialPresentation else { return }
+        didApplyInitialPresentation = true
+        if preferDownloadedOnAppear || downloadedCount > 0 || activeDownloadCount > 0 {
+            isShowingDownloadedOnly = true
+        }
+    }
+
     func loadChaptersIfNeeded(forceRefresh: Bool = false) async {
         let bookID = currentBookRef.id
         if !forceRefresh,
@@ -133,7 +197,6 @@ final class BookDetailModel {
             applyChapters(cached)
             let age = ChapterCacheStore.cacheAge(for: bookID) ?? 9999
             if age < 600 {
-                // 10 分钟内直接使用缓存并后台静默刷新
                 Task { await refreshChaptersSilently(oldCount: cached.count) }
                 return
             }
@@ -157,7 +220,7 @@ final class BookDetailModel {
                 switch pErr {
                 case .needLogin, .needVerify:
                     SourceStore.shared.markAuthExpired(sourceID: currentBookRef.sourceID)
-                default:
+                case .vipRequired, .builtinParserMissing, .builtinParserFailed, .timeout, .network, .rateLimited, .parseFailed:
                     break
                 }
             }
@@ -189,13 +252,23 @@ final class BookDetailModel {
     func visibleChapterSnapshots(
         currentPlayingChapterID: String?,
         isEnginePlaying: Bool,
-        downloadItems: [String: DownloadItem]
+        currentPlayingPositionMs: Int? = nil,
+        downloadItems: [String: DownloadItem]? = nil,
+        forceAllSegmentsWhenFiltered: Bool = false
     ) -> [ChapterRowSnapshot] {
         guard !chapters.isEmpty else { return [] }
+        let bookID = currentBookRef.id
+        let liveSnapshots = DownloadManager.shared.bookSnapshots(for: bookID)
+        let deletingIDs = DownloadManager.shared.deletingItemIDs
         let kw = chapterSearchKeyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
         let baseSlice: [ChapterDTO]
         if !kw.isEmpty {
-            baseSlice = chapters.filter { $0.title.lowercased().contains(kw) }
+            baseSlice = chapters.filter {
+                $0.title.lowercased().contains(kw) || "\($0.index + 1)".contains(kw)
+            }
+        } else if isShowingDownloadedOnly || forceAllSegmentsWhenFiltered {
+            baseSlice = chapters
         } else if segments.indices.contains(selectedSegmentIndex) {
             let seg = segments[selectedSegmentIndex]
             let end = min(seg.endIndex, chapters.count)
@@ -205,17 +278,44 @@ final class BookDetailModel {
         }
 
         let ordered = isAscending ? baseSlice : Array(baseSlice.reversed())
-        let progressMap = ChapterProgressCache.shared.allProgressMap(for: currentBookRef.id)
+        let progressMap = ChapterProgressCache.shared.allProgressMap(for: bookID)
 
-        return ordered.map { ch in
-            let itemID = "\(currentBookRef.id)::\(ch.id)"
-            let dl = downloadItems[itemID]
+        var results: [ChapterRowSnapshot] = []
+        results.reserveCapacity(ordered.count)
+
+        for ch in ordered {
+            let itemID = "\(bookID)::\(ch.id)"
+            let isDeleting = deletingIDs.contains(itemID)
             let dlState: ChapterDownloadState
-            if let dl {
+            var dlBytes: Int64 = 0
+            var statusNote: String? = nil
+
+            if let snap = liveSnapshots[itemID] {
+                dlBytes = snap.bytes
+                switch snap.state {
+                case "completed":
+                    dlState = snap.isFileVerified ? .completed : .notDownloaded
+                case "downloading", "queued", "waitingWiFi", "paused":
+                    let p = DownloadManager.shared.itemProgress[itemID] ?? (snap.state == "downloading" ? 0.2 : 0.08)
+                    dlState = .downloading(p)
+                    if snap.state == "waitingWiFi" {
+                        statusNote = "等待 Wi-Fi"
+                    } else if snap.state == "paused" {
+                        statusNote = "已暂停"
+                    } else if snap.state == "queued" {
+                        statusNote = "排队下载中"
+                    }
+                case "failed":
+                    dlState = .failed
+                default:
+                    dlState = .notDownloaded
+                }
+            } else if let legacyMap = downloadItems, let dl = legacyMap[itemID] {
+                dlBytes = dl.bytes
                 switch dl.state {
                 case "completed":
                     dlState = .completed
-                case "downloading", "queued", "waitingWiFi":
+                case "downloading", "queued", "waitingWiFi", "paused":
                     let p = DownloadManager.shared.itemProgress[itemID] ?? 0.2
                     dlState = .downloading(p)
                 case "failed":
@@ -226,18 +326,78 @@ final class BookDetailModel {
             } else {
                 dlState = .notDownloaded
             }
-            let pos = progressMap[ch.id] ?? 0
-            return ChapterRowSnapshot(
-                chapter: ch,
-                displayIndex: ch.index + 1,
-                isCurrentPlayingChapter: ch.id == currentPlayingChapterID,
-                isEnginePlaying: ch.id == currentPlayingChapterID && isEnginePlaying,
-                savedPositionMs: pos,
-                isFinished: finishedChapterIDs.contains(ch.id),
-                isVIP: ch.title.uppercased().contains("VIP"),
-                downloadState: dlState
+
+            if isShowingDownloadedOnly && dlState == .notDownloaded && !isDeleting {
+                continue
+            }
+
+            let isCurrent = (ch.id == currentPlayingChapterID)
+            let cachedPos = progressMap[ch.id] ?? 0
+            let pos: Int
+            if isCurrent, let livePos = currentPlayingPositionMs, livePos > 0 {
+                pos = livePos
+            } else {
+                pos = cachedPos
+            }
+
+            results.append(
+                ChapterRowSnapshot(
+                    chapter: ch,
+                    displayIndex: ch.index + 1,
+                    isCurrentPlayingChapter: isCurrent,
+                    isEnginePlaying: isCurrent && isEnginePlaying,
+                    savedPositionMs: pos,
+                    isFinished: finishedChapterIDs.contains(ch.id),
+                    isVIP: ch.title.uppercased().contains("VIP"),
+                    downloadState: dlState,
+                    downloadedBytes: dlBytes,
+                    isDeleting: isDeleting,
+                    downloadStatusNote: statusNote
+                )
             )
         }
+        return results
+    }
+
+    /// 修复 Bug 2：定位当前播放或上次收听章节（自动退出已下载过滤/搜索词并切换到目标章节所在的百章分段）
+    func prepareToLocateChapter(
+        currentPlayingChapterID: String?,
+        savedChapterID: String?,
+        savedChapterIndex: Int?
+    ) -> (targetID: String, didSwitchContext: Bool)? {
+        guard !chapters.isEmpty else { return nil }
+        let targetIndex: Int
+        if let playingID = currentPlayingChapterID,
+           let idx = chapters.firstIndex(where: { $0.id == playingID }) {
+            targetIndex = idx
+        } else if let savedID = savedChapterID,
+                  let idx = chapters.firstIndex(where: { $0.id == savedID }) {
+            targetIndex = idx
+        } else if let savedOneBased = savedChapterIndex,
+                  savedOneBased > 0,
+                  chapters.indices.contains(savedOneBased - 1) {
+            targetIndex = savedOneBased - 1
+        } else {
+            return nil
+        }
+
+        let targetChapter = chapters[targetIndex]
+        let targetSegIdx = targetIndex / 100
+        var didSwitch = false
+
+        if !chapterSearchKeyword.isEmpty {
+            chapterSearchKeyword = ""
+            didSwitch = true
+        }
+        if isShowingDownloadedOnly {
+            isShowingDownloadedOnly = false
+            didSwitch = true
+        }
+        if segments.indices.contains(targetSegIdx) && selectedSegmentIndex != targetSegIdx {
+            selectedSegmentIndex = targetSegIdx
+            didSwitch = true
+        }
+        return (targetChapter.id, didSwitch)
     }
 
     func toggleFinished(chapterID: String) {
@@ -248,44 +408,47 @@ final class BookDetailModel {
         }
     }
 
-    func switchSource(
-        to target: BookRef,
-        currentChapterIndex: Int,
-        currentChapterTitle: String,
-        in context: ModelContext?
-    ) async -> Int {
-        currentBookRef = target
-        await loadChaptersIfNeeded(forceRefresh: true)
-        let matchedIndex = Self.matchChapterIndexForSourceSwitch(
-            currentIndex: currentChapterIndex,
-            currentTitle: currentChapterTitle,
-            targetChapters: chapters
+    func startOrRetryChapterDownload(_ snap: ChapterRowSnapshot) {
+        let bookID = currentBookRef.id
+        let realState = DownloadManager.shared.downloadState(bookID: bookID, chapterID: snap.chapter.id)
+        if realState == .failed {
+            if DownloadManager.shared.retryFailedChapter(bookID: bookID, chapterID: snap.chapter.id) {
+                DSHapticPolicy.fire(.selection)
+                BannerCenter.shared.show("已重新加入下载队列", kind: .info, bypassDeduplication: true)
+                return
+            }
+        }
+        do {
+            let added = try DownloadManager.shared.enqueueChaptersWithCheck([snap.chapter], for: currentBookRef, kind: "manual")
+            DSHapticPolicy.fire(.success)
+            BannerCenter.shared.show(
+                added > 0 ? "已加入下载 1 章" : "该章已在下载队列中",
+                kind: added > 0 ? .success : .info,
+                bypassDeduplication: true
+            )
+        } catch {
+            DSHapticPolicy.fire(.error)
+            BannerCenter.shared.show(error.localizedDescription, kind: .error)
+        }
+    }
+
+    func confirmDeleteChapterDownload(_ snap: ChapterRowSnapshot) {
+        let removed = DownloadManager.shared.invalidateLocalFile(
+            bookID: currentBookRef.id,
+            chapterID: snap.chapter.id
         )
-        let sourceName = SourceStore.shared.sourceName(for: target.sourceID)
-        BannerCenter.shared.show("已切换到 \(sourceName)，进度保持在第 \(matchedIndex + 1) 章", kind: .success)
-        return matchedIndex
+        DSHapticPolicy.fire(.warning)
+        BannerCenter.shared.show(
+            removed ? "已删除第 \(snap.displayIndex) 章离线文件" : "离线文件不存在，已同步状态",
+            kind: .info,
+            bypassDeduplication: true
+        )
     }
 
-    func currentBookDownloadMap() -> [String: DownloadItem] {
-        guard let ctx = DownloadManager.shared.modelContext else { return [:] }
-        let bid = currentBookRef.id
-        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.bookID == bid })
-        let items = (try? ctx.fetch(desc)) ?? []
-        var map: [String: DownloadItem] = [:]
-        for item in items {
-            map[item.id] = item
-        }
-        return map
-    }
-
-    func handleChapterDownloadTap(_ snap: ChapterRowSnapshot) {
-        if snap.downloadState == .completed {
-            DownloadManager.shared.invalidateLocalFile(bookID: currentBookRef.id, chapterID: snap.chapter.id)
-            BannerCenter.shared.show("已删除该章离线文件", kind: .info)
-        } else {
-            DownloadManager.shared.enqueueChapters([snap.chapter], for: currentBookRef, kind: "manual")
-            BannerCenter.shared.show("已加入下载 1 章", kind: .success)
-        }
+    func confirmClearAllBookDownloads() {
+        DownloadManager.shared.removeDownloads(forBookID: currentBookRef.id)
+        DSHapticPolicy.fire(.warning)
+        BannerCenter.shared.show("已清空《\(currentBookRef.title)》全部离线章节", kind: .info, bypassDeduplication: true)
     }
 
     func enqueueRange(_ startOneBased: Int, _ endOneBased: Int) {
@@ -294,41 +457,32 @@ final class BookDetailModel {
         let e = min(chapters.count, endOneBased)
         guard s < e else { return }
         let slice = Array(chapters[s..<e])
-        DownloadManager.shared.enqueueChapters(slice, for: currentBookRef, kind: "manual")
-        DSHapticPolicy.fire(.success)
-        BannerCenter.shared.show("已加入下载 \(slice.count) 章", kind: .success)
+        do {
+            let added = try DownloadManager.shared.enqueueChaptersWithCheck(slice, for: currentBookRef, kind: "manual")
+            DSHapticPolicy.fire(.success)
+            BannerCenter.shared.show(
+                added > 0 ? "已加入下载 \(added) 章" : "所选区间章节均已下载或在队列中",
+                kind: added > 0 ? .success : .info,
+                bypassDeduplication: true
+            )
+        } catch {
+            DSHapticPolicy.fire(.error)
+            BannerCenter.shared.show(error.localizedDescription, kind: .error)
+        }
     }
 
-    func toggleShelfMembership(savedBook: Book?, libraryStore: LibraryStore, context: ModelContext) {
-        if let existing = savedBook {
-            if existing.inShelf {
-                libraryStore.removeFromShelfDeferred([existing])
-            } else {
-                existing.inShelf = true
-                try? context.save()
-                DSHapticPolicy.fire(.success)
-                BannerCenter.shared.show("已加入书架", kind: .success)
-                libraryStore.refreshNow()
-            }
-        } else {
-            let ref = currentBookRef
-            let b = Book(
-                id: ref.id,
-                sourceID: ref.sourceID,
-                bookURL: ref.bookURL,
-                title: ref.title,
-                author: ref.author,
-                cover: ref.cover,
-                intro: ref.intro,
-                inShelf: true,
-                totalChapters: chapters.count
-            )
-            context.insert(b)
-            try? context.save()
-            DSHapticPolicy.fire(.success)
-            BannerCenter.shared.show("已加入书架", kind: .success)
-            libraryStore.refreshNow()
-        }
+    func toggleShelfMembership(libraryStore: LibraryStore, context: ModelContext) {
+        let nowInShelf = libraryStore.toggleShelfImmediate(
+            for: currentBookRef,
+            totalChapters: chapters.count,
+            context: context
+        )
+        DSHapticPolicy.fire(nowInShelf ? .success : .selection)
+        BannerCenter.shared.show(
+            nowInShelf ? "已加入书架" : "已从书架移除",
+            kind: nowInShelf ? .success : .info,
+            bypassDeduplication: true
+        )
     }
 }
 

@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import SwiftData
 @testable import DSNovel
 
 final class PlayerProOptimizationTests: XCTestCase {
@@ -109,5 +110,23 @@ final class PlayerProOptimizationTests: XCTestCase {
         XCTAssertEqual(PlayerAudioPipeline.linearGainFromDecibels(0), 1.0, accuracy: 0.001)
         XCTAssertEqual(PlayerAudioPipeline.linearGainFromDecibels(6), 1.995, accuracy: 0.01)
         XCTAssertEqual(PlayerAudioPipeline.linearGainFromDecibels(12), 3.981, accuracy: 0.01)
+    }
+
+    // MARK: - 6. 验证全屏播放器爱心收藏按钮连续快速点击 10 次不会因延迟撤销或去重而失效
+
+    @MainActor
+    func testRepeatedHeartFavoriteToggleRemainsConsistent() throws {
+        let container = try TestContainer.make()
+        let ctx = container.mainContext
+        let store = LibraryStore.shared
+        store.modelContext = ctx
+        let bookRef = BookRef(sourceID: "xm", bookURL: "https://e.com/fanren", title: "凡人修仙传")
+
+        for i in 0..<10 {
+            let expectedInShelf = (i % 2 == 0)
+            let actual = store.toggleShelfImmediate(for: bookRef, totalChapters: 2115, context: ctx)
+            XCTAssertEqual(actual, expectedInShelf, "第 \(i + 1) 次点击爱心后收藏状态应为 \(expectedInShelf)")
+            XCTAssertEqual(store.isBookInShelf(bookRef.id, fallbackContext: ctx), expectedInShelf)
+        }
     }
 }

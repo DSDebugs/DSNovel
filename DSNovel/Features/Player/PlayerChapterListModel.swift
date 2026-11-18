@@ -2,8 +2,8 @@ import Foundation
 import Observation
 import SwiftData
 
-/// 播放器目录下载与分段模型（§4.2 & §6.2.7）：
-/// 封装章节目录下载状态映射、单章即点即下、剩余章节批量下载与离线过滤，确保 ChapterListView 零集合运算。
+/// 播放器目录下载与分段模型：
+/// 统一复用 DownloadManager.shared 的响应式状态快照与 ChapterProgressCache 实时进度，确保播放器目录与书籍详情页 100% 状态同步。
 @MainActor
 @Observable
 final class PlayerChapterListModel {
@@ -23,42 +23,60 @@ final class PlayerChapterListModel {
         self.currentChapterID = currentChapterID
     }
 
-    var snapshots: [ChapterRowSnapshot] {
-        chapters.map { ch in
-            let itemID = "\(book.id)::\(ch.id)"
-            let dl = downloadItems[itemID]
-            let dlState: ChapterDownloadState
-            if let dl {
-                switch dl.state {
-                case "completed":
-                    dlState = .completed
-                case "downloading", "queued", "waitingWiFi":
-                    dlState = .downloading(DownloadManager.shared.itemProgress[itemID] ?? 0.2)
-                case "failed":
-                    dlState = .failed
-                default:
-                    dlState = .notDownloaded
-                }
-            } else {
-                dlState = .notDownloaded
+    private func resolveDownloadState(for chapter: ChapterDTO, liveSnapshots: [String: DownloadItemSnapshot]) -> (state: ChapterDownloadState, bytes: Int64) {
+        let itemID = "\(book.id)::\(chapter.id)"
+        if let snap = liveSnapshots[itemID] {
+            switch snap.state {
+            case "completed":
+                return (snap.isFileVerified ? .completed : .notDownloaded, snap.bytes)
+            case "downloading", "queued", "waitingWiFi", "paused":
+                let p = DownloadManager.shared.itemProgress[itemID] ?? (snap.state == "downloading" ? 0.2 : 0.08)
+                return (.downloading(p), snap.bytes)
+            case "failed":
+                return (.failed, 0)
+            default:
+                return (.notDownloaded, 0)
             }
+        }
+        if let legacy = downloadItems[itemID] {
+            switch legacy.state {
+            case "completed":
+                return (.completed, legacy.bytes)
+            case "downloading", "queued", "waitingWiFi", "paused":
+                return (.downloading(DownloadManager.shared.itemProgress[itemID] ?? 0.2), legacy.bytes)
+            case "failed":
+                return (.failed, 0)
+            default:
+                return (.notDownloaded, 0)
+            }
+        }
+        return (.notDownloaded, 0)
+    }
+
+    var snapshots: [ChapterRowSnapshot] {
+        let liveMap = DownloadManager.shared.bookSnapshots(for: book.id)
+        let progressMap = ChapterProgressCache.shared.allProgressMap(for: book.id)
+        return chapters.map { ch in
+            let resolved = resolveDownloadState(for: ch, liveSnapshots: liveMap)
             return ChapterRowSnapshot(
                 chapter: ch,
                 displayIndex: ch.index + 1,
                 isCurrentPlayingChapter: ch.id == currentChapterID,
                 isEnginePlaying: false,
-                savedPositionMs: 0,
+                savedPositionMs: progressMap[ch.id] ?? 0,
                 isFinished: false,
                 isVIP: ch.title.uppercased().contains("VIP"),
-                downloadState: dlState
+                downloadState: resolved.state,
+                downloadedBytes: resolved.bytes
             )
         }
     }
 
     func reloadDownloadMap() {
+        DownloadManager.shared.rebuildSummariesFromContext()
         guard let ctx = DownloadManager.shared.modelContext else { return }
         let bid = book.id
-        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.bookID == bid })
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.bookID == bid && $0.kind == "manual" })
         let items = (try? ctx.fetch(desc)) ?? []
         var map: [String: DownloadItem] = [:]
         for item in items {
@@ -67,41 +85,58 @@ final class PlayerChapterListModel {
         downloadItems = map
     }
 
-    func visibleSnapshots(from browserModel: BookDetailModel, isPlaying: Bool) -> [ChapterRowSnapshot] {
+    func visibleSnapshots(from browserModel: BookDetailModel, isPlaying: Bool, currentPlayingPositionMs: Int? = nil) -> [ChapterRowSnapshot] {
+        _ = DownloadManager.shared.stateVersion
         let base = browserModel.visibleChapterSnapshots(
             currentPlayingChapterID: currentChapterID,
             isEnginePlaying: isPlaying,
-            downloadItems: downloadItems
+            currentPlayingPositionMs: currentPlayingPositionMs,
+            forceAllSegmentsWhenFiltered: onlyDownloadedFilter
         )
         guard onlyDownloadedFilter else { return base }
         return base.filter { $0.downloadState == .completed }
     }
 
-    func toggleDownload(_ snap: ChapterRowSnapshot) {
-        let itemID = "\(book.id)::\(snap.chapter.id)"
-        if snap.downloadState == .completed {
-            DownloadManager.shared.invalidateLocalFile(bookID: book.id, chapterID: snap.chapter.id)
-            BannerCenter.shared.show("已删除该章离线文件", kind: .info)
-        } else if snap.downloadState == .failed, let failedItem = downloadItems[itemID] {
-            DownloadManager.shared.retryFailedItem(failedItem)
-            BannerCenter.shared.show("已重新加入下载队列", kind: .info)
-        } else {
-            do {
-                _ = try DownloadManager.shared.enqueueChaptersWithCheck([snap.chapter], for: book, kind: "manual")
-                DSHapticPolicy.fire(.success)
-                BannerCenter.shared.show("已加入下载 1 章", kind: .success)
-            } catch {
-                DSHapticPolicy.fire(.error)
-                BannerCenter.shared.show(error.localizedDescription, kind: .error)
+    func confirmDeleteDownload(_ snap: ChapterRowSnapshot) {
+        let removed = DownloadManager.shared.invalidateLocalFile(bookID: book.id, chapterID: snap.chapter.id)
+        reloadDownloadMap()
+        DSHapticPolicy.fire(.warning)
+        BannerCenter.shared.show(
+            removed ? "已删除第 \(snap.displayIndex) 章离线文件" : "离线文件不存在，已同步状态",
+            kind: .info,
+            bypassDeduplication: true
+        )
+    }
+
+    func startOrRetryDownload(_ snap: ChapterRowSnapshot) {
+        if snap.downloadState == .failed {
+            if DownloadManager.shared.retryFailedChapter(bookID: book.id, chapterID: snap.chapter.id) {
+                DSHapticPolicy.fire(.selection)
+                BannerCenter.shared.show("已重新加入下载队列", kind: .info, bypassDeduplication: true)
+                reloadDownloadMap()
+                return
             }
+        }
+        do {
+            let added = try DownloadManager.shared.enqueueChaptersWithCheck([snap.chapter], for: book, kind: "manual")
+            DSHapticPolicy.fire(.success)
+            BannerCenter.shared.show(
+                added > 0 ? "已加入下载 1 章" : "该章已在下载队列中",
+                kind: added > 0 ? .success : .info,
+                bypassDeduplication: true
+            )
+        } catch {
+            DSHapticPolicy.fire(.error)
+            BannerCenter.shared.show(error.localizedDescription, kind: .error)
         }
         reloadDownloadMap()
     }
 
     func downloadRemaining() {
+        let liveMap = DownloadManager.shared.bookSnapshots(for: book.id)
         let remaining = chapters.filter { ch in
             let itemID = "\(book.id)::\(ch.id)"
-            return downloadItems[itemID]?.state != "completed"
+            return liveMap[itemID]?.state != "completed"
         }
         guard !remaining.isEmpty else {
             BannerCenter.shared.show("全部章节均已离线下载", kind: .info)

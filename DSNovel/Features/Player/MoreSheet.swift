@@ -18,7 +18,6 @@ struct MoreSheet: View {
     @Bindable var player: PlayerEngine
     private let onOpenAudioEffects: () -> Void
     private let onOpenDownloads: () -> Void
-    private let onSwitchSource: () -> Void
     private let onOpenBookDetail: () -> Void
     private let onClose: () -> Void
 
@@ -26,14 +25,12 @@ struct MoreSheet: View {
         player: PlayerEngine = .shared,
         onOpenAudioEffects: @escaping () -> Void = {},
         onOpenDownloads: @escaping () -> Void = {},
-        onSwitchSource: @escaping () -> Void = {},
         onOpenBookDetail: @escaping () -> Void = {},
         onClose: @escaping () -> Void
     ) {
         self.player = player
         self.onOpenAudioEffects = onOpenAudioEffects
         self.onOpenDownloads = onOpenDownloads
-        self.onSwitchSource = onSwitchSource
         self.onOpenBookDetail = onOpenBookDetail
         self.onClose = onClose
     }
@@ -103,19 +100,12 @@ struct MoreSheet: View {
                         .onChange(of: player.skipOutroSec) { _, _ in player.saveBookAudioSettings() }
                 }
 
-                Section("输出、换源与书籍信息") {
+                Section("输出与书籍信息") {
                     HStack {
                         Label("AirPlay 无线音频输出", systemImage: "airplayaudio")
                         Spacer()
                         AirPlayRoutePickerRepresentable()
                             .frame(width: 36, height: 36)
-                    }
-
-                    Button {
-                        onClose()
-                        onSwitchSource()
-                    } label: {
-                        Label("播放器内无缝切换书源", systemImage: "arrow.triangle.2.circlepath")
                     }
 
                     Button {

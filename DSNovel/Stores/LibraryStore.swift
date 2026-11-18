@@ -118,6 +118,7 @@ final class LibraryStore {
     }
 
     private(set) var hasLoadedOnce: Bool = false
+    private(set) var allKnownBooksByID: [String: Book] = [:]
     private(set) var allShelfBooks: [Book] = []
     private(set) var shelfBookIDs: Set<String> = []
     private(set) var shelfBooks: [Book] = []
@@ -155,7 +156,7 @@ final class LibraryStore {
     func scheduleRefresh() {
         throttleTask?.cancel()
         throttleTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
             self?.refreshNow()
         }
@@ -163,9 +164,7 @@ final class LibraryStore {
 
     func refreshNow() {
         guard let ctx = modelContext else { return }
-        let shelfDesc = FetchDescriptor<Book>(
-            predicate: #Predicate<Book> { $0.inShelf == true }
-        )
+        let allBooksDesc = FetchDescriptor<Book>()
         let historyDesc = FetchDescriptor<Book>(
             predicate: #Predicate<Book> { $0.lastPlayedAt != nil },
             sortBy: [SortDescriptor(\Book.lastPlayedAt, order: .reverse)]
@@ -174,10 +173,17 @@ final class LibraryStore {
             sortBy: [SortDescriptor(\ShelfCategory.order)]
         )
 
-        let rawShelf = (try? ctx.fetch(shelfDesc)) ?? []
+        let rawAllBooks = (try? ctx.fetch(allBooksDesc)) ?? []
         let rawHistory = (try? ctx.fetch(historyDesc)) ?? []
         categories = (try? ctx.fetch(catDesc)) ?? []
 
+        var byID: [String: Book] = [:]
+        for b in rawAllBooks {
+            byID[b.id] = b
+        }
+        allKnownBooksByID = byID
+
+        let rawShelf = rawAllBooks.filter { $0.inShelf }
         allShelfBooks = rawShelf.filter { !hiddenBookIDs.contains($0.id) }
         shelfBookIDs = Set(allShelfBooks.map(\.id))
         hasLoadedOnce = true
@@ -185,24 +191,142 @@ final class LibraryStore {
 
         continueBook = visibleHistory.first(where: { ($0.lastChapterID != nil) || $0.lastPositionMs > 0 }) ?? visibleHistory.first
         let continueID = continueBook?.id
-        // 最近在听仅展示未加入书架且非继续收听主卡的历史书籍（E-01）
         recentBooks = Array(visibleHistory.filter { $0.id != continueID && !$0.inShelf }.prefix(8))
 
         recomputeDerived()
         scheduleBackfillChapterCountsIfNeeded()
     }
 
+    /// 查找任意书籍的持久化记录（即使该书已被移出书架或处于延迟撤销状态，仍保留其播放进度供书籍详情页使用）
+    func book(for bookID: String?, fallbackContext: ModelContext? = nil) -> Book? {
+        guard let bookID, !bookID.isEmpty else { return nil }
+        if let cached = allKnownBooksByID[bookID] {
+            return cached
+        }
+        if let ctx = fallbackContext ?? modelContext {
+            let desc = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
+            return try? ctx.fetch(desc).first
+        }
+        return nil
+    }
+
+    func isBookInShelf(_ bookID: String?, fallbackContext: ModelContext? = nil) -> Bool {
+        guard let bookID, !bookID.isEmpty else { return false }
+        if hiddenBookIDs.contains(bookID) {
+            return false
+        }
+        if shelfBookIDs.contains(bookID) {
+            return true
+        }
+        if let ctx = fallbackContext ?? modelContext {
+            let desc = FetchDescriptor<Book>(
+                predicate: #Predicate<Book> { $0.id == bookID && $0.inShelf == true }
+            )
+            if let existing = try? ctx.fetch(desc).first {
+                return existing.inShelf
+            }
+        }
+        return false
+    }
+
+    @discardableResult
+    func toggleShelfImmediate(
+        for bookRef: BookRef,
+        totalChapters: Int = 0,
+        context: ModelContext? = nil
+    ) -> Bool {
+        let resolvedContext = context ?? modelContext
+        if modelContext == nil, let resolvedContext {
+            modelContext = resolvedContext
+        }
+        guard let ctx = resolvedContext else { return false }
+
+        let targetID = bookRef.id
+        let wasHidden = hiddenBookIDs.contains(targetID)
+        if wasHidden {
+            hiddenBookIDs.remove(targetID)
+            BannerCenter.shared.cancelPendingUndoWithoutCommit()
+        }
+
+        let desc = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == targetID })
+        let existing = (try? ctx.fetch(desc))?.first
+
+        let currentlyInShelf: Bool
+        if let existing {
+            currentlyInShelf = existing.inShelf && !wasHidden
+        } else {
+            currentlyInShelf = false
+        }
+
+        let nextInShelf = !currentlyInShelf
+        if let existing {
+            existing.inShelf = nextInShelf
+            if nextInShelf {
+                existing.addedAt = .now
+                if existing.cover.isEmpty && !bookRef.cover.isEmpty {
+                    existing.cover = bookRef.cover
+                }
+                if existing.author.isEmpty && !bookRef.author.isEmpty {
+                    existing.author = bookRef.author
+                }
+                if totalChapters > 0 && existing.totalChapters == 0 {
+                    existing.totalChapters = totalChapters
+                }
+            }
+        } else if nextInShelf {
+            let newBook = Book(
+                id: bookRef.id,
+                sourceID: bookRef.sourceID,
+                bookURL: bookRef.bookURL,
+                title: bookRef.title,
+                author: bookRef.author,
+                cover: bookRef.cover,
+                intro: bookRef.intro,
+                inShelf: true,
+                addedAt: .now,
+                totalChapters: max(totalChapters, bookRef.chapterCount)
+            )
+            ctx.insert(newBook)
+        }
+
+        try? ctx.save()
+        refreshNow()
+        return nextInShelf
+    }
+
     func recomputeDerived(downloadedBookIDs: Set<String>? = nil) {
+        let dlSummaries = DownloadManager.shared.summariesByBookID
         let dlIDs = downloadedBookIDs ?? Set(
-            DownloadManager.shared.summariesByBookID.values
-                .filter { $0.completedCount > 0 }
+            dlSummaries.values
+                .filter { $0.completedCount > 0 || $0.activeCount > 0 }
                 .map(\.bookID)
         )
+
+        // 构建完整的已下载书籍候选集（含已加书架及未加书架但已下载章节的书籍）
+        var downloadedCandidates: [Book] = allShelfBooks.filter { dlIDs.contains($0.id) }
+        let shelfIDSet = Set(downloadedCandidates.map(\.id))
+        for bid in dlIDs where !shelfIDSet.contains(bid) && !hiddenBookIDs.contains(bid) {
+            if let known = allKnownBooksByID[bid] {
+                downloadedCandidates.append(known)
+            } else if let sum = dlSummaries[bid] {
+                let parts = bid.components(separatedBy: "::")
+                let bURL = parts.count > 1 ? parts.dropFirst().joined(separator: "::") : bid
+                let transient = Book(
+                    id: bid,
+                    sourceID: sum.sourceID,
+                    bookURL: bURL,
+                    title: sum.bookTitle,
+                    inShelf: false,
+                    totalChapters: max(sum.totalCount, ChapterCacheStore.loadChapters(for: bid)?.count ?? 0)
+                )
+                downloadedCandidates.append(transient)
+            }
+        }
 
         var counts: [LibraryFilter: Int] = [:]
         counts[.all] = allShelfBooks.count
         counts[.inProgress] = allShelfBooks.filter { Self.matchesFilter($0, filter: .inProgress, downloadedBookIDs: dlIDs) }.count
-        counts[.downloaded] = allShelfBooks.filter { Self.matchesFilter($0, filter: .downloaded, downloadedBookIDs: dlIDs) }.count
+        counts[.downloaded] = downloadedCandidates.count
         let upd = allShelfBooks.filter { Self.matchesFilter($0, filter: .updated, downloadedBookIDs: dlIDs) }.count
         counts[.updated] = upd
         updatedCount = upd
@@ -211,8 +335,13 @@ final class LibraryStore {
         }
         filterCounts = counts
 
-        let filtered = allShelfBooks.filter {
-            Self.matchesFilter($0, filter: selectedFilter, downloadedBookIDs: dlIDs)
+        let filtered: [Book]
+        if selectedFilter == .downloaded {
+            filtered = downloadedCandidates
+        } else {
+            filtered = allShelfBooks.filter {
+                Self.matchesFilter($0, filter: selectedFilter, downloadedBookIDs: dlIDs)
+            }
         }
         shelfBooks = Self.sortBooks(filtered, by: sortOrder)
     }
@@ -286,7 +415,6 @@ final class LibraryStore {
         }
     }
 
-    /// T3-03 检查更新：并发上限 3，同一本书 5 分钟内不重复请求，章节数增加置 hasUpdate = true
     @discardableResult
     func checkUpdates(now: Date = .now) async -> Int {
         guard !isCheckingUpdates else { return 0 }
@@ -370,7 +498,6 @@ final class LibraryStore {
         refreshNow()
     }
 
-    /// T3-03 合并三处 backfillMissingChapterCountsIfNeeded 为 Store 内单点 1 秒节流
     private func scheduleBackfillChapterCountsIfNeeded() {
         backfillTask?.cancel()
         backfillTask = Task { [weak self] in
@@ -407,7 +534,7 @@ final class LibraryStore {
             },
             onCommit: { [weak self] in
                 guard let self, let ctx = self.modelContext else { return }
-                for b in books {
+                for b in books where self.hiddenBookIDs.contains(b.id) {
                     if b.lastPlayedAt != nil {
                         b.inShelf = false
                     } else {

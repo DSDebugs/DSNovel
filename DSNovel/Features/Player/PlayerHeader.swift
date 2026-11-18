@@ -1,12 +1,15 @@
 import SwiftUI
 
+/// 全屏播放器顶栏（已按实测反馈优化）：
+/// 1. 彻底移除顶部小横杠（Grabber Capsule），让整体视觉更纯净并释放顶部纵向空间；
+/// 2. 书源胶囊改为纯静态名称展示（移除切换书源点击交互）；
+/// 3. 保留音质/离线状态徽标与睡眠倒计时胶囊。
 struct PlayerHeader: View {
     let sourceName: String
     let streamBadgeText: String
     let sleepOption: SleepTimerOption
     let sleepRemainingSec: Int
     private let onDismiss: () -> Void
-    private let onOpenSourceSwitch: () -> Void
     private let onOpenAudioEffects: () -> Void
     private let onOpenSleepSheet: () -> Void
     private let onOpenMoreSheet: () -> Void
@@ -17,7 +20,6 @@ struct PlayerHeader: View {
         sleepOption: SleepTimerOption,
         sleepRemainingSec: Int,
         onDismiss: @escaping () -> Void,
-        onOpenSourceSwitch: @escaping () -> Void = {},
         onOpenAudioEffects: @escaping () -> Void = {},
         onOpenSleepSheet: @escaping () -> Void,
         onOpenMoreSheet: @escaping () -> Void
@@ -27,111 +29,105 @@ struct PlayerHeader: View {
         self.sleepOption = sleepOption
         self.sleepRemainingSec = sleepRemainingSec
         self.onDismiss = onDismiss
-        self.onOpenSourceSwitch = onOpenSourceSwitch
         self.onOpenAudioEffects = onOpenAudioEffects
         self.onOpenSleepSheet = onOpenSleepSheet
         self.onOpenMoreSheet = onOpenMoreSheet
     }
 
     var body: some View {
-        VStack(spacing: Spacing.s2) {
-            Capsule()
-                .fill(Color.white.opacity(0.35))
-                .frame(width: 36, height: 5)
-                .padding(.top, Spacing.s2)
-                .accessibilityHidden(true)
+        HStack(spacing: Spacing.s2) {
+            Button(action: onDismiss) {
+                Image(systemName: "chevron.down")
+                    .font(DSTypography.rowTitle)
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(Circle().fill(Color.white.opacity(0.10)))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("收起播放器")
 
-            HStack(spacing: Spacing.s2) {
-                Button(action: onDismiss) {
-                    Image(systemName: "chevron.down")
-                        .font(DSTypography.rowTitle)
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(Circle().fill(Color.white.opacity(0.10)))
-                        .contentShape(Circle())
+            Spacer(minLength: 4)
+
+            HStack(spacing: 6) {
+                if !sourceName.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "waveform.circle.fill")
+                            .font(DSTypography.caption2)
+                            .foregroundStyle(.white.opacity(0.72))
+                        Text(sourceName)
+                            .lineLimit(1)
+                    }
+                    .font(DSTypography.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .padding(.horizontal, Spacing.s3)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.white.opacity(0.12)))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("当前音源 \(sourceName)")
+                }
+
+                Button(action: onOpenAudioEffects) {
+                    HStack(spacing: 3) {
+                        Image(systemName: streamBadgeText == "本地离线" ? "checkmark.circle.fill" : "sparkles")
+                            .font(DSTypography.caption2)
+                        Text(streamBadgeText)
+                            .lineLimit(1)
+                    }
+                    .font(DSTypography.caption2.weight(.semibold))
+                    .foregroundStyle(Color.dsAccent)
+                    .padding(.horizontal, Spacing.s3)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule().fill(Color.dsAccent.opacity(0.18))
+                    )
+                    .overlay(
+                        Capsule().strokeBorder(Color.dsAccent.opacity(0.45), lineWidth: 0.5)
+                    )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("收起播放器")
+                .accessibilityLabel("当前音质 \(streamBadgeText)，点击打开音质与音效设置")
 
-                Spacer(minLength: 4)
-
-                HStack(spacing: 6) {
-                    if !sourceName.isEmpty {
-                        Button(action: onOpenSourceSwitch) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "antenna.radiowaves.left.and.right")
-                                    .font(DSTypography.caption2)
-                                Text(sourceName)
-                                    .lineLimit(1)
-                            }
-                            .font(DSTypography.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .padding(.horizontal, Spacing.s2)
-                            .padding(.vertical, 5)
-                            .background(Capsule().fill(Color.white.opacity(0.14)))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("当前书源 \(sourceName)，点击切换书源")
-                    }
-
-                    Button(action: onOpenAudioEffects) {
-                        HStack(spacing: 3) {
-                            Image(systemName: streamBadgeText == "本地离线" ? "checkmark.circle.fill" : "waveform.badge.magnifyingglass")
-                                .font(DSTypography.caption2)
-                            Text(streamBadgeText)
+                if sleepOption != .off {
+                    let sleepLabel = sleepRemainingSec > 0
+                        ? PlaybackClock.formatSeconds(Double(sleepRemainingSec))
+                        : sleepOption.label
+                    Button(action: onOpenSleepSheet) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "moon.fill")
+                            Text(sleepLabel)
+                                .monospacedDigit()
                                 .lineLimit(1)
                         }
-                        .font(DSTypography.caption2.weight(.semibold))
-                        .foregroundStyle(Color.dsAccent)
+                        .font(DSTypography.caption.weight(.semibold))
+                        .foregroundStyle(.white)
                         .padding(.horizontal, Spacing.s2)
                         .padding(.vertical, 5)
-                        .background(
-                            Capsule().fill(Color.dsAccent.opacity(0.18))
-                        )
-                        .overlay(
-                            Capsule().strokeBorder(Color.dsAccent.opacity(0.45), lineWidth: 0.5)
-                        )
+                        .background(Capsule().fill(Color.white.opacity(0.18)))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("当前音质 \(streamBadgeText)，点击打开音质与音效设置")
-
-                    if sleepOption != .off {
-                        let sleepLabel = sleepRemainingSec > 0
-                            ? PlaybackClock.formatSeconds(Double(sleepRemainingSec))
-                            : sleepOption.label
-                        Button(action: onOpenSleepSheet) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "moon.fill")
-                                Text(sleepLabel)
-                                    .monospacedDigit()
-                                    .lineLimit(1)
-                            }
-                            .font(DSTypography.caption.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, Spacing.s2)
-                            .padding(.vertical, 5)
-                            .background(Capsule().fill(Color.white.opacity(0.18)))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("睡眠定时")
-                        .accessibilityValue("剩余 \(sleepLabel)")
-                    }
+                    .accessibilityLabel("睡眠定时")
+                    .accessibilityValue("剩余 \(sleepLabel)")
                 }
-
-                Spacer(minLength: 4)
-
-                Button(action: onOpenMoreSheet) {
-                    Image(systemName: "ellipsis")
-                        .font(DSTypography.rowTitle)
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(Circle().fill(Color.white.opacity(0.10)))
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("更多播放设置")
             }
-            .padding(.horizontal, Spacing.pageHorizontal)
+
+            Spacer(minLength: 4)
+
+            Button(action: onOpenMoreSheet) {
+                Image(systemName: "ellipsis")
+                    .font(DSTypography.rowTitle)
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(Circle().fill(Color.white.opacity(0.10)))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("更多播放设置")
         }
+        .padding(.horizontal, Spacing.pageHorizontal)
+        .padding(.top, Spacing.s1)
     }
 }

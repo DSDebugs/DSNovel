@@ -68,8 +68,8 @@ struct DSSourceBadge: View {
     }
 
     var body: some View {
-        HStack(spacing: Spacing.s2) {
-            DSSourceAvatar(name: name, size: 22)
+        HStack(spacing: Spacing.s1) {
+            DSSourceAvatar(name: name, size: 20)
 
             Text(name)
                 .font(DSTypography.subtitle.weight(.medium))
@@ -84,10 +84,12 @@ struct DSSourceBadge: View {
                 Text("\(latencyMs)ms")
                     .font(DSTypography.numericCaption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
         .padding(.horizontal, Spacing.s2)
-        .padding(.vertical, 4)
+        .padding(.vertical, 5)
         .background(
             Capsule(style: .continuous)
                 .fill(Color.dsSurfaceGrouped)

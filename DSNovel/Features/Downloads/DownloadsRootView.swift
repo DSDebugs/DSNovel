@@ -6,10 +6,16 @@ struct DownloadsRootView: View {
     @Query(sort: [SortDescriptor(\DownloadItem.createdAt, order: .reverse)])
     private var allItems: [DownloadItem]
     @State private var downloadManager = DownloadManager.shared
+    @State private var pendingDeleteSummary: DownloadSummary?
 
     init() {}
 
+    private func formatBytes(_ b: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, b), countStyle: .file)
+    }
+
     var body: some View {
+        let _ = downloadManager.stateVersion
         let partitioned = DownloadsDataHelper.partitionItems(allItems)
         let summaries = DownloadsDataHelper.sortedSummaries(downloadManager.summariesByBookID)
 
@@ -114,22 +120,24 @@ struct DownloadsRootView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(sum.bookTitle)
                                         .font(DSTypography.rowTitle)
-                                    Text("已下载 \(sum.completedCount) 章 · \(ByteCountFormatter.string(fromByteCount: sum.totalBytes, countStyle: .file))")
-                                        .font(DSTypography.numericCaption)
-                                        .foregroundStyle(.secondary)
+                                    HStack(spacing: Spacing.s2) {
+                                        Text("已下载 \(sum.completedCount) 章 · \(formatBytes(sum.totalBytes))")
+                                            .font(DSTypography.numericCaption)
+                                            .foregroundStyle(.secondary)
+                                        if sum.activeCount > 0 {
+                                            DSBadge("下载中 \(sum.activeCount)", style: .accent)
+                                        }
+                                        if sum.failedCount > 0 {
+                                            DSBadge("失败 \(sum.failedCount)", style: .danger)
+                                        }
+                                    }
                                 }
                                 Spacer()
                             }
                         }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
-                                DSHapticPolicy.fire(.warning)
-                                let pending = downloadManager.removeDownloads(forBookID: sum.bookID, deferred: true, scheduleTimer: false)
-                                BannerCenter.shared.showUndo(
-                                    "已删除《\(sum.bookTitle)》离线章节",
-                                    onUndo: { pending.cancel() },
-                                    onCommit: { pending.commitNow() }
-                                )
+                                pendingDeleteSummary = sum
                             } label: {
                                 Label("删除", systemImage: "trash")
                             }
@@ -142,8 +150,33 @@ struct DownloadsRootView: View {
         .scrollContentBackground(.hidden)
         .navigationTitle("下载管理")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            pendingDeleteSummary.map { "确认删除《\($0.bookTitle)》的 \($0.completedCount) 章离线音频（\(formatBytes($0.totalBytes))）？" } ?? "确认删除离线音频？",
+            isPresented: Binding(
+                get: { pendingDeleteSummary != nil },
+                set: { if !$0 { pendingDeleteSummary = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除离线章节", role: .destructive) {
+                if let sum = pendingDeleteSummary {
+                    DSHapticPolicy.fire(.warning)
+                    let pending = downloadManager.removeDownloads(forBookID: sum.bookID, deferred: true, scheduleTimer: false)
+                    BannerCenter.shared.showUndo(
+                        "已删除《\(sum.bookTitle)》离线章节",
+                        onUndo: { pending.cancel() },
+                        onCommit: { pending.commitNow() }
+                    )
+                }
+                pendingDeleteSummary = nil
+            }
+            Button("取消", role: .cancel) {
+                pendingDeleteSummary = nil
+            }
+        }
         .onAppear {
             downloadManager.modelContext = modelContext
+            downloadManager.reconcileCompletedFiles()
         }
     }
 }

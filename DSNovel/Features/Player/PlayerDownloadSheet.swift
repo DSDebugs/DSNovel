@@ -11,6 +11,7 @@ struct PlayerDownloadSheet: View {
     @State private var settings = AppSettingsStore.shared
     @State private var customStartChapter: Int = 1
     @State private var customEndChapter: Int = 30
+    @State private var showClearConfirm = false
     private let onOpenGlobalDownloads: () -> Void
     private let onClose: () -> Void
 
@@ -53,6 +54,7 @@ struct PlayerDownloadSheet: View {
     }
 
     var body: some View {
+        let _ = downloadManager.stateVersion
         let bookID = player.currentBookID
         let partitioned = DownloadsDataHelper.partitionItemsForBook(bookID, from: allItems)
         let totalCount = max(player.chapterQueue.count, 1)
@@ -193,19 +195,11 @@ struct PlayerDownloadSheet: View {
                 }
 
                 Section("存储与全局管理") {
-                    if !partitioned.completed.isEmpty, let bid = bookID {
+                    if !partitioned.completed.isEmpty {
                         Button(role: .destructive) {
-                            DSHapticPolicy.fire(.warning)
-                            let bookTitle = player.currentBook?.title ?? "本书"
-                            let pending = downloadManager.removeDownloads(forBookID: bid, deferred: true, scheduleTimer: false)
-                            BannerCenter.shared.showUndo(
-                                "已清理《\(bookTitle)》离线章节",
-                                onUndo: { pending.cancel() },
-                                onCommit: { pending.commitNow() }
-                            )
-                            onClose()
+                            showClearConfirm = true
                         } label: {
-                            Label("清理本书全部离线章节（5秒内可撤销）", systemImage: "trash")
+                            Label("清理本书全部离线章节（\(partitioned.completed.count) 章）", systemImage: "trash")
                         }
                     }
 
@@ -220,6 +214,26 @@ struct PlayerDownloadSheet: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(Color.dsSurfaceGrouped)
+            .confirmationDialog(
+                "确认清理《\(player.currentBook?.title ?? "本书")》全部 \(partitioned.completed.count) 章离线音频（\(fmtBytes(bookBytes))）？",
+                isPresented: $showClearConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("清理本书离线章节", role: .destructive) {
+                    if let bid = bookID {
+                        DSHapticPolicy.fire(.warning)
+                        let bookTitle = player.currentBook?.title ?? "本书"
+                        let pending = downloadManager.removeDownloads(forBookID: bid, deferred: true, scheduleTimer: false)
+                        BannerCenter.shared.showUndo(
+                            "已清理《\(bookTitle)》离线章节",
+                            onUndo: { pending.cancel() },
+                            onCommit: { pending.commitNow() }
+                        )
+                        onClose()
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            }
             .onAppear {
                 downloadManager.modelContext = modelContext
             }

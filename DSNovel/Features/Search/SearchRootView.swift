@@ -240,19 +240,18 @@ struct SearchRootView: View {
                     LazyVStack(spacing: Spacing.s2) {
                         ForEach(searchStore.displayedItems) { item in
                             let srcName = sourceStore.sourceName(for: item.primary.sourceID)
-                            let altBadge = item.alternatives.isEmpty ? srcName : "\(srcName) +\(item.alternatives.count)"
                             let model = BookCardModel(
                                 id: item.id,
                                 title: item.primary.title,
                                 author: item.primary.author,
-                                sourceName: altBadge,
+                                sourceName: srcName,
                                 coverURL: item.primary.cover,
                                 progressSubtitle: item.primary.discoverSubtitle
                             )
                             DSBookRow(
                                 model: model,
                                 onSelect: {
-                                    AppRouter.shared.open(.book(item.primary, alternatives: item.alternatives))
+                                    AppRouter.shared.open(.book(item.primary))
                                 }
                             )
                             .padding(.horizontal, Spacing.pageHorizontal)

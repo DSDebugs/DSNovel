@@ -7,10 +7,10 @@ struct BookHeader: View {
     let sourceLatencyMs: Int?
     let requiresLogin: Bool
     let isLoggedIn: Bool
-    let alternativesCount: Int
     let totalChapters: Int
+    let downloadedCount: Int
     let statusText: String
-    private let onTapSwitchSource: () -> Void
+    private let onTapDownloadedBadge: (() -> Void)?
     private let onTapLogin: () -> Void
     private let onTapNarrator: ((String) -> Void)?
     private let onCoverLoaded: (UIImage) -> Void
@@ -22,10 +22,10 @@ struct BookHeader: View {
         sourceLatencyMs: Int?,
         requiresLogin: Bool,
         isLoggedIn: Bool,
-        alternativesCount: Int,
         totalChapters: Int,
+        downloadedCount: Int = 0,
         statusText: String,
-        onTapSwitchSource: @escaping () -> Void,
+        onTapDownloadedBadge: (() -> Void)? = nil,
         onTapLogin: @escaping () -> Void,
         onTapNarrator: ((String) -> Void)? = nil,
         onCoverLoaded: @escaping (UIImage) -> Void = { _ in }
@@ -36,10 +36,10 @@ struct BookHeader: View {
         self.sourceLatencyMs = sourceLatencyMs
         self.requiresLogin = requiresLogin
         self.isLoggedIn = isLoggedIn
-        self.alternativesCount = alternativesCount
         self.totalChapters = totalChapters
+        self.downloadedCount = downloadedCount
         self.statusText = statusText
-        self.onTapSwitchSource = onTapSwitchSource
+        self.onTapDownloadedBadge = onTapDownloadedBadge
         self.onTapLogin = onTapLogin
         self.onTapNarrator = onTapNarrator
         self.onCoverLoaded = onCoverLoaded
@@ -50,15 +50,18 @@ struct BookHeader: View {
             DSCover(
                 url: book.cover,
                 title: book.title,
-                side: 128,
+                side: 120,
+                badges: downloadedCount > 0 ? [.downloaded] : [],
                 onImageLoaded: onCoverLoaded
             )
+            .shadow(color: .black.opacity(0.14), radius: 10, y: 4)
 
             VStack(alignment: .leading, spacing: Spacing.s2) {
                 Text(book.title)
                     .font(DSTypography.bookTitleLarge)
                     .foregroundStyle(.primary)
                     .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 if !book.author.isEmpty {
                     Button {
@@ -76,20 +79,33 @@ struct BookHeader: View {
                             Image(systemName: "chevron.right")
                                 .font(DSTypography.caption2)
                         }
-                        .font(DSTypography.subtitle)
+                        .font(DSTypography.subtitle.weight(.medium))
                         .foregroundStyle(Color.dsAccent)
                     }
                     .buttonStyle(.plain)
                 }
 
-                let metaParts = [
-                    statusText.isEmpty ? nil : statusText,
-                    totalChapters > 0 ? "共 \(totalChapters) 章" : nil
-                ].compactMap { $0 }
-                if !metaParts.isEmpty {
-                    Text(metaParts.joined(separator: " · "))
-                        .font(DSTypography.numericCaption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: Spacing.s2) {
+                    let metaParts = [
+                        statusText.isEmpty ? nil : statusText,
+                        totalChapters > 0 ? "共 \(totalChapters) 章" : nil
+                    ].compactMap { $0 }
+                    if !metaParts.isEmpty {
+                        Text(metaParts.joined(separator: " · "))
+                            .font(DSTypography.numericCaption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    if downloadedCount > 0 {
+                        Button {
+                            onTapDownloadedBadge?()
+                        } label: {
+                            DSBadge("已下 \(downloadedCount) 章", icon: "checkmark.circle.fill", style: .success)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("已下载 \(downloadedCount) 章，点击查看已下载章节")
+                    }
                 }
 
                 HStack(spacing: Spacing.s2) {
@@ -98,11 +114,6 @@ struct BookHeader: View {
                         health: sourceHealth,
                         latencyMs: sourceLatencyMs
                     )
-
-                    Button(action: onTapSwitchSource) {
-                        DSBadge("换源 · \(max(1, alternativesCount + 1))", icon: "arrow.triangle.2.circlepath", style: .neutral)
-                    }
-                    .buttonStyle(.plain)
 
                     if requiresLogin && !isLoggedIn {
                         Button(action: onTapLogin) {

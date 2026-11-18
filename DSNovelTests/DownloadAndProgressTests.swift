@@ -128,16 +128,13 @@ final class DownloadAndProgressTests: XCTestCase {
 
         XCTAssertEqual(manager.summariesByBookID[book.id]?.completedCount, 1)
         XCTAssertEqual(manager.summariesByBookID[book.id]?.totalBytes, 4096)
+        XCTAssertEqual(manager.downloadState(bookID: book.id, chapterID: firstDesc.chapterID), .completed)
 
-        // 5. 延迟删除：撤销后数据恢复，提交后彻底删除
-        let pending = manager.removeDownloads(forBookID: book.id, deferred: true, scheduleTimer: false)
-        XCTAssertNil(manager.summariesByBookID[book.id])
-        pending.cancel()
-        XCTAssertEqual(manager.summariesByBookID[book.id]?.completedCount, 1)
-
-        let pendingCommit = manager.removeDownloads(forBookID: book.id, deferred: true, scheduleTimer: false)
-        pendingCommit.commitNow()
-        XCTAssertNil(manager.summariesByBookID[book.id])
+        // 5. 单章删除后状态立即回退为 .notDownloaded（消除绿勾残留 Bug）
+        let deleted = manager.invalidateLocalFile(bookID: book.id, chapterID: firstDesc.chapterID)
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(manager.downloadState(bookID: book.id, chapterID: firstDesc.chapterID), .notDownloaded)
+        XCTAssertEqual(manager.summariesByBookID[book.id]?.completedCount ?? 0, 0)
     }
 
     // MARK: - T3-05 AppSettingsStore.resetAll 覆盖性与 LaunchBehavior 迁移
@@ -180,41 +177,56 @@ final class DownloadAndProgressTests: XCTestCase {
         XCTAssertEqual(SleepTimerOption.chaptersRemaining(3).label, "3 章后")
     }
 
-    // MARK: - T4-3 换源进度匹配算法与 ChapterRow 零重绘测试
+    // MARK: - 书籍详情页已下载章节优先展示、跨分段定位与 ChapterRow 零重绘测试
 
-    func testSourceSwitchChapterMatchingAndChapterRowEquatable() {
-        let targetChapters = [
-            ChapterDTO(index: 0, title: "序章 苏醒", url: "u0"),
-            ChapterDTO(index: 1, title: "第 1 章 绯红", url: "u1"),
-            ChapterDTO(index: 2, title: "第 2 章 占卜家", url: "u2")
-        ]
-        // 1. 标题相同匹配
-        let byTitle = BookDetailModel.matchChapterIndexForSourceSwitch(
-            currentIndex: 0,
-            currentTitle: "第 2 章 占卜家",
-            targetChapters: targetChapters
+    @MainActor
+    func testBookDetailDownloadPriorityCrossSegmentLocateAndChapterRowEquatable() {
+        let book = BookRef(sourceID: "xm", bookURL: "https://e.com/9zone", title: "第九特区")
+        let chapters = (0..<600).map { i in
+            ChapterDTO(index: i, title: "第 \(i + 1) 章", url: "https://e.com/ep/\(i + 1)", durationSec: 600)
+        }
+        let model = BookDetailModel(book: book)
+        model.applyChapters(chapters)
+
+        // 1. 当存在已下载章节时，进入页面默认开启 isShowingDownloadedOnly 优先展示已下载章节，并将分段对齐到第 502 章所在区间 (501–600, index 5)
+        model.applyInitialPresentationIfNeeded(
+            downloadedCount: 2,
+            activeDownloadCount: 0,
+            activeChapterID: chapters[501].id,
+            savedChapterID: nil,
+            savedChapterIndex: 502
         )
-        XCTAssertEqual(byTitle, 2)
+        XCTAssertTrue(model.isShowingDownloadedOnly)
+        XCTAssertEqual(model.selectedSegmentIndex, 5)
 
-        // 2. 序号相同匹配
-        let byIdx = BookDetailModel.matchChapterIndexForSourceSwitch(
-            currentIndex: 1,
-            currentTitle: "完全不同的标题",
-            targetChapters: targetChapters
+        // 2. 用户切到 1–100 分段或处于已下载章节视图时，点击定位按钮应自动切回第 502 章所在的 501–600 分段 (index 5)
+        model.selectedSegmentIndex = 0
+        model.isShowingDownloadedOnly = true
+        model.chapterSearchKeyword = "关键词"
+        let located = model.prepareToLocateChapter(
+            currentPlayingChapterID: chapters[501].id,
+            savedChapterID: nil,
+            savedChapterIndex: nil
         )
-        XCTAssertEqual(byIdx, 1)
+        XCTAssertEqual(located?.targetID, chapters[501].id)
+        XCTAssertEqual(located?.didSwitchContext, true)
+        XCTAssertFalse(model.isShowingDownloadedOnly)
+        XCTAssertEqual(model.chapterSearchKeyword, "")
+        XCTAssertEqual(model.selectedSegmentIndex, 5)
 
-        // 3. 超出范围时保持在合法末尾序号
-        let clamped = BookDetailModel.matchChapterIndexForSourceSwitch(
-            currentIndex: 99,
-            currentTitle: "不存在",
-            targetChapters: targetChapters
+        // 3. 实时播放秒数注入：正在播放第 502 章且实时进度为 33,000ms 时，快照应实时反映 33,000ms
+        let snaps = model.visibleChapterSnapshots(
+            currentPlayingChapterID: chapters[501].id,
+            isEnginePlaying: true,
+            currentPlayingPositionMs: 33_000
         )
-        XCTAssertEqual(clamped, 2)
+        let activeSnap = snaps.first(where: { $0.id == chapters[501].id })
+        XCTAssertEqual(activeSnap?.savedPositionMs, 33_000)
+        XCTAssertTrue(activeSnap?.subtitleText.contains("00:33") == true)
 
-        // 4. ChapterRow Equatable：非当前章节快照相等，推进播放时钟 20 次不触发非当前行重绘
+        // 4. ChapterRow Equatable：非当前章节快照相等，推进播放时钟不触发非当前行重绘
         let snapA = ChapterRowSnapshot(
-            chapter: targetChapters[0],
+            chapter: chapters[0],
             displayIndex: 1,
             isCurrentPlayingChapter: false,
             isEnginePlaying: true,
@@ -224,7 +236,7 @@ final class DownloadAndProgressTests: XCTestCase {
             downloadState: .notDownloaded
         )
         let snapB = ChapterRowSnapshot(
-            chapter: targetChapters[0],
+            chapter: chapters[0],
             displayIndex: 1,
             isCurrentPlayingChapter: false,
             isEnginePlaying: true,

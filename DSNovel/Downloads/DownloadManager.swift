@@ -4,6 +4,22 @@ import Network
 import SwiftData
 import UIKit
 
+struct DownloadItemSnapshot: Identifiable, Equatable, Hashable, Sendable {
+    var id: String // bookID + "::" + chapterID
+    var bookID: String
+    var bookTitle: String
+    var chapterID: String
+    var chapterTitle: String
+    var sourceID: String
+    var kind: String
+    var state: String
+    var localPath: String
+    var bytes: Int64
+    var retryCount: Int
+    var createdAt: Date
+    var isFileVerified: Bool
+}
+
 struct DownloadSummary: Equatable, Hashable, Sendable {
     var bookID: String
     var bookTitle: String
@@ -12,6 +28,7 @@ struct DownloadSummary: Equatable, Hashable, Sendable {
     var totalCount: Int
     var totalBytes: Int64
     var failedCount: Int
+    var activeCount: Int = 0
 }
 
 enum DownloadError: LocalizedError, Equatable, Sendable {
@@ -73,7 +90,7 @@ final class PendingRemoval {
     }
 }
 
-/// 下载与预缓存调度器（T3-04 增量汇总 / waitingWiFi / 磁盘预检 / 延迟删除 + T3-06 后台下载会话）
+/// 下载与预缓存调度器（全局单源状态同步 + 真实文件核验 + 二次确认删除支持）
 @MainActor
 @Observable
 final class DownloadManager {
@@ -92,8 +109,11 @@ final class DownloadManager {
         }
     }
 
+    private(set) var stateVersion: Int = 0
     private(set) var summariesByBookID: [String: DownloadSummary] = [:]
+    private(set) var snapshotsByBookID: [String: [String: DownloadItemSnapshot]] = [:]
     private(set) var itemProgress: [String: Double] = [:]
+    private(set) var deletingItemIDs: Set<String> = []
     private(set) var hiddenPendingRemovalBookIDs: Set<String> = []
     private(set) var isDiskInsufficient: Bool = false
 
@@ -171,11 +191,48 @@ final class DownloadManager {
         }
     }
 
+    private func verifyFileExists(localPath: String) -> Bool {
+        if localPath.isEmpty || localPath.hasPrefix("fixture/") {
+            return true
+        }
+        let url = downloadsRootDirectory.appendingPathComponent(localPath)
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
     func rebuildSummariesFromContext() {
         guard let ctx = modelContext else { return }
         let allItems = (try? ctx.fetch(FetchDescriptor<DownloadItem>())) ?? []
         var map: [String: DownloadSummary] = [:]
-        for item in allItems where item.kind == "manual" && !hiddenPendingRemovalBookIDs.contains(item.bookID) {
+        var snapMap: [String: [String: DownloadItemSnapshot]] = [:]
+        var removedStaleCompleted = false
+
+        for item in allItems {
+            if item.state == "completed" && !verifyFileExists(localPath: item.localPath) {
+                ctx.delete(item)
+                removedStaleCompleted = true
+                continue
+            }
+            guard item.kind == "manual", !hiddenPendingRemovalBookIDs.contains(item.bookID) else {
+                continue
+            }
+            let verified = (item.state == "completed") ? verifyFileExists(localPath: item.localPath) : false
+            let snap = DownloadItemSnapshot(
+                id: item.id,
+                bookID: item.bookID,
+                bookTitle: item.bookTitle,
+                chapterID: item.chapterID,
+                chapterTitle: item.chapterTitle,
+                sourceID: item.sourceID,
+                kind: item.kind,
+                state: item.state,
+                localPath: item.localPath,
+                bytes: item.bytes,
+                retryCount: item.retryCount,
+                createdAt: item.createdAt,
+                isFileVerified: verified
+            )
+            snapMap[item.bookID, default: [:]][item.id] = snap
+
             var entry = map[item.bookID] ?? DownloadSummary(
                 bookID: item.bookID,
                 bookTitle: item.bookTitle,
@@ -183,18 +240,55 @@ final class DownloadManager {
                 completedCount: 0,
                 totalCount: 0,
                 totalBytes: 0,
-                failedCount: 0
+                failedCount: 0,
+                activeCount: 0
             )
             entry.totalCount += 1
-            if item.state == "completed" {
+            if item.state == "completed" && verified {
                 entry.completedCount += 1
                 entry.totalBytes += item.bytes
             } else if item.state == "failed" {
                 entry.failedCount += 1
+            } else if item.state == "downloading" || item.state == "queued" || item.state == "waitingWiFi" || item.state == "paused" {
+                entry.activeCount += 1
             }
             map[item.bookID] = entry
         }
+
+        if removedStaleCompleted {
+            try? ctx.save()
+        }
         summariesByBookID = map
+        snapshotsByBookID = snapMap
+        stateVersion &+= 1
+        if self === DownloadManager.shared {
+            LibraryStore.shared.recomputeDerived()
+        }
+    }
+
+    func bookSnapshots(for bookID: String) -> [String: DownloadItemSnapshot] {
+        _ = stateVersion
+        guard !hiddenPendingRemovalBookIDs.contains(bookID) else { return [:] }
+        return snapshotsByBookID[bookID] ?? [:]
+    }
+
+    func downloadState(bookID: String, chapterID: String) -> ChapterDownloadState {
+        _ = stateVersion
+        guard !hiddenPendingRemovalBookIDs.contains(bookID),
+              let snap = snapshotsByBookID[bookID]?["\(bookID)::\(chapterID)"] else {
+            return .notDownloaded
+        }
+        switch snap.state {
+        case "completed":
+            return snap.isFileVerified ? .completed : .notDownloaded
+        case "downloading", "queued", "waitingWiFi", "paused":
+            let p = itemProgress[snap.id] ?? (snap.state == "downloading" ? 0.2 : 0.08)
+            return .downloading(p)
+        case "failed":
+            return .failed
+        default:
+            return .notDownloaded
+        }
     }
 
     func localFileURL(bookID: String, chapterID: String) -> URL? {
@@ -235,6 +329,18 @@ final class DownloadManager {
             if let existing = try? ctx.fetch(desc).first {
                 if kind == "manual" && existing.kind == "precache" {
                     existing.kind = "manual"
+                    added += 1
+                }
+                if existing.state == "failed" || existing.state == "paused" {
+                    existing.state = initialState
+                    existing.retryCount = 0
+                    added += 1
+                } else if existing.state == "completed" && !verifyFileExists(localPath: existing.localPath) {
+                    existing.localPath = ""
+                    existing.bytes = 0
+                    existing.state = initialState
+                    existing.retryCount = 0
+                    added += 1
                 }
                 continue
             }
@@ -291,22 +397,23 @@ final class DownloadManager {
     func reconcileCompletedFiles() {
         guard let ctx = modelContext else { return }
         let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.state == "completed" })
-        guard let items = try? ctx.fetch(desc), !items.isEmpty else { return }
+        guard let items = try? ctx.fetch(desc), !items.isEmpty else {
+            rebuildSummariesFromContext()
+            return
+        }
         var changed = false
         for item in items where !item.localPath.isEmpty {
-            let url = downloadsRootDirectory.appendingPathComponent(item.localPath)
-            if !FileManager.default.fileExists(atPath: url.path) {
+            if !verifyFileExists(localPath: item.localPath) {
                 ctx.delete(item)
                 changed = true
             }
         }
         if changed {
             try? ctx.save()
-            rebuildSummariesFromContext()
         }
+        rebuildSummariesFromContext()
     }
 
-    /// T3-06 重启对账：与后台 URLSession 中仍在运行的任务比对，无任务者回退为 queued
     func recoverInterruptedItems() {
         Task { @MainActor in
             let activeIDs = await transport.activeTaskItemIDs()
@@ -337,18 +444,60 @@ final class DownloadManager {
         try? ctx.save()
     }
 
-    func invalidateLocalFile(bookID: String, chapterID: String) {
-        guard let ctx = modelContext else { return }
+    @discardableResult
+    func invalidateLocalFile(bookID: String, chapterID: String) -> Bool {
+        guard let ctx = modelContext else { return false }
         let itemID = "\(bookID)::\(chapterID)"
+        deletingItemIDs.insert(itemID)
+        defer {
+            deletingItemIDs.remove(itemID)
+        }
+        transport.cancel(itemID: itemID)
+        itemProgress.removeValue(forKey: itemID)
+        removeResumeData(for: itemID)
+
         let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.id == itemID })
-        guard let item = try? ctx.fetch(desc).first else { return }
+        guard let item = try? ctx.fetch(desc).first else {
+            rebuildSummariesFromContext()
+            return false
+        }
         if !item.localPath.isEmpty {
             try? FileManager.default.removeItem(at: downloadsRootDirectory.appendingPathComponent(item.localPath))
         }
-        removeResumeData(for: itemID)
         ctx.delete(item)
         try? ctx.save()
         rebuildSummariesFromContext()
+        if self === DownloadManager.shared {
+            PlayerEngine.shared.handleLocalFileDeleted(bookID: bookID, chapterID: chapterID)
+        }
+        return true
+    }
+
+    @discardableResult
+    func retryFailedChapter(bookID: String, chapterID: String) -> Bool {
+        guard let ctx = modelContext else { return false }
+        let itemID = "\(bookID)::\(chapterID)"
+        let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.id == itemID })
+        guard let item = try? ctx.fetch(desc).first else { return false }
+        retryFailedItem(item)
+        return true
+    }
+
+    func retryFailedItems(forBookID bookID: String) {
+        guard let ctx = modelContext else { return }
+        let desc = FetchDescriptor<DownloadItem>(
+            predicate: #Predicate<DownloadItem> { $0.bookID == bookID && $0.state == "failed" }
+        )
+        let items = (try? ctx.fetch(desc)) ?? []
+        guard !items.isEmpty else { return }
+        let targetState = (AppSettingsStore.shared.wifiOnlyDownload && !isOnWiFi) ? "waitingWiFi" : "queued"
+        for item in items {
+            item.state = targetState
+            item.retryCount = 0
+        }
+        try? ctx.save()
+        rebuildSummariesFromContext()
+        pumpQueue()
     }
 
     func pauseItem(_ item: DownloadItem) async {
@@ -462,7 +611,6 @@ final class DownloadManager {
         }
     }
 
-    /// T3-04 延迟删除（5 秒后真正删文件与记录，可取消）
     @discardableResult
     func removeDownloads(forBookID bookID: String, deferred: Bool, scheduleTimer: Bool = true) -> PendingRemoval {
         if !deferred {
@@ -492,6 +640,7 @@ final class DownloadManager {
         guard let items = try? ctx.fetch(desc) else { return }
         for item in items {
             transport.cancel(itemID: item.id)
+            itemProgress.removeValue(forKey: item.id)
             removeResumeData(for: item.id)
             if !item.localPath.isEmpty {
                 let fileURL = downloadsRootDirectory.appendingPathComponent(item.localPath)
@@ -501,6 +650,9 @@ final class DownloadManager {
         }
         try? ctx.save()
         rebuildSummariesFromContext()
+        if self === DownloadManager.shared, let currentChap = PlayerEngine.shared.currentChapter {
+            PlayerEngine.shared.handleLocalFileDeleted(bookID: bookID, chapterID: currentChap.id)
+        }
     }
 
     func totalManualDownloadedBytes() -> Int64 {
@@ -594,7 +746,6 @@ final class DownloadManager {
         }
     }
 
-    /// T3-06 提交通道：构造请求并通过 `transport.start` 提交后台会话（不再使用 URLSession.shared.download）
     private func performDownload(for item: DownloadItem, stream: PlayStreamInfo) throws {
         guard let url = JsHostBridge.makeRequestURL(from: stream.url, relativeTo: item.chapterID) else {
             throw PluginError.parseFailed("无效音频地址")
@@ -635,6 +786,7 @@ final class DownloadManager {
         switch event {
         case .progress(let itemID, let fraction):
             itemProgress[itemID] = fraction
+            stateVersion &+= 1
 
         case .finished(let descriptor, let tempFileURL, let statusCode, let mimeType):
             await contextReady()

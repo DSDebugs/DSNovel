@@ -1,15 +1,16 @@
 import SwiftUI
 import UIKit
 
-/// 播放器沉浸封面组件（§2.2 & §4.2）：
-/// - 使用 GeometryReader 自适应计算 `min(w * 0.72, 280)` 适配小屏与大屏机型
-/// - 支持播放/暂停弹性缩放、双击封面快速播放/暂停，以及切章时的「上一章 / 下一章」短暂浮层反馈
+/// 播放器沉浸封面组件：
+/// - 播放态：封面立体浮起（1.0x）+ 背部双层声波光环呼吸扩散 + 右上角动态音频律动徽标；
+/// - 暂停态：封面柔和内收（0.86x）+ 背部光环收敛熄灭 + 封面中央浮现精致毛玻璃暂停徽章，一眼区分播放与暂停。
 struct PlayerCoverSection: View {
     @Environment(\.dsReduceMotion) private var reduceMotion
 
     let coverURL: String
     let bookTitle: String
     let bookID: String?
+    let ambientColor: Color
     let playbackState: PlaybackState
     let chapterSwitchHint: String?
     private let onDoubleTapPlayPause: () -> Void
@@ -19,6 +20,7 @@ struct PlayerCoverSection: View {
         coverURL: String,
         bookTitle: String,
         bookID: String?,
+        ambientColor: Color = .dsAccent,
         playbackState: PlaybackState,
         chapterSwitchHint: String? = nil,
         onDoubleTapPlayPause: @escaping () -> Void,
@@ -27,10 +29,15 @@ struct PlayerCoverSection: View {
         self.coverURL = coverURL
         self.bookTitle = bookTitle
         self.bookID = bookID
+        self.ambientColor = ambientColor
         self.playbackState = playbackState
         self.chapterSwitchHint = chapterSwitchHint
         self.onDoubleTapPlayPause = onDoubleTapPlayPause
         self.onImageLoaded = onImageLoaded
+    }
+
+    private var isPlaying: Bool {
+        playbackState == .playing
     }
 
     var body: some View {
@@ -40,17 +47,115 @@ struct PlayerCoverSection: View {
             reduceMotion: reduceMotion
         )
         GeometryReader { geo in
-            let adaptiveSide = min(max(geo.size.width * 0.72, 180), 280)
+            let adaptiveSide = min(max(geo.size.width * 0.68, 180), 264)
+            let cornerRadius = Radius.cover(forSide: adaptiveSide)
             ZStack {
-                DSCover(
-                    url: coverURL,
-                    title: bookTitle.isEmpty ? "有声书" : bookTitle,
-                    side: adaptiveSide,
-                    onImageLoaded: onImageLoaded
+                // 1. 封面背部柔和氛围背光（播放时饱满发散，暂停时收敛）
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                Color.dsAccent.opacity(isPlaying ? 0.46 : 0.10),
+                                ambientColor.opacity(isPlaying ? 0.58 : 0.14),
+                                Color.clear
+                            ],
+                            center: .center,
+                            startRadius: 12,
+                            endRadius: adaptiveSide * 0.72
+                        )
+                    )
+                    .frame(width: adaptiveSide * 1.32, height: adaptiveSide * 1.32)
+                    .scaleEffect(isPlaying ? 1.06 : 0.78)
+                    .blur(radius: isPlaying ? 18 : 10)
+                    .dsAnimation(Motion.smooth, value: isPlaying)
+
+                // 2. 播放态声波律动外环
+                if !reduceMotion {
+                    TimelineView(.periodic(from: .now, by: 1.0 / 24.0)) { context in
+                        let t = context.date.timeIntervalSinceReferenceDate
+                        let wave1 = isPlaying ? (1.0 + 0.045 * sin(t * 2.4)) : 0.86
+                        let wave2 = isPlaying ? (1.05 + 0.055 * cos(t * 1.8)) : 0.86
+                        ZStack {
+                            RoundedRectangle(cornerRadius: cornerRadius + 6, style: .continuous)
+                                .strokeBorder(
+                                    LinearGradient(
+                                        colors: [
+                                            Color.dsAccent.opacity(isPlaying ? 0.55 : 0.0),
+                                            Color.white.opacity(isPlaying ? 0.22 : 0.0),
+                                            Color.dsAccent.opacity(isPlaying ? 0.40 : 0.0)
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    lineWidth: 1.4
+                                )
+                                .frame(width: adaptiveSide + 12, height: adaptiveSide + 12)
+                                .scaleEffect(wave1)
+
+                            RoundedRectangle(cornerRadius: cornerRadius + 14, style: .continuous)
+                                .strokeBorder(
+                                    Color.white.opacity(isPlaying ? 0.14 : 0.0),
+                                    lineWidth: 1.0
+                                )
+                                .frame(width: adaptiveSide + 28, height: adaptiveSide + 28)
+                                .scaleEffect(wave2)
+                        }
+                    }
+                }
+
+                // 3. 专辑封面主体 + 状态角标/暂停浮层
+                ZStack {
+                    DSCover(
+                        url: coverURL,
+                        title: bookTitle.isEmpty ? "有声书" : bookTitle,
+                        side: adaptiveSide,
+                        onImageLoaded: onImageLoaded
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(
+                                isPlaying ? Color.white.opacity(0.28) : Color.white.opacity(0.12),
+                                lineWidth: isPlaying ? 1.0 : 0.5
+                            )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(Color.black.opacity(isPlaying ? 0.0 : 0.26))
+                    )
+
+                    // 暂停态中央精致半透明状态徽章
+                    if !isPlaying && playbackState != .buffering {
+                        HStack(spacing: 6) {
+                            Image(systemName: "pause.fill")
+                                .font(DSTypography.caption.weight(.bold))
+                            Text("已暂停")
+                                .font(DSTypography.caption.weight(.semibold))
+                        }
+                        .foregroundStyle(.white.opacity(0.92))
+                        .padding(.horizontal, Spacing.s3)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule().fill(Color.black.opacity(0.58))
+                        )
+                        .overlay(
+                            Capsule().strokeBorder(Color.white.opacity(0.24), lineWidth: 0.6)
+                        )
+                        .transition(.scale(scale: 0.88).combined(with: .opacity))
+                    }
+                }
+                .shadow(
+                    color: isPlaying ? Color.black.opacity(0.52) : Color.black.opacity(0.30),
+                    radius: isPlaying ? 26 : 14,
+                    x: 0,
+                    y: isPlaying ? 14 : 6
                 )
-                .shadow(color: Color.black.opacity(0.42), radius: 24, x: 0, y: 12)
                 .scaleEffect(scale)
-                .dsAnimation(Motion.smooth, value: scale)
+                .rotation3DEffect(
+                    .degrees(isPlaying || reduceMotion ? 0 : -4),
+                    axis: (x: 1, y: 0, z: 0)
+                )
+                .dsAnimation(Motion.bouncy, value: scale)
+                .dsAnimation(Motion.smooth, value: isPlaying)
                 .simultaneousGesture(
                     TapGesture(count: 2).onEnded {
                         onDoubleTapPlayPause()
@@ -69,7 +174,7 @@ struct PlayerCoverSection: View {
                     .padding(.horizontal, Spacing.s4)
                     .padding(.vertical, Spacing.s2)
                     .background(
-                        Capsule().fill(Color.black.opacity(0.65))
+                        Capsule().fill(Color.black.opacity(0.68))
                     )
                     .overlay(
                         Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
@@ -79,6 +184,6 @@ struct PlayerCoverSection: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxHeight: 288)
+        .frame(maxHeight: 272)
     }
 }

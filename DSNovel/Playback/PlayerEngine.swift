@@ -73,7 +73,7 @@ enum PlaybackState: Equatable {
 /// - 原生 AVURLAsset 自定义请求头 + HLS/MP3/M4A 播放
 /// - KVO 实时监听 status / timeControlStatus / loadedTimeRanges（缓冲进度）
 /// - 五档音质切换（联动 BuiltinParserRuntime）、六种音效预设、5 段人声 EQ 与 0–200% 响度增强
-/// - 动态倍速折算睡眠定时、播放器内无缝换源、锁屏封面与章节序号、音频中断自动续播与耳机拔出保护
+/// - 动态倍速折算睡眠定时、锁屏封面与章节序号、音频中断自动续播与耳机拔出保护
 @MainActor
 @Observable
 final class PlayerEngine {
@@ -84,8 +84,6 @@ final class PlayerEngine {
     private(set) var currentBook: BookRef?
     private(set) var currentChapter: ChapterDTO?
     private(set) var chapterQueue: [ChapterDTO] = []
-    /// 候选同书异源列表（由详情页或搜索结果注入，供播放器内一键无缝换源）
-    var candidateAlternatives: [BookRef] = []
     /// 最近一次插件解析错误（若为 .needLogin 或 .needVerify，支持在播放页/详情页一键打开网页登录）
     private(set) var lastPluginError: PluginError?
 
@@ -362,56 +360,12 @@ final class PlayerEngine {
         }
     }
 
-    /// 播放器内一键无缝换源（修复 ISS-07：不关闭播放器、保持当前章节与毫秒级进度无缝切换）
-    func switchSourceInPlace(to targetBook: BookRef) async {
-        let currentIdx = max(0, currentChapterOneBasedIndex - 1)
-        let currentTitle = currentChapter?.title ?? ""
-        let resumeMs = max(0, Int(clock.currentTimeSec * 1000))
-
-        do {
-            let detail: BookDetailDTO
-            if let cached = ChapterCacheStore.loadChapters(for: targetBook.id), !cached.isEmpty {
-                detail = BookDetailDTO(
-                    title: targetBook.title,
-                    author: targetBook.author,
-                    coverURL: targetBook.cover,
-                    intro: targetBook.intro,
-                    status: "",
-                    chapters: cached
-                )
-            } else {
-                detail = try await PluginRuntime.shared.bookDetail(
-                    sourceID: targetBook.sourceID,
-                    bookURL: targetBook.bookURL
-                )
-                if !detail.chapters.isEmpty {
-                    ChapterCacheStore.saveChapters(detail.chapters, for: targetBook.id)
-                }
-            }
-            guard !detail.chapters.isEmpty else {
-                BannerCenter.shared.show("目标书源暂无可用章节", kind: .warning)
-                return
-            }
-            let matchedIdx = BookDetailModel.matchChapterIndexForSourceSwitch(
-                currentIndex: currentIdx,
-                currentTitle: currentTitle,
-                targetChapters: detail.chapters
-            )
-            let targetChapter = detail.chapters[matchedIdx]
-            let sourceName = SourceStore.shared.sourceName(for: targetBook.sourceID)
-            var updatedBook = targetBook
-            if updatedBook.chapterCount == 0 {
-                updatedBook.chapterCount = detail.chapters.count
-            }
-            startPlayback(
-                book: updatedBook,
-                chapters: detail.chapters,
-                startChapter: targetChapter,
-                initialPositionMs: resumeMs
-            )
-            BannerCenter.shared.show("已切换至「\(sourceName)」第 \(matchedIdx + 1) 章", kind: .success)
-        } catch {
-            BannerCenter.shared.show("换源失败：\(error.localizedDescription)", kind: .error)
+    /// 当本地离线音频文件被用户在书籍页或下载管理中删除时同步更新播放源状态
+    func handleLocalFileDeleted(bookID: String, chapterID: String) {
+        guard currentBookID == bookID, currentChapter?.id == chapterID else { return }
+        bypassLocalChapterID = chapterID
+        if isPlayingLocalFile {
+            isPlayingLocalFile = false
         }
     }
 
@@ -1049,8 +1003,17 @@ final class PlayerEngine {
                     }
                 }
 
-                // 1s 节流刷新锁屏与灵动岛进度（修复 ISS-10 锁屏进度不走问题）
+                // 1s 节流刷新锁屏、灵动岛与内存章节进度缓存
                 self.updateNowPlayingInfo()
+                if let book = self.currentBook, let chapter = self.currentChapter {
+                    ChapterProgressCache.shared.update(
+                        bookID: book.id,
+                        chapterID: chapter.id,
+                        positionMs: max(0, Int(sec * 1000)),
+                        durationMs: max(0, Int(self.clock.durationSec * 1000)),
+                        forceFlush: false
+                    )
+                }
 
                 if abs(sec - self.lastPersistedTime) >= 5.0 {
                     self.lastPersistedTime = sec

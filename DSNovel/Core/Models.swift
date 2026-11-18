@@ -550,7 +550,7 @@ enum SourceFocus: String, Hashable, Codable, Sendable {
 }
 
 enum Route: Hashable {
-    case book(BookRef, alternatives: [BookRef] = [])
+    case book(BookRef, preferDownloaded: Bool = false)
     case history
     case downloads
     case sourceList

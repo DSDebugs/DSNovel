@@ -8,28 +8,78 @@ struct BookDetailView: View {
     @State private var libraryStore = LibraryStore.shared
     @State private var sourceStore = SourceStore.shared
     @State private var player = PlayerEngine.shared
+    @State private var downloadManager = DownloadManager.shared
 
     @State private var isIntroExpanded = false
     @State private var showInlineSearch = false
-    @State private var showSourceSwitchSheet = false
     @State private var showRangeDownloadSheet = false
+    @State private var pendingDeleteSnapshot: ChapterRowSnapshot?
+    @State private var showClearAllDownloadsConfirm = false
     @State private var ambientColor: Color = .dsSurfaceBase
 
-    init(book: BookRef, alternatives: [BookRef] = []) {
-        self._detailModel = State(initialValue: BookDetailModel(book: book, alternatives: alternatives))
+    init(book: BookRef, preferDownloaded: Bool = false) {
+        self._detailModel = State(
+            initialValue: BookDetailModel(book: book, preferDownloaded: preferDownloaded)
+        )
     }
 
     private var savedBook: Book? {
-        libraryStore.allShelfBooks.first(where: { $0.id == detailModel.currentBookRef.id })
-            ?? (libraryStore.continueBook?.id == detailModel.currentBookRef.id ? libraryStore.continueBook : nil)
-            ?? libraryStore.recentBooks.first(where: { $0.id == detailModel.currentBookRef.id })
+        libraryStore.book(for: detailModel.currentBookRef.id, fallbackContext: modelContext)
     }
 
     private var currentSource: PluginRecord? {
         sourceStore.source(for: detailModel.currentBookRef.sourceID)
     }
 
+    private var isPlayingThisBook: Bool {
+        player.currentBookID == detailModel.currentBookRef.id && player.currentChapter != nil
+    }
+
+    private var liveChapterIndex: Int {
+        if isPlayingThisBook {
+            if player.currentChapterOneBasedIndex > 0 {
+                return player.currentChapterOneBasedIndex
+            }
+            if let curID = player.currentChapter?.id,
+               let idx = detailModel.chapters.firstIndex(where: { $0.id == curID }) {
+                return idx + 1
+            }
+        }
+        return savedBook?.lastChapterIndex ?? 0
+    }
+
+    private var livePositionText: String {
+        if isPlayingThisBook {
+            return player.clock.formattedCurrent
+        }
+        return savedBook?.formattedPositionText ?? "00:00"
+    }
+
+    private var liveLastPlayedRelativeText: String? {
+        if isPlayingThisBook {
+            return player.state == .playing ? "正在播放" : "刚刚"
+        }
+        return savedBook?.formattedLastPlayedAtText
+    }
+
+    private var bookDownloadSummary: DownloadSummary? {
+        _ = downloadManager.stateVersion
+        return downloadManager.summariesByBookID[detailModel.currentBookRef.id]
+    }
+
+    private func formatBytes(_ b: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, b), countStyle: .file)
+    }
+
     var body: some View {
+        let _ = downloadManager.stateVersion
+        let dlSummary = bookDownloadSummary
+        let dlCount = dlSummary?.completedCount ?? 0
+        let activeDLCount = dlSummary?.activeCount ?? 0
+        let failedDLCount = dlSummary?.failedCount ?? 0
+        let dlBytesText = formatBytes(dlSummary?.totalBytes ?? 0)
+        let inShelfNow = libraryStore.isBookInShelf(detailModel.currentBookRef.id, fallbackContext: modelContext)
+
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: Spacing.s5) {
@@ -44,11 +94,16 @@ struct BookDetailView: View {
                         sourceLatencyMs: (currentSource?.lastLatencyMs ?? -1) > 0 ? currentSource?.lastLatencyMs : nil,
                         requiresLogin: currentSource?.requiresLogin ?? false,
                         isLoggedIn: currentSource?.loggedIn ?? true,
-                        alternativesCount: detailModel.alternatives.count,
                         totalChapters: max(detailModel.chapters.count, detailModel.currentBookRef.chapterCount),
+                        downloadedCount: dlCount,
                         statusText: detailModel.statusText,
-                        onTapSwitchSource: { showSourceSwitchSheet = true },
-                        onTapLogin: { AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID) },
+                        onTapDownloadedBadge: {
+                            DSHapticPolicy.fire(.selection)
+                            detailModel.isShowingDownloadedOnly = true
+                        },
+                        onTapLogin: {
+                            AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID)
+                        },
                         onCoverLoaded: { img in
                             ambientColor = CoverAmbientColor.color(from: img, cacheKey: detailModel.currentBookRef.id)
                         }
@@ -56,56 +111,66 @@ struct BookDetailView: View {
 
                     PrimaryActions(
                         isLoadingChapters: detailModel.isLoadingChapters,
-                        hasProgress: (savedBook?.lastChapterIndex ?? 0) > 0,
-                        lastChapterIndex: savedBook?.lastChapterIndex ?? 0,
-                        lastPositionText: savedBook?.formattedPositionText ?? "00:00",
-                        lastPlayedRelativeText: savedBook?.formattedLastPlayedAtText,
-                        inShelf: savedBook?.inShelf ?? false,
+                        isPlayingThisBook: isPlayingThisBook,
+                        isEnginePlaying: isPlayingThisBook && player.state == .playing,
+                        hasProgress: isPlayingThisBook || (savedBook?.lastChapterIndex ?? 0) > 0,
+                        lastChapterIndex: liveChapterIndex,
+                        lastPositionText: livePositionText,
+                        lastPlayedRelativeText: liveLastPlayedRelativeText,
+                        downloadedCount: dlCount,
+                        downloadedBytesText: dlCount > 0 ? dlBytesText : nil,
+                        activeDownloadCount: activeDLCount,
+                        inShelf: inShelfNow,
                         onPrimaryPlay: { startOrResumePlayback() },
+                        onViewDownloadedChapters: {
+                            DSHapticPolicy.fire(.selection)
+                            detailModel.isShowingDownloadedOnly = true
+                        },
                         onDownloadAll: { detailModel.enqueueRange(1, detailModel.chapters.count) },
-                        onDownloadUnread: { detailModel.enqueueRange(max(1, savedBook?.lastChapterIndex ?? 1), detailModel.chapters.count) },
+                        onDownloadUnread: {
+                            let s = max(1, liveChapterIndex)
+                            detailModel.enqueueRange(s, detailModel.chapters.count)
+                        },
                         onDownloadNext10: {
-                            let s = max(1, savedBook?.lastChapterIndex ?? 1)
+                            let s = max(1, liveChapterIndex)
                             detailModel.enqueueRange(s, min(detailModel.chapters.count, s + 9))
                         },
                         onDownloadNext30: {
-                            let s = max(1, savedBook?.lastChapterIndex ?? 1)
+                            let s = max(1, liveChapterIndex)
                             detailModel.enqueueRange(s, min(detailModel.chapters.count, s + 29))
                         },
                         onDownloadCustomRange: { showRangeDownloadSheet = true },
+                        onClearBookDownloads: { showClearAllDownloadsConfirm = true },
                         onOpenDownloads: { AppRouter.shared.open(.downloads) },
-                        onToggleShelf: { detailModel.toggleShelfMembership(savedBook: savedBook, libraryStore: libraryStore, context: modelContext) }
+                        onToggleShelf: {
+                            detailModel.toggleShelfMembership(libraryStore: libraryStore, context: modelContext)
+                        }
                     )
 
                     introSection
-                    chapterArea(proxy: proxy)
+                    chapterArea(
+                        proxy: proxy,
+                        downloadedCount: dlCount,
+                        activeDownloadCount: activeDLCount,
+                        failedDownloadCount: failedDLCount,
+                        downloadedBytesText: dlBytesText
+                    )
                 }
                 .padding(.vertical, Spacing.s3)
                 .background(alignment: .top) {
-                    LinearGradient(colors: [ambientColor.opacity(0.32), Color.dsSurfaceBase], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 320)
+                    LinearGradient(
+                        colors: [ambientColor.opacity(0.32), Color.dsSurfaceBase],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 320)
                 }
             }
         }
         .background(Color.dsSurfaceBase)
         .navigationTitle(detailModel.currentBookRef.title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { detailToolbar }
-        .sheet(isPresented: $showSourceSwitchSheet) {
-            SourceSwitchSheet(
-                currentRef: detailModel.currentBookRef,
-                candidates: detailModel.alternatives,
-                sourceStore: sourceStore,
-                onSelectCandidate: { candidate in
-                    showSourceSwitchSheet = false
-                    Task {
-                        let curIdx = max(0, (savedBook?.lastChapterIndex ?? 1) - 1)
-                        _ = await detailModel.switchSource(to: candidate, currentChapterIndex: curIdx, currentChapterTitle: savedBook?.lastChapterTitle ?? "", in: modelContext)
-                    }
-                },
-                onClose: { showSourceSwitchSheet = false }
-            )
-        }
+        .toolbar { detailToolbar(downloadedCount: dlCount) }
         .sheet(isPresented: $showRangeDownloadSheet) {
             RangeDownloadSheet(
                 totalChapters: detailModel.chapters.count,
@@ -113,18 +178,72 @@ struct BookDetailView: View {
                 onClose: { showRangeDownloadSheet = false }
             )
         }
+        .confirmationDialog(
+            pendingDeleteSnapshot.map { snap in
+                let sizePart = snap.downloadedBytes > 0 ? "（\(formatBytes(snap.downloadedBytes))）" : ""
+                return "确认删除「\(snap.chapter.title)」的离线音频文件\(sizePart)？"
+            } ?? "确认删除该章节离线文件？",
+            isPresented: Binding(
+                get: { pendingDeleteSnapshot != nil },
+                set: { if !$0 { pendingDeleteSnapshot = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除离线文件", role: .destructive) {
+                if let snap = pendingDeleteSnapshot {
+                    detailModel.confirmDeleteChapterDownload(snap)
+                }
+                pendingDeleteSnapshot = nil
+            }
+            Button("取消", role: .cancel) {
+                pendingDeleteSnapshot = nil
+            }
+        } message: {
+            Text("删除后将释放本地存储空间，再次收听该章节需联网或重新下载。")
+        }
+        .confirmationDialog(
+            "确认清空《\(detailModel.currentBookRef.title)》全部 \(dlCount) 章已下载音频（\(dlBytesText)）？",
+            isPresented: $showClearAllDownloadsConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("清空全部已下载章节", role: .destructive) {
+                detailModel.confirmClearAllBookDownloads()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("清空后本书所有离线音频文件将被彻底移除。")
+        }
         .task {
+            downloadManager.modelContext = modelContext
+            downloadManager.reconcileCompletedFiles()
             libraryStore.markUpdateRead(bookID: detailModel.currentBookRef.id)
             ChapterProgressCache.shared.loadBookIfNeeded(detailModel.currentBookRef.id)
             await detailModel.loadChaptersIfNeeded(forceRefresh: false)
+            let summary = downloadManager.summariesByBookID[detailModel.currentBookRef.id]
+            let activeID = isPlayingThisBook ? player.currentChapter?.id : nil
+            detailModel.applyInitialPresentationIfNeeded(
+                downloadedCount: summary?.completedCount ?? 0,
+                activeDownloadCount: summary?.activeCount ?? 0,
+                activeChapterID: activeID,
+                savedChapterID: savedBook?.lastChapterID,
+                savedChapterIndex: savedBook?.lastChapterIndex
+            )
         }
     }
 
     private var unavailableBanner: some View {
         HStack {
-            Text("当前来源不可用").font(DSTypography.cardTitle).foregroundStyle(.orange)
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("当前书源响应异常，可优先收听已下载章节或刷新重试")
+                .font(DSTypography.caption.weight(.medium))
+                .foregroundStyle(.orange)
             Spacer()
-            Button("换源") { showSourceSwitchSheet = true }.font(DSTypography.cardTitle).foregroundStyle(Color.dsAccent)
+            Button("刷新重试") {
+                Task { await detailModel.loadChaptersIfNeeded(forceRefresh: true) }
+            }
+            .font(DSTypography.caption.weight(.semibold))
+            .foregroundStyle(Color.dsAccent)
         }
         .padding(Spacing.s3)
         .background(RoundedRectangle(cornerRadius: Radius.card).fill(Color.orange.opacity(0.14)))
@@ -132,20 +251,32 @@ struct BookDetailView: View {
     }
 
     @ToolbarContentBuilder
-    private var detailToolbar: some ToolbarContent {
+    private func detailToolbar(downloadedCount: Int) -> some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                Button { Task { await detailModel.loadChaptersIfNeeded(forceRefresh: true) } } label: {
-                    Label("刷新章节", systemImage: "arrow.clockwise")
+                Button {
+                    Task { await detailModel.loadChaptersIfNeeded(forceRefresh: true) }
+                } label: {
+                    Label("刷新章节目录", systemImage: "arrow.clockwise")
+                }
+                Button {
+                    detailModel.isShowingDownloadedOnly.toggle()
+                } label: {
+                    Label(
+                        detailModel.isShowingDownloadedOnly ? "显示全部章节" : "查看已下载章节（\(downloadedCount)）",
+                        systemImage: "checkmark.circle"
+                    )
                 }
                 Button {
                     UIPasteboard.general.string = detailModel.currentBookRef.bookURL
-                    BannerCenter.shared.show("已复制", kind: .info)
+                    BannerCenter.shared.show("已复制书籍链接", kind: .info)
                 } label: {
                     Label("复制链接", systemImage: "doc.on.doc")
                 }
                 if currentSource?.requiresLogin == true {
-                    Button { AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID) } label: {
+                    Button {
+                        AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID)
+                    } label: {
                         Label("书源网页登录", systemImage: "person.badge.key")
                     }
                 }
@@ -156,16 +287,44 @@ struct BookDetailView: View {
     }
 
     private var introSection: some View {
-        VStack(alignment: .leading, spacing: Spacing.s1) {
-            Text(detailModel.cleanedIntro).font(DSTypography.subtitle).foregroundStyle(.secondary).lineLimit(isIntroExpanded ? nil : 3)
-            Button(isIntroExpanded ? "收起" : "展开") { isIntroExpanded.toggle() }
-                .font(DSTypography.caption.weight(.medium)).foregroundStyle(Color.dsAccent).buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: Spacing.s2) {
+            Text(detailModel.cleanedIntro)
+                .font(DSTypography.subtitle)
+                .foregroundStyle(.secondary)
+                .lineLimit(isIntroExpanded ? nil : 3)
+                .fixedSize(horizontal: false, vertical: true)
+            Button {
+                withAnimation(Motion.snappy) {
+                    isIntroExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Text(isIntroExpanded ? "收起简介" : "展开简介")
+                    Image(systemName: isIntroExpanded ? "chevron.up" : "chevron.down")
+                        .font(DSTypography.caption2)
+                }
+                .font(DSTypography.caption.weight(.semibold))
+                .foregroundStyle(Color.dsAccent)
+            }
+            .buttonStyle(.plain)
         }
+        .padding(Spacing.s3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .fill(Color.dsSurfaceGrouped.opacity(0.55))
+        )
         .padding(.horizontal, Spacing.pageHorizontal)
     }
 
     @ViewBuilder
-    private func chapterArea(proxy: ScrollViewProxy) -> some View {
+    private func chapterArea(
+        proxy: ScrollViewProxy,
+        downloadedCount: Int,
+        activeDownloadCount: Int,
+        failedDownloadCount: Int,
+        downloadedBytesText: String
+    ) -> some View {
         if detailModel.isLoadingChapters && detailModel.chapters.isEmpty {
             DSSkeleton(mode: .chapters(rows: 8))
         } else if let err = detailModel.chapterError, detailModel.chapters.isEmpty {
@@ -173,50 +332,160 @@ struct BookDetailView: View {
             DSStateView(
                 kind: kind,
                 onPrimary: {
-                    if case .needLogin = kind { AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID) }
-                    else if case .vipChapter = kind { AppRouter.shared.openBuiltinParser(sourceID: detailModel.currentBookRef.sourceID) }
-                    else { Task { await detailModel.loadChaptersIfNeeded(forceRefresh: true) } }
+                    if case .needLogin = kind {
+                        AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID)
+                    } else if case .vipChapter = kind {
+                        AppRouter.shared.openBuiltinParser(sourceID: detailModel.currentBookRef.sourceID)
+                    } else {
+                        Task { await detailModel.loadChaptersIfNeeded(forceRefresh: true) }
+                    }
                 },
-                onSecondary: { showSourceSwitchSheet = true }
+                onSecondary: {
+                    AppRouter.shared.open(.sourceDetail(id: detailModel.currentBookRef.sourceID, focus: nil))
+                }
             )
         } else {
-            let currentPlayingID = (player.currentBookID == detailModel.currentBookRef.id) ? player.currentChapter?.id : nil
-            let snapshots = detailModel.visibleChapterSnapshots(currentPlayingChapterID: currentPlayingID, isEnginePlaying: player.state == .playing, downloadItems: detailModel.currentBookDownloadMap())
+            let currentPlayingID = isPlayingThisBook ? player.currentChapter?.id : nil
+            let livePosMs = isPlayingThisBook ? max(0, Int(player.clock.currentTimeSec * 1000)) : nil
+            let snapshots = detailModel.visibleChapterSnapshots(
+                currentPlayingChapterID: currentPlayingID,
+                isEnginePlaying: player.state == .playing,
+                currentPlayingPositionMs: livePosMs
+            )
             ChapterSection(
                 totalCount: detailModel.chapters.count,
+                downloadedCount: downloadedCount,
+                activeDownloadCount: activeDownloadCount,
+                failedDownloadCount: failedDownloadCount,
+                downloadedBytesText: downloadedBytesText,
                 segments: detailModel.segments,
                 selectedSegmentIndex: $detailModel.selectedSegmentIndex,
+                isShowingDownloadedOnly: $detailModel.isShowingDownloadedOnly,
                 isAscending: $detailModel.isAscending,
                 searchKeyword: $detailModel.chapterSearchKeyword,
                 showInlineSearch: $showInlineSearch,
                 snapshots: snapshots,
                 onLocateCurrent: {
-                    if let targetID = currentPlayingID ?? savedBook?.lastChapterID { proxy.scrollTo(targetID, anchor: .center) }
+                    locateCurrentOrSavedChapter(proxy: proxy, currentPlayingID: currentPlayingID)
                 },
                 onSelectSnapshot: { snap in
                     DSHapticPolicy.fire(.chapterSwitch)
-                    player.candidateAlternatives = detailModel.alternatives
-                    if player.currentBookID == detailModel.currentBookRef.id, player.currentChapter?.id == snap.chapter.id {
+                    if player.currentBookID == detailModel.currentBookRef.id,
+                       player.currentChapter?.id == snap.chapter.id {
                         player.togglePlayPause()
                     } else {
-                        player.startPlayback(book: detailModel.currentBookRef, chapters: detailModel.chapters, startChapter: snap.chapter, initialPositionMs: snap.savedPositionMs)
+                        player.startPlayback(
+                            book: detailModel.currentBookRef,
+                            chapters: detailModel.chapters,
+                            startChapter: snap.chapter,
+                            initialPositionMs: snap.savedPositionMs
+                        )
                     }
                 },
-                onDownloadAction: { snap in detailModel.handleChapterDownloadTap(snap) },
-                onToggleFinished: { snap in detailModel.toggleFinished(chapterID: snap.id) },
+                onDownloadAction: { snap in
+                    handleChapterDownloadOrDeleteTap(snap)
+                },
+                onRetryAllFailed: {
+                    downloadManager.retryFailedItems(forBookID: detailModel.currentBookRef.id)
+                    BannerCenter.shared.show("已重试失败章节", kind: .info)
+                },
+                onClearAllDownloads: {
+                    showClearAllDownloadsConfirm = true
+                },
+                onDownloadNext10: {
+                    let s = max(1, liveChapterIndex)
+                    detailModel.enqueueRange(s, min(detailModel.chapters.count, s + 9))
+                },
+                onToggleFinished: { snap in
+                    detailModel.toggleFinished(chapterID: snap.id)
+                },
                 onCopyTitle: { snap in
                     UIPasteboard.general.string = snap.chapter.title
-                    BannerCenter.shared.show("已复制", kind: .info)
+                    BannerCenter.shared.show("已复制章节标题", kind: .info)
                 }
             )
+        }
+    }
+
+    private func handleChapterDownloadOrDeleteTap(_ snap: ChapterRowSnapshot) {
+        let realState = downloadManager.downloadState(
+            bookID: detailModel.currentBookRef.id,
+            chapterID: snap.chapter.id
+        )
+        if realState == .completed {
+            pendingDeleteSnapshot = snap
+        } else {
+            detailModel.startOrRetryChapterDownload(snap)
+        }
+    }
+
+    private func locateCurrentOrSavedChapter(proxy: ScrollViewProxy, currentPlayingID: String?) {
+        DSHapticPolicy.fire(.selection)
+        if let located = detailModel.prepareToLocateChapter(
+            currentPlayingChapterID: currentPlayingID,
+            savedChapterID: savedBook?.lastChapterID,
+            savedChapterIndex: savedBook?.lastChapterIndex
+        ) {
+            showInlineSearch = false
+            if located.didSwitchContext {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(65))
+                    withAnimation(Motion.snappy) {
+                        proxy.scrollTo(located.targetID, anchor: .center)
+                    }
+                }
+            } else {
+                withAnimation(Motion.snappy) {
+                    proxy.scrollTo(located.targetID, anchor: .center)
+                }
+            }
+        } else if let firstID = detailModel.chapters.first?.id {
+            detailModel.isShowingDownloadedOnly = false
+            detailModel.selectedSegmentIndex = 0
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(50))
+                withAnimation(Motion.snappy) {
+                    proxy.scrollTo(firstID, anchor: .center)
+                }
+            }
+            BannerCenter.shared.show("当前尚无收听进度，已定位至第 1 章", kind: .info)
         }
     }
 
     private func startOrResumePlayback() {
         guard !detailModel.chapters.isEmpty else { return }
         DSHapticPolicy.fire(.playPause)
-        player.candidateAlternatives = detailModel.alternatives
-        let target = detailModel.chapters.first(where: { $0.id == savedBook?.lastChapterID }) ?? detailModel.chapters[0]
-        player.startPlayback(book: detailModel.currentBookRef, chapters: detailModel.chapters, startChapter: target, initialPositionMs: savedBook?.lastPositionMs ?? 0)
+        if isPlayingThisBook {
+            if player.state == .playing {
+                AppRouter.shared.isPlayerPresented = true
+            } else {
+                player.togglePlayPause()
+            }
+            return
+        }
+        let target: ChapterDTO
+        let initialMs: Int
+        if let savedID = savedBook?.lastChapterID,
+           let matched = detailModel.chapters.first(where: { $0.id == savedID }) {
+            target = matched
+            initialMs = savedBook?.lastPositionMs ?? 0
+        } else if let savedIdx = savedBook?.lastChapterIndex,
+                  savedIdx > 0,
+                  detailModel.chapters.indices.contains(savedIdx - 1) {
+            target = detailModel.chapters[savedIdx - 1]
+            initialMs = savedBook?.lastPositionMs ?? 0
+        } else {
+            target = detailModel.chapters[0]
+            initialMs = ChapterProgressCache.shared.progress(
+                bookID: detailModel.currentBookRef.id,
+                chapterID: target.id
+            )?.positionMs ?? 0
+        }
+        player.startPlayback(
+            book: detailModel.currentBookRef,
+            chapters: detailModel.chapters,
+            startChapter: target,
+            initialPositionMs: initialMs
+        )
     }
 }

@@ -70,10 +70,11 @@ final class BannerCenter {
         _ message: String,
         kind: DSBannerKind = .info,
         now: TimeInterval = Date().timeIntervalSince1970,
-        scheduleAutoDismiss: Bool = true
+        scheduleAutoDismiss: Bool = true,
+        bypassDeduplication: Bool = false
     ) {
         guard !message.isEmpty else { return }
-        if let lastTime = recentMessages[message], (now - lastTime) < 3.0 {
+        if !bypassDeduplication, let lastTime = recentMessages[message], (now - lastTime) < 3.0 {
             return
         }
         if let existing = currentBanner, existing.kind == .error && kind != .error && kind != .undo {
@@ -137,6 +138,16 @@ final class BannerCenter {
         activeCommitCallback = nil
         currentBanner = nil
         undo?()
+    }
+
+    /// 取消当前未提交的撤销任务且不执行 onCommit（供高频收藏切换直接接管状态时使用）
+    func cancelPendingUndoWithoutCommit() {
+        guard currentBanner?.kind == .undo, !hasResolvedUndo else { return }
+        hasResolvedUndo = true
+        autoDismissTask?.cancel()
+        activeUndoCallback = nil
+        activeCommitCallback = nil
+        currentBanner = nil
     }
 
     func handleDidEnterBackground() {

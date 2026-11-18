@@ -18,6 +18,9 @@ enum PlayerAmbientFallbackPolicy {
     }
 }
 
+/// 沉浸式流体极光与声学呼吸背景：
+/// - 播放态：9 点 3×3 MeshGradient 较大振幅流动 + 双层径向聚光灯随律动呼吸扩散，呈现饱满通透的封面氛围色与琥珀流光；
+/// - 暂停态：背景光晕平滑收敛变暗、聚光半径收缩，与播放态形成鲜明且优雅的视觉对比。
 struct PlayerAmbientBackground: View {
     @Environment(\.dsReduceMotion) private var reduceMotion
     let primaryColor: Color
@@ -35,35 +38,106 @@ struct PlayerAmbientBackground: View {
             reduceMotion: reduceMotion,
             thermalState: info.thermalState
         )
-        Group {
-            if useStatic || !isPlaying {
-                LinearGradient(
-                    colors: [primaryColor, Color.black],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+
+        ZStack {
+            Color.dsSurfaceBase
+
+            if useStatic {
+                staticAtmosphereLayer
             } else {
                 TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
-                    let dx = Float(sin(t / 6.0) * 0.08)
-                    let dy = Float(cos(t / 6.0) * 0.08)
-                    MeshGradient(
-                        width: 3,
-                        height: 3,
-                        points: [
-                            [0.0, 0.0], [0.5, 0.0], [1.0, 0.0],
-                            [0.0, 0.5], [0.5 + dx, 0.5 + dy], [1.0, 0.5],
-                            [0.0, 1.0], [0.5, 1.0], [1.0, 1.0]
-                        ],
-                        colors: [
-                            primaryColor, primaryColor.opacity(0.85), Color.black,
-                            primaryColor.opacity(0.75), primaryColor.opacity(0.45), Color.black,
-                            Color.black, Color.black, Color.black
-                        ]
-                    )
+                    animatedAtmosphereLayer(time: t)
                 }
             }
         }
+        .dsAnimation(Motion.ambient, value: isPlaying)
         .ignoresSafeArea()
+    }
+
+    private var staticAtmosphereLayer: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    primaryColor.opacity(isPlaying ? 0.92 : 0.45),
+                    primaryColor.opacity(isPlaying ? 0.48 : 0.20),
+                    Color.black
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            RadialGradient(
+                colors: [
+                    Color.dsAccent.opacity(isPlaying ? 0.30 : 0.08),
+                    primaryColor.opacity(isPlaying ? 0.45 : 0.15),
+                    Color.clear
+                ],
+                center: .init(x: 0.5, y: 0.34),
+                startRadius: 20,
+                endRadius: isPlaying ? 340 : 190
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func animatedAtmosphereLayer(time t: TimeInterval) -> some View {
+        let speedFactor = isPlaying ? 1.0 : 0.22
+        let phase = t * speedFactor
+        let dx1 = Float(sin(phase * 0.75) * (isPlaying ? 0.18 : 0.05))
+        let dy1 = Float(cos(phase * 0.62) * (isPlaying ? 0.16 : 0.04))
+        let dx2 = Float(cos(phase * 0.52) * (isPlaying ? 0.15 : 0.04))
+        let dy2 = Float(sin(phase * 0.85) * (isPlaying ? 0.14 : 0.04))
+        let pulse = 0.5 + 0.5 * sin(t * (isPlaying ? 2.1 : 0.6))
+
+        ZStack {
+            MeshGradient(
+                width: 3,
+                height: 3,
+                points: [
+                    [0.0, 0.0], [0.5 + dx2 * 0.5, 0.0], [1.0, 0.0],
+                    [0.0, 0.45 + dy2 * 0.4], [0.5 + dx1, 0.38 + dy1], [1.0, 0.5 - dy1 * 0.4],
+                    [0.0, 1.0], [0.5 - dx1 * 0.4, 1.0], [1.0, 1.0]
+                ],
+                colors: [
+                    primaryColor.opacity(isPlaying ? 0.95 : 0.42),
+                    Color.dsAccent.opacity(isPlaying ? 0.52 : 0.16),
+                    primaryColor.opacity(isPlaying ? 0.78 : 0.30),
+                    primaryColor.opacity(isPlaying ? 0.82 : 0.32),
+                    Color.dsAccent.opacity(isPlaying ? 0.44 : 0.12),
+                    primaryColor.opacity(isPlaying ? 0.64 : 0.24),
+                    Color.black.opacity(0.92),
+                    primaryColor.opacity(isPlaying ? 0.35 : 0.12),
+                    Color.black
+                ]
+            )
+
+            // 封面核心区声学呼吸光晕：播放时随节拍舒展发亮，暂停时明显收敛暗化
+            RadialGradient(
+                colors: [
+                    Color.dsAccent.opacity(isPlaying ? (0.34 + 0.12 * pulse) : 0.06),
+                    primaryColor.opacity(isPlaying ? (0.55 + 0.10 * pulse) : 0.16),
+                    Color.clear
+                ],
+                center: .init(
+                    x: 0.5 + Double(dx1) * 0.35,
+                    y: 0.33 + Double(dy1) * 0.25
+                ),
+                startRadius: isPlaying ? 16 : 8,
+                endRadius: isPlaying ? (310 + 45 * pulse) : 165
+            )
+            .blendMode(.plusLighter)
+
+            // 底部控制区柔和暗角衬底，确保进度条与文字高对比度清晰可读
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(isPlaying ? 0.08 : 0.32),
+                    Color.black.opacity(isPlaying ? 0.36 : 0.58),
+                    Color.black.opacity(0.84)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
     }
 }
