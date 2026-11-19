@@ -603,9 +603,10 @@ actor BuiltinParserRuntime {
     private func cacheKey(parser: InstalledBuiltinParser, episodeURL: String, forDownload: Bool) throws -> String {
         let cookieSource = configValue(parserID: parser.id, key: "cookieSource") ?? "user"
         let remote = configValue(parserID: parser.id, key: "allowRemoteCookie") ?? "false"
+        let quality = configValue(parserID: parser.id, key: "quality") ?? "M4A_128"
         let cookieHeader = CookieSync.cookieHeader(for: URL(string: Self.ximalayaCookieProbe)!)
         let fingerprint = BuiltinParserStore.sha256Hex(Data(cookieHeader.utf8)).prefix(8)
-        return "\(parser.id)|\(episodeURL)|\(forDownload ? "dl" : "play")|\(cookieSource)|\(remote)|\(fingerprint)"
+        return "\(parser.id)|\(episodeURL)|\(quality)|\(cookieSource)|\(remote)|\(fingerprint)"
     }
 
     static func extractTrackID(from episodeURL: String) -> String? {

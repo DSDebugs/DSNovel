@@ -82,11 +82,7 @@ struct AudioEffectsSheet: View {
                         .padding(.vertical, 2)
                         .background(Capsule().fill(Color.dsAccent.opacity(0.16)))
                 }
-                Text(
-                    player.isPlayingLocalFile
-                        ? "当前为本地离线音频 · 硬件级人声增强与增益实时生效"
-                        : "当前为在线流式音频 · 切换音质档位将立即重载当前章节"
-                )
+                Text(routeStatusSubtitle)
                 .font(DSTypography.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -104,27 +100,68 @@ struct AudioEffectsSheet: View {
 
     // MARK: - 2. 在线播放与下载音质档位（点击立即重载本章）
 
+    private var routeStatusSubtitle: String {
+        switch player.currentAudioQualitySupportMode {
+        case .localOffline:
+            return "当前为本地离线音频 · 硬件级人声增强与增益实时生效"
+        case .multiBitrate:
+            return "当前音源支持多码率 · 切换音质将立即重载当前章节"
+        case .fixedSingleBitrate:
+            return "当前音源为固定单码率 · 硬件级人声增强与缓冲策略实时生效"
+        }
+    }
+
+    private var qualityTierHintText: String {
+        switch player.currentAudioQualitySupportMode {
+        case .multiBitrate:
+            return "支持多码率 · 点击即刻重载"
+        case .fixedSingleBitrate:
+            return "固定码率 · 仅调节缓冲"
+        case .localOffline:
+            return "本地离线 · 仅更新偏好"
+        }
+    }
+
     private var qualityTierCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.s3) {
+        let mode = player.currentAudioQualitySupportMode
+        return VStack(alignment: .leading, spacing: Spacing.s3) {
             HStack {
                 Label("在线播放与下载音质", systemImage: "waveform.badge.magnifyingglass")
                     .font(DSTypography.cardTitle)
                     .foregroundStyle(.primary)
                 Spacer()
-                Text("点击即刻切换重载")
+                Text(qualityTierHintText)
+                    .font(DSTypography.caption2)
+                    .foregroundStyle(mode == .multiBitrate ? Color.dsAccent : .secondary)
+            }
+
+            if mode == .fixedSingleBitrate {
+                Text("当前书源仅提供单一固定码率，切换档位将无损更新抗卡顿缓冲时长与全局偏好；如需优化听感可搭配下方「人声清澈」或「降噪增强」音效。")
                     .font(DSTypography.caption2)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(spacing: Spacing.s2) {
-                ForEach(AudioQualityTier.allCases) { tier in
-                    let isSelected = (player.audioQualityTier == tier)
+                ForEach(AudioQualityTier.visibleTiers) { tier in
+                    let isSelected = (player.audioQualityTier.normalizedForSelection == tier)
                     Button {
-                        guard player.audioQualityTier != tier else { return }
+                        guard player.audioQualityTier.normalizedForSelection != tier else { return }
                         DSHapticPolicy.fire(.selection)
-                        player.setAudioQualityTier(tier, reloadCurrent: true)
+                        let shouldReload = (mode == .multiBitrate)
+                        player.setAudioQualityTier(tier, reloadCurrent: shouldReload)
+                        let msg: String = {
+                            switch mode {
+                            case .multiBitrate:
+                                return "已切换至「\(tier.title)」音质并重新加载本章"
+                            case .fixedSingleBitrate:
+                                return "当前音源为固定码率，已更新缓冲策略与全局音质偏好"
+                            case .localOffline:
+                                return "已更新后续在线播放与下载音质偏好为「\(tier.title)」"
+                            }
+                        }()
                         BannerCenter.shared.show(
-                            "已切换至「\(tier.title)」音质并重新加载本章",
+                            msg,
                             kind: .success,
                             bypassDeduplication: true
                         )

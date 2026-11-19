@@ -242,7 +242,7 @@ final class AppSettingsStore {
         self.nightDimEnabled = defaults.object(forKey: "nightDimEnabled") as? Bool ?? false
         self.reduceMotionOverride = defaults.object(forKey: "reduceMotionOverride") as? Bool ?? false
 
-        self.audioQualityTier = AudioQualityTier(rawValue: defaults.string(forKey: "audioQualityTier") ?? "") ?? .high
+        self.audioQualityTier = (AudioQualityTier(rawValue: defaults.string(forKey: "audioQualityTier") ?? "") ?? .high).normalizedForSelection
         self.audioEffectPreset = AudioEffectPreset(rawValue: defaults.string(forKey: "audioEffectPreset") ?? "") ?? .original
         if let savedBands = defaults.array(forKey: "customEQBandsDb") as? [Double], savedBands.count == 5 {
             self.customEQBandsDb = savedBands

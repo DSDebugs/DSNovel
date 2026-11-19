@@ -7,7 +7,6 @@ struct ShelfToolbar: ToolbarContent {
     @Binding var layoutStyle: DiscoverLayoutStyle
     private let onToggleEdit: () -> Void
     private let onToggleSelectAll: () -> Void
-    private let onManageCategories: () -> Void
     private let onOpenHistory: () -> Void
     private let onOpenDownloads: () -> Void
 
@@ -18,7 +17,6 @@ struct ShelfToolbar: ToolbarContent {
         layoutStyle: Binding<DiscoverLayoutStyle>,
         onToggleEdit: @escaping () -> Void,
         onToggleSelectAll: @escaping () -> Void,
-        onManageCategories: @escaping () -> Void,
         onOpenHistory: @escaping () -> Void,
         onOpenDownloads: @escaping () -> Void
     ) {
@@ -28,7 +26,6 @@ struct ShelfToolbar: ToolbarContent {
         self._layoutStyle = layoutStyle
         self.onToggleEdit = onToggleEdit
         self.onToggleSelectAll = onToggleSelectAll
-        self.onManageCategories = onManageCategories
         self.onOpenHistory = onOpenHistory
         self.onOpenDownloads = onOpenDownloads
     }
@@ -61,9 +58,6 @@ struct ShelfToolbar: ToolbarContent {
                         Text("列表").tag(DiscoverLayoutStyle.list)
                     }
                     Divider()
-                    Button(action: onManageCategories) {
-                        Label("新建分类", systemImage: "folder.badge.plus")
-                    }
                     Button(action: onOpenHistory) {
                         Label("全部历史", systemImage: "clock.arrow.circlepath")
                     }

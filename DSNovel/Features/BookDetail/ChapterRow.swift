@@ -49,12 +49,14 @@ struct ChapterRow: View, Equatable {
                                 .font(DSTypography.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("\(snapshot.displayIndex)")
+                            Text(verbatim: "\(snapshot.displayIndex)")
                                 .font(DSTypography.numericCaption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
                         }
                     }
-                    .frame(width: 30)
+                    .frame(minWidth: 34)
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: Spacing.s1) {
@@ -73,29 +75,10 @@ struct ChapterRow: View, Equatable {
                             }
                         }
 
-                        if !snapshot.subtitleText.isEmpty {
-                            HStack(spacing: 4) {
-                                if snapshot.downloadState == .completed && !snapshot.isDeleting {
-                                    Image(systemName: "arrow.down.circle.fill")
-                                        .font(DSTypography.caption2)
-                                        .foregroundStyle(.green)
-                                } else if snapshot.downloadState == .failed {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .font(DSTypography.caption2)
-                                        .foregroundStyle(.red)
-                                }
-                                Text(snapshot.subtitleText)
-                                    .font(DSTypography.numericCaption)
-                                    .foregroundStyle(
-                                        snapshot.downloadState == .failed
-                                            ? .red
-                                            : (snapshot.isCurrentPlayingChapter ? Color.dsAccent.opacity(0.9) : .secondary)
-                                    )
-                            }
-                        }
-
-                        if snapshot.progressFraction > 0 && !snapshot.isFinished {
-                            DSProgress(value: snapshot.progressFraction, style: .bar(height: 2.5))
+                        if snapshot.isCurrentPlayingChapter {
+                            LiveChapterSubtitleView(snapshot: snapshot)
+                        } else if !snapshot.subtitleText.isEmpty {
+                            staticSubtitleRow(text: snapshot.subtitleText)
                         }
                     }
 
@@ -115,12 +98,34 @@ struct ChapterRow: View, Equatable {
             .accessibilityLabel(downloadButtonAccessibilityLabel)
         }
         .padding(.horizontal, Spacing.pageHorizontal)
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
         .background(
             snapshot.isCurrentPlayingChapter
                 ? Color.dsAccent.opacity(0.08)
                 : Color.clear
         )
+    }
+
+    @ViewBuilder
+    private func staticSubtitleRow(text: String) -> some View {
+        HStack(spacing: 4) {
+            if snapshot.downloadState == .completed && !snapshot.isDeleting {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(DSTypography.caption2)
+                    .foregroundStyle(.green)
+            } else if snapshot.downloadState == .failed {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(DSTypography.caption2)
+                    .foregroundStyle(.red)
+            }
+            Text(text)
+                .font(DSTypography.numericCaption)
+                .foregroundStyle(
+                    snapshot.downloadState == .failed
+                        ? .red
+                        : (snapshot.isCurrentPlayingChapter ? Color.dsAccent.opacity(0.9) : .secondary)
+                )
+        }
     }
 
     private var downloadButtonAccessibilityLabel: String {
@@ -160,6 +165,41 @@ struct ChapterRow: View, Equatable {
                 Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.red)
+            }
+        }
+    }
+}
+
+/// 隔离观察当前播放章节的实时进度（仅本叶子视图每秒刷新，绝不触发外层列表或章节范围菜单重建闪烁）
+private struct LiveChapterSubtitleView: View {
+    let snapshot: ChapterRowSnapshot
+    @State private var player = PlayerEngine.shared
+
+    var body: some View {
+        let livePosMs = max(0, Int(player.clock.currentTimeSec * 1000))
+        let liveDurMs = max(0, Int(player.clock.durationSec * 1000))
+        let text = snapshot.subtitleText(
+            overridePositionMs: livePosMs > 0 ? livePosMs : snapshot.savedPositionMs,
+            overrideDurationMs: liveDurMs > 0 ? liveDurMs : snapshot.durationMs
+        )
+        if !text.isEmpty {
+            HStack(spacing: 4) {
+                if snapshot.downloadState == .completed && !snapshot.isDeleting {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(DSTypography.caption2)
+                        .foregroundStyle(.green)
+                } else if snapshot.downloadState == .failed {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(DSTypography.caption2)
+                        .foregroundStyle(.red)
+                }
+                Text(text)
+                    .font(DSTypography.numericCaption)
+                    .foregroundStyle(
+                        snapshot.downloadState == .failed
+                            ? .red
+                            : Color.dsAccent.opacity(0.9)
+                    )
             }
         }
     }

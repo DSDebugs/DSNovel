@@ -23,6 +23,7 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
     let isCurrentPlayingChapter: Bool
     let isEnginePlaying: Bool
     let savedPositionMs: Int
+    let durationMs: Int
     let isFinished: Bool
     let isVIP: Bool
     let downloadState: ChapterDownloadState
@@ -36,6 +37,7 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
         isCurrentPlayingChapter: Bool,
         isEnginePlaying: Bool,
         savedPositionMs: Int,
+        durationMs: Int = 0,
         isFinished: Bool,
         isVIP: Bool,
         downloadState: ChapterDownloadState,
@@ -48,6 +50,7 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
         self.isCurrentPlayingChapter = isCurrentPlayingChapter
         self.isEnginePlaying = isEnginePlaying
         self.savedPositionMs = savedPositionMs
+        self.durationMs = durationMs
         self.isFinished = isFinished
         self.isVIP = isVIP
         self.downloadState = downloadState
@@ -56,20 +59,49 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
         self.downloadStatusNote = downloadStatusNote
     }
 
-    var progressFraction: Double {
-        guard savedPositionMs > 0 else { return 0 }
-        let durMs = max((chapter.normalizedDurationSec ?? 600) * 1000, 1)
-        return min(max(Double(savedPositionMs) / Double(durMs), 0.02), 1.0)
+    var effectiveDurationMs: Int {
+        if durationMs > 0 { return durationMs }
+        if let durSec = chapter.normalizedDurationSec, durSec > 0 {
+            return durSec * 1000
+        }
+        return 0
     }
 
-    var subtitleText: String {
+    var progressFraction: Double {
+        guard savedPositionMs > 0 else { return 0 }
+        let durMs = max(effectiveDurationMs, 1)
+        guard effectiveDurationMs > 0 else { return 0 }
+        return min(max(Double(savedPositionMs) / Double(durMs), 0.01), 1.0)
+    }
+
+    var progressPercent: Int? {
+        guard !isFinished, savedPositionMs > 0 else { return nil }
+        let durMs = effectiveDurationMs
+        guard durMs > 0 else { return nil }
+        return min(99, max(1, Int((Double(savedPositionMs) / Double(durMs) * 100.0).rounded())))
+    }
+
+    func subtitleText(overridePositionMs: Int? = nil, overrideDurationMs: Int? = nil) -> String {
+        let posMs = overridePositionMs ?? savedPositionMs
+        let durMs = (overrideDurationMs ?? 0) > 0 ? (overrideDurationMs ?? 0) : effectiveDurationMs
         var parts: [String] = []
         if let dur = chapter.normalizedDurationSec {
             parts.append(PlaybackClock.formatSeconds(Double(dur)))
+        } else if durMs > 0 {
+            parts.append(PlaybackClock.formatSeconds(Double(durMs) / 1000.0))
         }
-        if savedPositionMs > 0 {
-            parts.append("听至 \(ChapterProgressStore.formattedPosition(ms: savedPositionMs))")
+
+        if isFinished {
+            parts.append("已播完")
+        } else if posMs > 0 {
+            if durMs > 0 {
+                let pct = min(99, max(1, Int((Double(posMs) / Double(durMs) * 100.0).rounded())))
+                parts.append("已播 \(pct)%")
+            } else {
+                parts.append("已播")
+            }
         }
+
         if isDeleting {
             parts.append("删除中…")
         } else {
@@ -95,6 +127,10 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
         }
         return parts.joined(separator: " · ")
     }
+
+    var subtitleText: String {
+        subtitleText()
+    }
 }
 
 @MainActor
@@ -115,6 +151,8 @@ final class BookDetailModel {
     private(set) var chapterError: Error?
     private(set) var finishedChapterIDs: Set<String> = []
     private(set) var didApplyInitialPresentation: Bool = false
+    private(set) var hasFetchedFullIntro: Bool = false
+    private(set) var isLoadingIntro: Bool = false
 
     var customDetailLoader: ((BookRef) async throws -> BookDetailDTO)?
 
@@ -209,6 +247,7 @@ final class BookDetailModel {
             if !detail.intro.isEmpty {
                 cleanedIntro = Self.cleanHTML(detail.intro)
             }
+            hasFetchedFullIntro = true
             statusText = detail.status
             applyChapters(detail.chapters)
             ChapterCacheStore.saveChapters(detail.chapters, for: bookID)
@@ -230,6 +269,13 @@ final class BookDetailModel {
     private func refreshChaptersSilently(oldCount: Int) async {
         do {
             let detail = try await fetchDetail(for: currentBookRef)
+            if !detail.intro.isEmpty {
+                cleanedIntro = Self.cleanHTML(detail.intro)
+            }
+            if !detail.status.isEmpty {
+                statusText = detail.status
+            }
+            hasFetchedFullIntro = true
             guard !detail.chapters.isEmpty else { return }
             let diff = detail.chapters.count - oldCount
             applyChapters(detail.chapters)
@@ -239,6 +285,34 @@ final class BookDetailModel {
             }
         } catch {
             // 静默刷新失败不打断用户
+        }
+    }
+
+    func loadFullIntroIfNeeded() async {
+        guard !hasFetchedFullIntro, !isLoadingIntro else { return }
+        isLoadingIntro = true
+        defer { isLoadingIntro = false }
+        do {
+            let detail: BookDetailDTO
+            if let custom = customDetailLoader {
+                detail = try await custom(currentBookRef)
+            } else {
+                detail = try await PluginRuntime.shared.bookDetail(
+                    sourceID: currentBookRef.sourceID,
+                    bookURL: currentBookRef.bookURL,
+                    loadEpisodes: false,
+                    loadFullPages: false
+                )
+            }
+            if !detail.intro.isEmpty {
+                cleanedIntro = Self.cleanHTML(detail.intro)
+            }
+            if !detail.status.isEmpty {
+                statusText = detail.status
+            }
+            hasFetchedFullIntro = true
+        } catch {
+            // 保持已有简介，不打断用户展开浏览
         }
     }
 
@@ -278,7 +352,7 @@ final class BookDetailModel {
         }
 
         let ordered = isAscending ? baseSlice : Array(baseSlice.reversed())
-        let progressMap = ChapterProgressCache.shared.allProgressMap(for: bookID)
+        let progressSnapshots = ChapterProgressCache.shared.allSnapshotsMap(for: bookID)
 
         var results: [ChapterRowSnapshot] = []
         results.reserveCapacity(ordered.count)
@@ -332,13 +406,17 @@ final class BookDetailModel {
             }
 
             let isCurrent = (ch.id == currentPlayingChapterID)
-            let cachedPos = progressMap[ch.id] ?? 0
+            let progSnap = progressSnapshots[ch.id]
+            let cachedPos = progSnap?.positionMs ?? 0
             let pos: Int
             if isCurrent, let livePos = currentPlayingPositionMs, livePos > 0 {
                 pos = livePos
             } else {
                 pos = cachedPos
             }
+            let durMs = max(progSnap?.durationMs ?? 0, (ch.normalizedDurationSec ?? 0) * 1000)
+            let autoDone = durMs > 0 && pos >= Int(Double(durMs) * 0.98)
+            let isDone = finishedChapterIDs.contains(ch.id) || (progSnap?.isFinished == true) || autoDone
 
             results.append(
                 ChapterRowSnapshot(
@@ -347,7 +425,8 @@ final class BookDetailModel {
                     isCurrentPlayingChapter: isCurrent,
                     isEnginePlaying: isCurrent && isEnginePlaying,
                     savedPositionMs: pos,
-                    isFinished: finishedChapterIDs.contains(ch.id),
+                    durationMs: durMs,
+                    isFinished: isDone,
                     isVIP: ch.title.uppercased().contains("VIP"),
                     downloadState: dlState,
                     downloadedBytes: dlBytes,
@@ -401,11 +480,21 @@ final class BookDetailModel {
     }
 
     func toggleFinished(chapterID: String) {
-        if finishedChapterIDs.contains(chapterID) {
-            finishedChapterIDs.remove(chapterID)
-        } else {
+        let wasFinished = finishedChapterIDs.contains(chapterID)
+            || (ChapterProgressCache.shared.progress(bookID: currentBookRef.id, chapterID: chapterID)?.isFinished == true)
+        let nextFinished = !wasFinished
+        if nextFinished {
             finishedChapterIDs.insert(chapterID)
+        } else {
+            finishedChapterIDs.remove(chapterID)
         }
+        let durMs = (chapters.first(where: { $0.id == chapterID })?.normalizedDurationSec ?? 0) * 1000
+        ChapterProgressCache.shared.setFinished(
+            bookID: currentBookRef.id,
+            chapterID: chapterID,
+            isFinished: nextFinished,
+            durationMs: durMs
+        )
     }
 
     func startOrRetryChapterDownload(_ snap: ChapterRowSnapshot) {

@@ -15,7 +15,7 @@ import SwiftData
 ///   不改动 JS 运行时与插件协议。
 enum BundledSourceSeeder {
     /// 换了内置书源包内容时，把版本号 +1 即可让老用户重新安装一次
-    private static let seededKey = "bundled.sources.seeded.ShunAudiobookPro.v2"
+    private static let seededKey = "bundled.sources.seeded.ShunAudiobookPro.v3"
     private static let resourceName = "ShunAudiobookPro-v5.6"
     private static let resourceExt = "zip"
 

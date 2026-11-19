@@ -222,7 +222,7 @@ final class DownloadAndProgressTests: XCTestCase {
         )
         let activeSnap = snaps.first(where: { $0.id == chapters[501].id })
         XCTAssertEqual(activeSnap?.savedPositionMs, 33_000)
-        XCTAssertTrue(activeSnap?.subtitleText.contains("00:33") == true)
+        XCTAssertTrue(activeSnap?.subtitleText.contains("已播") == true)
 
         // 4. ChapterRow Equatable：非当前章节快照相等，推进播放时钟不触发非当前行重绘
         let snapA = ChapterRowSnapshot(

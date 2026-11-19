@@ -58,7 +58,7 @@ struct ChapterListView: View {
 
     var body: some View {
         let _ = downloadManager.stateVersion
-        let livePosMs = (player.currentBookID == listModel.book.id) ? max(0, Int(player.clock.currentTimeSec * 1000)) : nil
+        let livePosMs: Int? = nil
         let snapshots = listModel.visibleSnapshots(
             from: browserModel,
             isPlaying: isPlaying,
@@ -138,7 +138,7 @@ struct ChapterListView: View {
                         }
                     }
                 }
-                .confirmationDialog(
+                .alert(
                     pendingDeleteSnapshot.map { "确认删除「\($0.chapter.title)」的离线音频文件？" } ?? "确认删除该章离线文件？",
                     isPresented: Binding(
                         get: { pendingDeleteSnapshot != nil },
@@ -181,7 +181,9 @@ struct ChapterListView: View {
             HStack(spacing: Spacing.s2) {
                 Button {
                     DSHapticPolicy.fire(.selection)
-                    listModel.onlyDownloadedFilter.toggle()
+                    withAnimation(Motion.snappy) {
+                        listModel.onlyDownloadedFilter.toggle()
+                    }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: listModel.onlyDownloadedFilter ? "checkmark.circle.fill" : "checkmark.circle")
@@ -198,42 +200,24 @@ struct ChapterListView: View {
                 .buttonStyle(.plain)
 
                 if browserModel.segments.count > 1 && !listModel.onlyDownloadedFilter {
-                    Menu {
-                        Button {
-                            listModel.onlyDownloadedFilter = true
-                        } label: {
-                            Label("已下载章节（\(downloadedCount) 章）", systemImage: "checkmark.circle")
-                        }
-                        Divider()
-                        ForEach(Array(browserModel.segments.enumerated()), id: \.offset) { idx, seg in
-                            Button {
+                    PlayerChapterSegmentMenu(
+                        segments: browserModel.segments,
+                        selectedSegmentIndex: browserModel.selectedSegmentIndex,
+                        onlyDownloadedFilter: listModel.onlyDownloadedFilter,
+                        downloadedCount: downloadedCount,
+                        onSelectDownloadedOnly: {
+                            withAnimation(Motion.snappy) {
+                                listModel.onlyDownloadedFilter = true
+                            }
+                        },
+                        onSelectSegment: { idx in
+                            withAnimation(Motion.snappy) {
                                 listModel.onlyDownloadedFilter = false
                                 browserModel.selectedSegmentIndex = idx
-                            } label: {
-                                HStack {
-                                    Text("第 \(seg.label) 章")
-                                    if idx == browserModel.selectedSegmentIndex && !listModel.onlyDownloadedFilter {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
                             }
                         }
-                    } label: {
-                        let currentLabel = browserModel.segments.indices.contains(browserModel.selectedSegmentIndex)
-                            ? browserModel.segments[browserModel.selectedSegmentIndex].label
-                            : "1–100"
-                        HStack(spacing: 4) {
-                            Image(systemName: "square.grid.2x2")
-                            Text("第 \(currentLabel) 章")
-                            Image(systemName: "chevron.down")
-                                .font(DSTypography.caption2)
-                        }
-                        .font(DSTypography.caption.weight(.semibold))
-                        .foregroundStyle(Color.dsAccent)
-                        .padding(.horizontal, Spacing.s3)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(Color.dsAccent.opacity(0.16)))
-                    }
+                    )
+                    .equatable()
                 }
 
                 Button {
@@ -316,6 +300,59 @@ struct ChapterListView: View {
         case .downloading(let p): return "正在下载 \(Int((p * 100).rounded()))%"
         case .completed: return "已离线下载"
         case .failed: return "下载失败，可点击重试"
+        }
+    }
+}
+
+
+private struct PlayerChapterSegmentMenu: View, Equatable {
+    let segments: [ChapterSegmentItem]
+    let selectedSegmentIndex: Int
+    let onlyDownloadedFilter: Bool
+    let downloadedCount: Int
+    let onSelectDownloadedOnly: () -> Void
+    let onSelectSegment: (Int) -> Void
+
+    static func == (lhs: PlayerChapterSegmentMenu, rhs: PlayerChapterSegmentMenu) -> Bool {
+        lhs.segments == rhs.segments
+            && lhs.selectedSegmentIndex == rhs.selectedSegmentIndex
+            && lhs.onlyDownloadedFilter == rhs.onlyDownloadedFilter
+            && lhs.downloadedCount == rhs.downloadedCount
+    }
+
+    var body: some View {
+        Menu {
+            Button(action: onSelectDownloadedOnly) {
+                Label("已下载章节（\(downloadedCount) 章）", systemImage: "checkmark.circle")
+            }
+            Divider()
+            ForEach(Array(segments.enumerated()), id: \.offset) { idx, seg in
+                Button {
+                    onSelectSegment(idx)
+                } label: {
+                    HStack {
+                        Text("第 \(seg.label) 章")
+                        if idx == selectedSegmentIndex && !onlyDownloadedFilter {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            let currentLabel = segments.indices.contains(selectedSegmentIndex)
+                ? segments[selectedSegmentIndex].label
+                : "1–100"
+            HStack(spacing: 4) {
+                Image(systemName: "square.grid.2x2")
+                Text("第 \(currentLabel) 章")
+                Image(systemName: "chevron.down")
+                    .font(DSTypography.caption2)
+            }
+            .font(DSTypography.caption.weight(.semibold))
+            .foregroundStyle(Color.dsAccent)
+            .padding(.horizontal, Spacing.s3)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.dsAccent.opacity(0.16)))
         }
     }
 }

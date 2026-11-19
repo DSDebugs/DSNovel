@@ -19,7 +19,17 @@ enum PlayerSpeedFormatter {
     }
 }
 
-/// 五档音质选择（§3.2.1）：联动 BuiltinParserRuntime 多码率解析与 AVPlayerItem 前向缓冲时长
+/// 当前章节音质可调能力分级（音源/章节级能力感知）
+enum AudioQualitySupportMode: Equatable, Sendable {
+    /// 原生多码率书源/通道（喜马拉雅、番茄畅听喜马免费库通道）
+    case multiBitrate
+    /// 服务端固定单码率书源/通道（听友、云图、博看、听书网、番茄听友/云图通道）
+    case fixedSingleBitrate
+    /// 本地已下载离线音频
+    case localOffline
+}
+
+/// 四档真实音质选择（保留 lossless 枚举值仅用于兼容旧存档平滑迁移至 high）
 enum AudioQualityTier: String, CaseIterable, Identifiable, Codable, Sendable {
     case auto = "auto"
     case dataSaver = "dataSaver"
@@ -27,15 +37,20 @@ enum AudioQualityTier: String, CaseIterable, Identifiable, Codable, Sendable {
     case high = "high"
     case lossless = "lossless"
 
+    static let visibleTiers: [AudioQualityTier] = [.auto, .dataSaver, .standard, .high]
+
     var id: String { rawValue }
+
+    nonisolated var normalizedForSelection: AudioQualityTier {
+        self == .lossless ? .high : self
+    }
 
     var title: String {
         switch self {
         case .auto: return "智能自适应"
         case .dataSaver: return "省流"
         case .standard: return "标准"
-        case .high: return "高清"
-        case .lossless: return "臻享原声"
+        case .high, .lossless: return "高清"
         }
     }
 
@@ -44,18 +59,25 @@ enum AudioQualityTier: String, CaseIterable, Identifiable, Codable, Sendable {
         case .auto: return "自适应"
         case .dataSaver: return "省流 32k"
         case .standard: return "标准 64k"
-        case .high: return "HQ 128k"
-        case .lossless: return "SQ 臻享"
+        case .high, .lossless: return "HQ 128k"
+        }
+    }
+
+    nonisolated func effectiveBadgeText(isOnWiFi: Bool) -> String {
+        switch self {
+        case .auto: return isOnWiFi ? "自适应·128k" : "自适应·64k"
+        case .dataSaver: return "省流 32k"
+        case .standard: return "标准 64k"
+        case .high, .lossless: return "HQ 128k"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .auto: return "Wi-Fi 下自动优选 128kbps 高清，移动网络下切换 64kbps 标准"
+        case .auto: return "Wi-Fi 下优选 128kbps 高清，移动网络下自动切换 64kbps 标准"
         case .dataSaver: return "约 12 MB/小时（M4A 24–32kbps），适合弱网与移动流量收听"
-        case .standard: return "约 28 MB/小时（M4A/MP3 64kbps），清晰人声与流量平衡"
-        case .high: return "约 56 MB/小时（AAC/M4A 128kbps），保留饱满演播细节与配乐"
-        case .lossless: return "优先请求书源最高可用码率（最高 320kbps / 无损流），适合多人有声剧"
+        case .standard: return "约 28 MB/小时（M4A/MP3 64kbps），清晰人声与流量占用平衡"
+        case .high, .lossless: return "约 56 MB/小时（AAC/M4A 128kbps），保留饱满演播细节与配乐"
         }
     }
 
@@ -73,8 +95,7 @@ enum AudioQualityTier: String, CaseIterable, Identifiable, Codable, Sendable {
         case .dataSaver: return 6.0
         case .standard: return 15.0
         case .auto: return 15.0
-        case .high: return 24.0
-        case .lossless: return 30.0
+        case .high, .lossless: return 24.0
         }
     }
 }

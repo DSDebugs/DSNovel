@@ -7,7 +7,6 @@ struct ShelfGrid: View {
     private let onSelectBook: (BookCardModel) -> Void
     private let onPlayBook: (BookCardModel) -> Void
     private let onTogglePin: (BookCardModel) -> Void
-    private let onMoveCategory: (BookCardModel) -> Void
     private let onDownloadUnread: (BookCardModel) -> Void
     private let onRemove: (BookCardModel) -> Void
 
@@ -20,7 +19,6 @@ struct ShelfGrid: View {
         onSelectBook: @escaping (BookCardModel) -> Void,
         onPlayBook: @escaping (BookCardModel) -> Void,
         onTogglePin: @escaping (BookCardModel) -> Void,
-        onMoveCategory: @escaping (BookCardModel) -> Void,
         onDownloadUnread: @escaping (BookCardModel) -> Void,
         onRemove: @escaping (BookCardModel) -> Void
     ) {
@@ -30,7 +28,6 @@ struct ShelfGrid: View {
         self.onSelectBook = onSelectBook
         self.onPlayBook = onPlayBook
         self.onTogglePin = onTogglePin
-        self.onMoveCategory = onMoveCategory
         self.onDownloadUnread = onDownloadUnread
         self.onRemove = onRemove
     }
@@ -66,11 +63,6 @@ struct ShelfGrid: View {
                         onTogglePin(item)
                     } label: {
                         Label(item.isPinned ? "取消置顶" : "置顶", systemImage: item.isPinned ? "pin.slash" : "pin")
-                    }
-                    Button {
-                        onMoveCategory(item)
-                    } label: {
-                        Label("移动到分类", systemImage: "folder")
                     }
                     Button {
                         onDownloadUnread(item)

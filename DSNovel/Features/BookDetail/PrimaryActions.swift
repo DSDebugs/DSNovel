@@ -5,9 +5,7 @@ struct PrimaryActions: View {
     let isPlayingThisBook: Bool
     let isEnginePlaying: Bool
     let hasProgress: Bool
-    let lastChapterIndex: Int
-    let lastPositionText: String
-    let lastPlayedRelativeText: String?
+    let activeChapterTitle: String?
     let downloadedCount: Int
     let downloadedBytesText: String?
     let activeDownloadCount: Int
@@ -28,9 +26,7 @@ struct PrimaryActions: View {
         isPlayingThisBook: Bool = false,
         isEnginePlaying: Bool = false,
         hasProgress: Bool,
-        lastChapterIndex: Int,
-        lastPositionText: String,
-        lastPlayedRelativeText: String?,
+        activeChapterTitle: String? = nil,
         downloadedCount: Int = 0,
         downloadedBytesText: String? = nil,
         activeDownloadCount: Int = 0,
@@ -50,9 +46,7 @@ struct PrimaryActions: View {
         self.isPlayingThisBook = isPlayingThisBook
         self.isEnginePlaying = isEnginePlaying
         self.hasProgress = hasProgress
-        self.lastChapterIndex = lastChapterIndex
-        self.lastPositionText = lastPositionText
-        self.lastPlayedRelativeText = lastPlayedRelativeText
+        self.activeChapterTitle = activeChapterTitle
         self.downloadedCount = downloadedCount
         self.downloadedBytesText = downloadedBytesText
         self.activeDownloadCount = activeDownloadCount
@@ -73,19 +67,23 @@ struct PrimaryActions: View {
         if isLoadingChapters {
             return "正在获取章节…"
         }
-        if isPlayingThisBook && lastChapterIndex > 0 {
-            let prefix = isEnginePlaying ? "播放中" : "继续"
-            return "\(prefix) · 第 \(lastChapterIndex) 章 \(lastPositionText)"
+        let cleanTitle = activeChapterTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if isPlayingThisBook {
+            if isEnginePlaying {
+                return cleanTitle.isEmpty ? "暂停播放" : "暂停 · \(cleanTitle)"
+            } else {
+                return cleanTitle.isEmpty ? "继续播放" : "继续 · \(cleanTitle)"
+            }
         }
-        if hasProgress && lastChapterIndex > 0 {
-            return "继续 · 第 \(lastChapterIndex) 章 \(lastPositionText)"
+        if hasProgress && !cleanTitle.isEmpty {
+            return "继续 · \(cleanTitle)"
         }
         return "开始收听"
     }
 
     private var primaryIcon: String {
         if isPlayingThisBook && isEnginePlaying {
-            return "waveform"
+            return "pause.fill"
         }
         return "play.fill"
     }
@@ -99,6 +97,7 @@ struct PrimaryActions: View {
                     role: isLoadingChapters ? .loading : .primary,
                     action: onPrimaryPlay
                 )
+                .accessibilityLabel(primaryTitle)
 
                 Menu {
                     Button {
@@ -177,41 +176,28 @@ struct PrimaryActions: View {
                 )
             }
 
-            if hasProgress || downloadedCount > 0 || activeDownloadCount > 0 {
+            if downloadedCount > 0 || activeDownloadCount > 0 {
                 HStack(spacing: Spacing.s2) {
-                    if let lastPlayedRelativeText, !lastPlayedRelativeText.isEmpty, hasProgress {
-                        HStack(spacing: 4) {
-                            Image(systemName: isPlayingThisBook && isEnginePlaying ? "waveform" : "clock")
-                                .font(DSTypography.caption2)
-                            Text(isPlayingThisBook && isEnginePlaying ? "正在实时同步进度" : "上次听到 \(lastPlayedRelativeText)")
-                        }
-                        .font(DSTypography.caption)
-                        .foregroundStyle(isPlayingThisBook && isEnginePlaying ? Color.dsAccent : .secondary)
-                    }
-
                     Spacer(minLength: 0)
-
-                    if downloadedCount > 0 || activeDownloadCount > 0 {
-                        Button(action: onViewDownloadedChapters) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(DSTypography.caption2)
-                                    .foregroundStyle(.green)
-                                if let downloadedBytesText, !downloadedBytesText.isEmpty, downloadedCount > 0 {
-                                    Text("已下载 \(downloadedCount) 章 (\(downloadedBytesText))")
-                                } else if downloadedCount > 0 {
-                                    Text("已下载 \(downloadedCount) 章")
-                                } else {
-                                    Text("正在下载 \(activeDownloadCount) 章")
-                                }
-                                Image(systemName: "chevron.right")
-                                    .font(DSTypography.caption2)
+                    Button(action: onViewDownloadedChapters) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(DSTypography.caption2)
+                                .foregroundStyle(.green)
+                            if let downloadedBytesText, !downloadedBytesText.isEmpty, downloadedCount > 0 {
+                                Text("已下载 \(downloadedCount) 章 (\(downloadedBytesText))")
+                            } else if downloadedCount > 0 {
+                                Text("已下载 \(downloadedCount) 章")
+                            } else {
+                                Text("正在下载 \(activeDownloadCount) 章")
                             }
-                            .font(DSTypography.numericCaption.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(DSTypography.caption2)
                         }
-                        .buttonStyle(.plain)
+                        .font(DSTypography.numericCaption.weight(.medium))
+                        .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }

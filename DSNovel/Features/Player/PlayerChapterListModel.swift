@@ -55,16 +55,21 @@ final class PlayerChapterListModel {
 
     var snapshots: [ChapterRowSnapshot] {
         let liveMap = DownloadManager.shared.bookSnapshots(for: book.id)
-        let progressMap = ChapterProgressCache.shared.allProgressMap(for: book.id)
+        let progressMap = ChapterProgressCache.shared.allSnapshotsMap(for: book.id)
         return chapters.map { ch in
             let resolved = resolveDownloadState(for: ch, liveSnapshots: liveMap)
+            let snap = progressMap[ch.id]
+            let pos = snap?.positionMs ?? 0
+            let dur = max(snap?.durationMs ?? 0, (ch.normalizedDurationSec ?? 0) * 1000)
+            let isDone = (snap?.isFinished == true) || (dur > 0 && pos >= Int(Double(dur) * 0.98))
             return ChapterRowSnapshot(
                 chapter: ch,
                 displayIndex: ch.index + 1,
                 isCurrentPlayingChapter: ch.id == currentChapterID,
                 isEnginePlaying: false,
-                savedPositionMs: progressMap[ch.id] ?? 0,
-                isFinished: false,
+                savedPositionMs: pos,
+                durationMs: dur,
+                isFinished: isDone,
                 isVIP: ch.title.uppercased().contains("VIP"),
                 downloadState: resolved.state,
                 downloadedBytes: resolved.bytes

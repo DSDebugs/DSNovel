@@ -11,8 +11,6 @@ struct LibraryRootView: View {
 
     @State private var isEditing = false
     @State private var selectedIDs: Set<String> = []
-    @State private var showNewCategoryAlert = false
-    @State private var newCategoryName = ""
     @State private var pendingDeleteDownloadBook: Book?
 
     init() {}
@@ -86,7 +84,6 @@ struct LibraryRootView: View {
                         selectedIDs = Set(libraryStore.shelfBooks.map(\.id))
                     }
                 },
-                onManageCategories: { showNewCategoryAlert = true },
                 onOpenHistory: { AppRouter.shared.open(.history) },
                 onOpenDownloads: { AppRouter.shared.open(.downloads) }
             )
@@ -95,7 +92,6 @@ struct LibraryRootView: View {
             if isEditing {
                 ShelfSelectionBar(
                     selectedCount: selectedIDs.count,
-                    onMove: { showNewCategoryAlert = true },
                     onDownload: { batchDownloadSelected() },
                     onPin: { batchTogglePinSelected() },
                     onRemove: { batchRemoveSelected() }
@@ -106,20 +102,7 @@ struct LibraryRootView: View {
             let count = await libraryStore.checkUpdates()
             BannerCenter.shared.show(count > 0 ? "\(count) 本有新章节" : "已是最新章节", kind: .info)
         }
-        .alert("新建书架分类", isPresented: $showNewCategoryAlert) {
-            TextField("分类名称", text: $newCategoryName)
-            Button("创建") {
-                let trimmed = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    modelContext.insert(ShelfCategory(name: trimmed, order: libraryStore.categories.count))
-                    try? modelContext.save()
-                    libraryStore.refreshNow()
-                }
-                newCategoryName = ""
-            }
-            Button("取消", role: .cancel) { newCategoryName = "" }
-        }
-        .confirmationDialog(
+        .alert(
             pendingDeleteDownloadBook.map { book in
                 let sum = downloadManager.summariesByBookID[book.id]
                 let count = sum?.completedCount ?? 0
@@ -129,8 +112,7 @@ struct LibraryRootView: View {
             isPresented: Binding(
                 get: { pendingDeleteDownloadBook != nil },
                 set: { if !$0 { pendingDeleteDownloadBook = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
             Button("删除离线章节", role: .destructive) {
                 if let target = pendingDeleteDownloadBook {
@@ -311,7 +293,6 @@ struct LibraryRootView: View {
                         onSelectBook: { handleCardTap($0) },
                         onPlayBook: { playByModel($0) },
                         onTogglePin: { togglePin($0.id) },
-                        onMoveCategory: { _ in showNewCategoryAlert = true },
                         onDownloadUnread: { downloadUnread($0.id) },
                         onRemove: { handleRemoveAction($0.id) }
                     )

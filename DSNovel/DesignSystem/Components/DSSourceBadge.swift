@@ -56,40 +56,45 @@ struct DSSourceBadge: View {
     let name: String
     let health: DSSourceHealthKind
     let latencyMs: Int?
+    let showHealthAndLatency: Bool
 
     init(
         name: String,
         health: DSSourceHealthKind = .untested,
-        latencyMs: Int? = nil
+        latencyMs: Int? = nil,
+        showHealthAndLatency: Bool = true
     ) {
         self.name = name
         self.health = health
         self.latencyMs = latencyMs
+        self.showHealthAndLatency = showHealthAndLatency
     }
 
     var body: some View {
         HStack(spacing: Spacing.s1) {
-            DSSourceAvatar(name: name, size: 20)
+            DSSourceAvatar(name: name, size: 18)
 
             Text(name)
-                .font(DSTypography.subtitle.weight(.medium))
+                .font(DSTypography.caption.weight(.medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
 
-            Image(systemName: health.iconName)
-                .font(.caption2)
-                .foregroundStyle(health.statusColor)
+            if showHealthAndLatency {
+                Image(systemName: health.iconName)
+                    .font(.caption2)
+                    .foregroundStyle(health.statusColor)
 
-            if let latencyMs, latencyMs > 0 {
-                Text("\(latencyMs)ms")
-                    .font(DSTypography.numericCaption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                if let latencyMs, latencyMs > 0 {
+                    Text("\(latencyMs)ms")
+                        .font(DSTypography.numericCaption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
         }
         .padding(.horizontal, Spacing.s2)
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
         .background(
             Capsule(style: .continuous)
                 .fill(Color.dsSurfaceGrouped)

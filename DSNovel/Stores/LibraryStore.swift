@@ -7,7 +7,6 @@ enum LibraryFilter: Hashable, Equatable, Sendable {
     case inProgress
     case downloaded
     case updated
-    case category(String)
 
     var title: String {
         switch self {
@@ -15,7 +14,6 @@ enum LibraryFilter: Hashable, Equatable, Sendable {
         case .inProgress: return "在追"
         case .downloaded: return "已下载"
         case .updated: return "有更新"
-        case .category(let id): return id
         }
     }
 }
@@ -124,7 +122,6 @@ final class LibraryStore {
     private(set) var shelfBooks: [Book] = []
     private(set) var recentBooks: [Book] = []
     private(set) var continueBook: Book?
-    private(set) var categories: [ShelfCategory] = []
     private(set) var filterCounts: [LibraryFilter: Int] = [:]
     private(set) var updatedCount: Int = 0
     private(set) var hiddenBookIDs: Set<String> = []
@@ -169,13 +166,9 @@ final class LibraryStore {
             predicate: #Predicate<Book> { $0.lastPlayedAt != nil },
             sortBy: [SortDescriptor(\Book.lastPlayedAt, order: .reverse)]
         )
-        let catDesc = FetchDescriptor<ShelfCategory>(
-            sortBy: [SortDescriptor(\ShelfCategory.order)]
-        )
 
         let rawAllBooks = (try? ctx.fetch(allBooksDesc)) ?? []
         let rawHistory = (try? ctx.fetch(historyDesc)) ?? []
-        categories = (try? ctx.fetch(catDesc)) ?? []
 
         var byID: [String: Book] = [:]
         for b in rawAllBooks {
@@ -330,9 +323,6 @@ final class LibraryStore {
         let upd = allShelfBooks.filter { Self.matchesFilter($0, filter: .updated, downloadedBookIDs: dlIDs) }.count
         counts[.updated] = upd
         updatedCount = upd
-        for cat in categories {
-            counts[.category(cat.id)] = allShelfBooks.filter { $0.categoryID == cat.id }.count
-        }
         filterCounts = counts
 
         let filtered: [Book]
@@ -358,8 +348,6 @@ final class LibraryStore {
             return downloadedBookIDs.contains(book.id)
         case .updated:
             return book.hasUpdate
-        case .category(let catID):
-            return book.categoryID == catID
         }
     }
 

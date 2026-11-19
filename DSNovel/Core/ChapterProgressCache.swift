@@ -109,6 +109,27 @@ final class ChapterProgressCache {
         return result
     }
 
+    func allSnapshotsMap(for bookID: String) -> [String: ChapterProgressSnapshot] {
+        loadBookIfNeeded(bookID)
+        return byBook[bookID] ?? [:]
+    }
+
+    func setFinished(bookID: String, chapterID: String, isFinished: Bool, durationMs: Int = 0) {
+        guard !bookID.isEmpty, !chapterID.isEmpty else { return }
+        loadBookIfNeeded(bookID)
+        let existing = byBook[bookID]?[chapterID]
+        let resolvedDur = max(durationMs, existing?.durationMs ?? 0)
+        let resolvedPos = isFinished ? max(resolvedDur, existing?.positionMs ?? 0) : (existing?.positionMs ?? 0)
+        update(
+            bookID: bookID,
+            chapterID: chapterID,
+            positionMs: resolvedPos,
+            durationMs: resolvedDur,
+            isFinished: isFinished,
+            forceFlush: true
+        )
+    }
+
     func update(
         bookID: String,
         chapterID: String,
@@ -120,12 +141,17 @@ final class ChapterProgressCache {
     ) {
         guard !bookID.isEmpty, !chapterID.isEmpty else { return }
         loadBookIfNeeded(bookID)
+        let existingFinished = byBook[bookID]?[chapterID]?.isFinished ?? false
+        let resolvedDurationMs = max(0, durationMs)
+        let resolvedPositionMs = max(0, positionMs)
+        let autoFinished = resolvedDurationMs > 0 && resolvedPositionMs >= Int(Double(resolvedDurationMs) * 0.98)
+        let finalFinished = isFinished || autoFinished || (existingFinished && resolvedPositionMs >= Int(Double(max(resolvedDurationMs, 1)) * 0.90))
         let snap = ChapterProgressSnapshot(
             bookID: bookID,
             chapterID: chapterID,
-            positionMs: max(0, positionMs),
-            durationMs: max(0, durationMs),
-            isFinished: isFinished,
+            positionMs: resolvedPositionMs,
+            durationMs: resolvedDurationMs,
+            isFinished: finalFinished,
             updatedAt: now
         )
         var bookDict = byBook[bookID] ?? [:]

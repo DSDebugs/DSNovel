@@ -37,11 +37,13 @@ struct DSActionButton: View {
                 }
                 Text(title)
                     .font(DSTypography.rowTitle)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .foregroundStyle(foregroundColor)
-            .padding(.horizontal, Spacing.s5)
+            .padding(.horizontal, Spacing.s4)
             .frame(maxWidth: role == .primary || role == .loading ? .infinity : nil)
-            .frame(height: role == .primary || role == .loading ? 52 : 44)
+            .frame(height: role == .primary || role == .loading ? 50 : 44)
             .background(
                 Capsule(style: .continuous)
                     .fill(backgroundColor)
@@ -82,7 +84,7 @@ struct DSActionButton: View {
 
 #Preview("Light") {
     VStack(spacing: 12) {
-        DSActionButton(title: "继续 · 第 12 章 04:20", icon: "play.fill", role: .primary)
+        DSActionButton(title: "继续 · 精品有声推荐", icon: "play.fill", role: .primary)
         DSActionButton(title: "下载章节", icon: "arrow.down.circle", role: .secondary)
     }
     .padding()
@@ -96,10 +98,4 @@ struct DSActionButton: View {
     }
     .padding()
     .preferredColorScheme(.dark)
-}
-
-#Preview("AX") {
-    DSActionButton(title: "开始收听", icon: "play.fill", role: .primary)
-        .padding()
-        .environment(\.sizeCategory, .accessibilityExtraExtraLarge)
 }

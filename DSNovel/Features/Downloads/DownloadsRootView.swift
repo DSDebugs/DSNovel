@@ -150,13 +150,12 @@ struct DownloadsRootView: View {
         .scrollContentBackground(.hidden)
         .navigationTitle("下载管理")
         .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog(
+        .alert(
             pendingDeleteSummary.map { "确认删除《\($0.bookTitle)》的 \($0.completedCount) 章离线音频（\(formatBytes($0.totalBytes))）？" } ?? "确认删除离线音频？",
             isPresented: Binding(
                 get: { pendingDeleteSummary != nil },
                 set: { if !$0 { pendingDeleteSummary = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
             Button("删除离线章节", role: .destructive) {
                 if let sum = pendingDeleteSummary {

@@ -188,13 +188,12 @@ struct BookDownloadDetailView: View {
                 }
             }
         }
-        .confirmationDialog(
+        .alert(
             pendingDeleteItem.map { "确认删除「\($0.chapterTitle)」的离线文件（\(formatBytes($0.bytes))）？" } ?? "确认删除该章节离线文件？",
             isPresented: Binding(
                 get: { pendingDeleteItem != nil },
                 set: { if !$0 { pendingDeleteItem = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
             Button("删除离线文件", role: .destructive) {
                 if let target = pendingDeleteItem {
@@ -214,10 +213,9 @@ struct BookDownloadDetailView: View {
         } message: {
             Text("删除后释放本地存储空间，再次收听需联网或重新下载。")
         }
-        .confirmationDialog(
+        .alert(
             "确认清空《\(bookTitle)》全部 \(completedItems.count) 章离线音频（\(formatBytes(totalBytes))）？",
-            isPresented: $showClearAllConfirm,
-            titleVisibility: .visible
+            isPresented: $showClearAllConfirm
         ) {
             Button("清空全部已下载章节", role: .destructive) {
                 DSHapticPolicy.fire(.warning)

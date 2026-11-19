@@ -109,22 +109,12 @@ enum LibraryCardMapper {
     }
 
     static func makeFilterChips(from store: LibraryStore) -> [DSChipItem<LibraryFilter>] {
-        var items: [DSChipItem<LibraryFilter>] = [
+        return [
             DSChipItem(id: .all, title: "全部", count: store.filterCounts[.all]),
             DSChipItem(id: .inProgress, title: "在追", count: store.filterCounts[.inProgress]),
             DSChipItem(id: .downloaded, title: "已下载", count: store.filterCounts[.downloaded]),
             DSChipItem(id: .updated, title: "有更新", count: store.filterCounts[.updated])
         ]
-        for cat in store.categories {
-            items.append(
-                DSChipItem(
-                    id: .category(cat.id),
-                    title: cat.name,
-                    count: store.filterCounts[.category(cat.id)]
-                )
-            )
-        }
-        return items
     }
 
     static func playBookImmediately(_ book: Book, player: PlayerEngine) {

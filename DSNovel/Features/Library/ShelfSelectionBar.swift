@@ -2,20 +2,17 @@ import SwiftUI
 
 struct ShelfSelectionBar: View {
     let selectedCount: Int
-    private let onMove: () -> Void
     private let onDownload: () -> Void
     private let onPin: () -> Void
     private let onRemove: () -> Void
 
     init(
         selectedCount: Int,
-        onMove: @escaping () -> Void,
         onDownload: @escaping () -> Void,
         onPin: @escaping () -> Void,
         onRemove: @escaping () -> Void
     ) {
         self.selectedCount = selectedCount
-        self.onMove = onMove
         self.onDownload = onDownload
         self.onPin = onPin
         self.onRemove = onRemove
@@ -23,13 +20,6 @@ struct ShelfSelectionBar: View {
 
     var body: some View {
         HStack {
-            Button(action: onMove) {
-                Label("移动", systemImage: "folder")
-            }
-            .disabled(selectedCount == 0)
-
-            Spacer()
-
             Button(action: onDownload) {
                 Label("下载", systemImage: "arrow.down.circle")
             }

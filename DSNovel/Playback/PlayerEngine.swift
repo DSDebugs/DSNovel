@@ -173,12 +173,35 @@ final class PlayerEngine {
         return idx + 1
     }
 
+    /// 当前章节音质可调能力分级（区分多码率 / 固定单码率 / 本地离线）
+    var currentAudioQualitySupportMode: AudioQualitySupportMode {
+        if isPlayingLocalFile {
+            return .localOffline
+        }
+        guard let book = currentBook else {
+            return .fixedSingleBitrate
+        }
+        if book.sourceID == "6e2b9c4d8a1f4d37b5c0e73a9f1d2b64" {
+            return .multiBitrate
+        }
+        if book.sourceID == "fanqie_changting_pro_v56",
+           let url = currentChapter?.url,
+           url.hasPrefix("fq://xmly_track/") || url.hasPrefix("fq://free_xmly/") {
+            return .multiBitrate
+        }
+        return .fixedSingleBitrate
+    }
+
     /// 顶栏音质/离线状态徽标文案
     var streamStatusBadgeText: String {
-        if isPlayingLocalFile {
+        switch currentAudioQualitySupportMode {
+        case .localOffline:
             return "本地离线"
+        case .fixedSingleBitrate:
+            return "音源原画"
+        case .multiBitrate:
+            return audioQualityTier.effectiveBadgeText(isOnWiFi: DownloadManager.shared.isOnWiFi)
         }
-        return audioQualityTier.badgeText
     }
 
     var canPlayPreviousChapter: Bool {
@@ -282,19 +305,21 @@ final class PlayerEngine {
     // MARK: - 音质与音效调节接口
 
     func setAudioQualityTier(_ tier: AudioQualityTier, reloadCurrent: Bool = false) {
-        audioQualityTier = tier
-        AppSettingsStore.shared.audioQualityTier = tier
+        let normalized = tier.normalizedForSelection
+        audioQualityTier = normalized
+        AppSettingsStore.shared.audioQualityTier = normalized
         if let item = player.currentItem {
-            item.preferredForwardBufferDuration = tier.preferredForwardBufferDuration
+            item.preferredForwardBufferDuration = normalized.preferredForwardBufferDuration
         }
-        let code = tier.parserQualityCode(isOnWiFi: DownloadManager.shared.isOnWiFi)
+        let shouldReload = reloadCurrent && currentAudioQualitySupportMode == .multiBitrate
+        let code = normalized.parserQualityCode(isOnWiFi: DownloadManager.shared.isOnWiFi)
         Task {
             let parsers = await BuiltinParserRuntime.shared.installedParsers()
             for p in parsers {
                 await BuiltinParserRuntime.shared.setConfigValue(parserID: p.id, key: "quality", value: code)
                 await BuiltinParserRuntime.shared.invalidateCache(parserID: p.id, episodeURL: nil)
             }
-            if reloadCurrent {
+            if shouldReload {
                 self.retryCurrentChapter()
             }
         }
@@ -1108,6 +1133,16 @@ final class PlayerEngine {
 
     private func handleChapterFinished() {
         if let book = currentBook, let finished = currentChapter {
+            let durSec = clock.durationSec > 0 ? clock.durationSec : Double(finished.normalizedDurationSec ?? 0)
+            let durMs = max(0, Int(durSec * 1000))
+            ChapterProgressCache.shared.update(
+                bookID: book.id,
+                chapterID: finished.id,
+                positionMs: durMs,
+                durationMs: durMs,
+                isFinished: true,
+                forceFlush: true
+            )
             DownloadManager.shared.cleanupPrecacheIfNeeded(bookID: book.id, chapterID: finished.id)
         }
         if sleepOption == .endOfChapter {
@@ -1130,7 +1165,7 @@ final class PlayerEngine {
 
     private func loadBookPreferences(for bookID: String) {
         let settings = AppSettingsStore.shared
-        audioQualityTier = settings.audioQualityTier
+        audioQualityTier = settings.audioQualityTier.normalizedForSelection
         audioEffectPreset = settings.audioEffectPreset
         customEQBandsDb = settings.customEQBandsDb
         audioBoostDB = settings.audioBoostDB
@@ -1261,16 +1296,9 @@ final class PlayerEngine {
             Task { @MainActor in self?.playPreviousChapter() }
             return .success
         }
-        center.skipForwardCommand.preferredIntervals = [30]
-        center.skipForwardCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skipForward(30) }
-            return .success
-        }
-        center.skipBackwardCommand.preferredIntervals = [15]
-        center.skipBackwardCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skipBackward(15) }
-            return .success
-        }
+        // 禁用快进/快退 15s/30s 命令，确保灵动岛、锁屏界面与控制中心优先展示「上一章 / 下一章」切换按钮
+        center.skipForwardCommand.isEnabled = false
+        center.skipBackwardCommand.isEnabled = false
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let posEvent = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             let targetTime = posEvent.positionTime

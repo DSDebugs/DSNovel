@@ -246,10 +246,12 @@ struct ChapterSection: View {
     private var modeAndSegmentControlRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Spacing.s2) {
-                // 选项 1：已下载章节（优先首项入口）
+                // 选项 1：已下载章节（优先首项入口，再次点击关闭回到已选的全部章节）
                 Button {
                     DSHapticPolicy.fire(.selection)
-                    isShowingDownloadedOnly = true
+                    withAnimation(Motion.snappy) {
+                        isShowingDownloadedOnly.toggle()
+                    }
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: isShowingDownloadedOnly ? "checkmark.circle.fill" : "arrow.down.circle")
@@ -268,58 +270,28 @@ struct ChapterSection: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("已下载章节，共 \(downloadedCount) 章")
 
-                // 选项 2：全部章节与百章区间菜单（菜单内亦包含“已下载章节”选项）
+                // 选项 2：全部章节与百章区间菜单（Equatable 隔离，防止播放时闪烁）
                 if segments.count > 1 {
-                    Menu {
-                        Button {
+                    BookChapterSegmentMenu(
+                        segments: segments,
+                        selectedSegmentIndex: selectedSegmentIndex,
+                        isShowingDownloadedOnly: isShowingDownloadedOnly,
+                        downloadedCount: downloadedCount,
+                        onSelectDownloadedOnly: {
                             DSHapticPolicy.fire(.selection)
-                            isShowingDownloadedOnly = true
-                        } label: {
-                            HStack {
-                                Text("已下载章节（\(downloadedCount) 章）")
-                                if isShowingDownloadedOnly {
-                                    Image(systemName: "checkmark")
-                                }
+                            withAnimation(Motion.snappy) {
+                                isShowingDownloadedOnly = true
                             }
-                        }
-
-                        Divider()
-
-                        ForEach(Array(segments.enumerated()), id: \.offset) { idx, seg in
-                            Button {
-                                DSHapticPolicy.fire(.selection)
+                        },
+                        onSelectSegment: { idx in
+                            DSHapticPolicy.fire(.selection)
+                            withAnimation(Motion.snappy) {
                                 isShowingDownloadedOnly = false
                                 selectedSegmentIndex = idx
-                            } label: {
-                                HStack {
-                                    Text("第 \(seg.label) 章")
-                                    if !isShowingDownloadedOnly && idx == selectedSegmentIndex {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
                             }
                         }
-                    } label: {
-                        let segLabel = segments.indices.contains(selectedSegmentIndex)
-                            ? segments[selectedSegmentIndex].label
-                            : "1–100"
-                        HStack(spacing: 4) {
-                            Image(systemName: "list.number")
-                                .font(DSTypography.caption)
-                            Text(isShowingDownloadedOnly ? "全部章节 (\(segLabel))" : "全部 · 第 \(segLabel) 章")
-                                .font(DSTypography.numericCaption.weight(.semibold))
-                            Image(systemName: "chevron.down")
-                                .font(DSTypography.caption2)
-                        }
-                        .foregroundStyle(!isShowingDownloadedOnly ? Color.dsOnAccent : .primary)
-                        .padding(.horizontal, Spacing.s3)
-                        .padding(.vertical, 7)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(!isShowingDownloadedOnly ? Color.dsAccent : Color.dsSurfaceGrouped)
-                        )
-                    }
-                    .accessibilityLabel("切换章节区间")
+                    )
+                    .equatable()
                 } else {
                     Button {
                         DSHapticPolicy.fire(.selection)
@@ -499,5 +471,70 @@ struct ChapterSection: View {
             .padding(Spacing.s6)
             .frame(maxWidth: .infinity)
         }
+    }
+}
+
+
+private struct BookChapterSegmentMenu: View, Equatable {
+    let segments: [ChapterSegmentItem]
+    let selectedSegmentIndex: Int
+    let isShowingDownloadedOnly: Bool
+    let downloadedCount: Int
+    let onSelectDownloadedOnly: () -> Void
+    let onSelectSegment: (Int) -> Void
+
+    static func == (lhs: BookChapterSegmentMenu, rhs: BookChapterSegmentMenu) -> Bool {
+        lhs.segments == rhs.segments
+            && lhs.selectedSegmentIndex == rhs.selectedSegmentIndex
+            && lhs.isShowingDownloadedOnly == rhs.isShowingDownloadedOnly
+            && lhs.downloadedCount == rhs.downloadedCount
+    }
+
+    var body: some View {
+        Menu {
+            Button(action: onSelectDownloadedOnly) {
+                HStack {
+                    Text("已下载章节（\(downloadedCount) 章）")
+                    if isShowingDownloadedOnly {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+
+            Divider()
+
+            ForEach(Array(segments.enumerated()), id: \.offset) { idx, seg in
+                Button {
+                    onSelectSegment(idx)
+                } label: {
+                    HStack {
+                        Text("第 \(seg.label) 章")
+                        if !isShowingDownloadedOnly && idx == selectedSegmentIndex {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            let segLabel = segments.indices.contains(selectedSegmentIndex)
+                ? segments[selectedSegmentIndex].label
+                : "1–100"
+            HStack(spacing: 4) {
+                Image(systemName: "list.number")
+                    .font(DSTypography.caption)
+                Text(isShowingDownloadedOnly ? "全部章节 (\(segLabel))" : "全部 · 第 \(segLabel) 章")
+                    .font(DSTypography.numericCaption.weight(.semibold))
+                Image(systemName: "chevron.down")
+                    .font(DSTypography.caption2)
+            }
+            .foregroundStyle(!isShowingDownloadedOnly ? Color.dsOnAccent : .primary)
+            .padding(.horizontal, Spacing.s3)
+            .padding(.vertical, 7)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(!isShowingDownloadedOnly ? Color.dsAccent : Color.dsSurfaceGrouped)
+            )
+        }
+        .accessibilityLabel("切换章节区间")
     }
 }

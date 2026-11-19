@@ -828,7 +828,7 @@ actor PluginRuntime {
     }
 
     /// 解析章节播放流地址与请求头（100% 对齐 ssts JsSource.audio + Player.resolveAsset）
-    func resolvePlayURL(sourceID: String, episodeURL: String) async throws -> PlayStreamInfo {
+    func resolvePlayURL(sourceID: String, episodeURL: String, qualityCode: String = "M4A_128") async throws -> PlayStreamInfo {
         guard let route = try ensureRoute(for: sourceID) else {
             throw PluginError.parseFailed("未找到书源: \(sourceID)")
         }
@@ -844,7 +844,7 @@ actor PluginRuntime {
             let jsonStr = try await invokeMethod(
                 sourceID: sourceID,
                 method: "audio",
-                args: [episodeURL],
+                args: [episodeURL, qualityCode],
                 timeoutSec: 25.0
             )
             let trimmed = jsonStr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -951,9 +951,16 @@ actor PluginRuntime {
     ///  3. 未安装匹配解析器 → .builtinParserMissing（UI 唯一提示出口：去导入）
     ///  4. 解析器也失败 → .builtinParserFailed（UI：去查内置解析）
     func resolvePlayStream(sourceID: String, episodeURL: String, forDownload: Bool = false) async throws -> PlayStreamInfo {
+        let qualityCode = await MainActor.run {
+            let tier = AppSettingsStore.shared.audioQualityTier.normalizedForSelection
+            return tier.parserQualityCode(isOnWiFi: DownloadManager.shared.isOnWiFi)
+        }
         let route = try? ensureRoute(for: sourceID)
         let sourceURL = route?.meta.url ?? ""
         let parser = await BuiltinParserRuntime.shared.parser(forSourceID: sourceID, sourceURL: sourceURL)
+        if let parser {
+            await BuiltinParserRuntime.shared.setConfigValue(parserID: parser.id, key: "quality", value: qualityCode)
+        }
         let strategy: BuiltinParserStrategy = if let parser {
             await BuiltinParserRuntime.shared.strategy(for: parser.id)
         } else {
@@ -981,7 +988,7 @@ actor PluginRuntime {
         }
 
         do {
-            return try await resolvePlayURL(sourceID: sourceID, episodeURL: episodeURL)
+            return try await resolvePlayURL(sourceID: sourceID, episodeURL: episodeURL, qualityCode: qualityCode)
         } catch let error as PluginError {
             switch error {
             case .vipRequired:

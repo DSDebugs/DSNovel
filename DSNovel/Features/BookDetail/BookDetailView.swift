@@ -48,18 +48,23 @@ struct BookDetailView: View {
         return savedBook?.lastChapterIndex ?? 0
     }
 
-    private var livePositionText: String {
-        if isPlayingThisBook {
-            return player.clock.formattedCurrent
+    private var activeChapterTitle: String? {
+        if isPlayingThisBook, let curTitle = player.currentChapter?.title, !curTitle.isEmpty {
+            return curTitle
         }
-        return savedBook?.formattedPositionText ?? "00:00"
-    }
-
-    private var liveLastPlayedRelativeText: String? {
-        if isPlayingThisBook {
-            return player.state == .playing ? "正在播放" : "刚刚"
+        if let savedID = savedBook?.lastChapterID,
+           let matched = detailModel.chapters.first(where: { $0.id == savedID }) {
+            return matched.title
         }
-        return savedBook?.formattedLastPlayedAtText
+        if let savedIdx = savedBook?.lastChapterIndex,
+           savedIdx > 0,
+           detailModel.chapters.indices.contains(savedIdx - 1) {
+            return detailModel.chapters[savedIdx - 1].title
+        }
+        if let savedTitle = savedBook?.lastChapterTitle, !savedTitle.isEmpty {
+            return savedTitle
+        }
+        return nil
     }
 
     private var bookDownloadSummary: DownloadSummary? {
@@ -114,9 +119,7 @@ struct BookDetailView: View {
                         isPlayingThisBook: isPlayingThisBook,
                         isEnginePlaying: isPlayingThisBook && player.state == .playing,
                         hasProgress: isPlayingThisBook || (savedBook?.lastChapterIndex ?? 0) > 0,
-                        lastChapterIndex: liveChapterIndex,
-                        lastPositionText: livePositionText,
-                        lastPlayedRelativeText: liveLastPlayedRelativeText,
+                        activeChapterTitle: activeChapterTitle,
                         downloadedCount: dlCount,
                         downloadedBytesText: dlCount > 0 ? dlBytesText : nil,
                         activeDownloadCount: activeDLCount,
@@ -178,7 +181,7 @@ struct BookDetailView: View {
                 onClose: { showRangeDownloadSheet = false }
             )
         }
-        .confirmationDialog(
+        .alert(
             pendingDeleteSnapshot.map { snap in
                 let sizePart = snap.downloadedBytes > 0 ? "（\(formatBytes(snap.downloadedBytes))）" : ""
                 return "确认删除「\(snap.chapter.title)」的离线音频文件\(sizePart)？"
@@ -186,8 +189,7 @@ struct BookDetailView: View {
             isPresented: Binding(
                 get: { pendingDeleteSnapshot != nil },
                 set: { if !$0 { pendingDeleteSnapshot = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
             Button("删除离线文件", role: .destructive) {
                 if let snap = pendingDeleteSnapshot {
@@ -201,10 +203,9 @@ struct BookDetailView: View {
         } message: {
             Text("删除后将释放本地存储空间，再次收听该章节需联网或重新下载。")
         }
-        .confirmationDialog(
+        .alert(
             "确认清空《\(detailModel.currentBookRef.title)》全部 \(dlCount) 章已下载音频（\(dlBytesText)）？",
-            isPresented: $showClearAllDownloadsConfirm,
-            titleVisibility: .visible
+            isPresented: $showClearAllDownloadsConfirm
         ) {
             Button("清空全部已下载章节", role: .destructive) {
                 detailModel.confirmClearAllBookDownloads()
@@ -293,20 +294,36 @@ struct BookDetailView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(isIntroExpanded ? nil : 3)
                 .fixedSize(horizontal: false, vertical: true)
-            Button {
-                withAnimation(Motion.snappy) {
-                    isIntroExpanded.toggle()
+            HStack(spacing: Spacing.s2) {
+                Button {
+                    let expanding = !isIntroExpanded
+                    withAnimation(Motion.snappy) {
+                        isIntroExpanded = expanding
+                    }
+                    if expanding && !detailModel.hasFetchedFullIntro {
+                        Task {
+                            await detailModel.loadFullIntroIfNeeded()
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(isIntroExpanded ? "收起简介" : "展开简介")
+                        Image(systemName: isIntroExpanded ? "chevron.up" : "chevron.down")
+                            .font(DSTypography.caption2)
+                    }
+                    .font(DSTypography.caption.weight(.semibold))
+                    .foregroundStyle(Color.dsAccent)
                 }
-            } label: {
-                HStack(spacing: 3) {
-                    Text(isIntroExpanded ? "收起简介" : "展开简介")
-                    Image(systemName: isIntroExpanded ? "chevron.up" : "chevron.down")
+                .buttonStyle(.plain)
+
+                if detailModel.isLoadingIntro {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("正在加载完整简介…")
                         .font(DSTypography.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .font(DSTypography.caption.weight(.semibold))
-                .foregroundStyle(Color.dsAccent)
             }
-            .buttonStyle(.plain)
         }
         .padding(Spacing.s3)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -346,7 +363,7 @@ struct BookDetailView: View {
             )
         } else {
             let currentPlayingID = isPlayingThisBook ? player.currentChapter?.id : nil
-            let livePosMs = isPlayingThisBook ? max(0, Int(player.clock.currentTimeSec * 1000)) : nil
+            let livePosMs: Int? = nil
             let snapshots = detailModel.visibleChapterSnapshots(
                 currentPlayingChapterID: currentPlayingID,
                 isEnginePlaying: player.state == .playing,
@@ -456,11 +473,7 @@ struct BookDetailView: View {
         guard !detailModel.chapters.isEmpty else { return }
         DSHapticPolicy.fire(.playPause)
         if isPlayingThisBook {
-            if player.state == .playing {
-                AppRouter.shared.isPlayerPresented = true
-            } else {
-                player.togglePlayPause()
-            }
+            player.togglePlayPause()
             return
         }
         let target: ChapterDTO

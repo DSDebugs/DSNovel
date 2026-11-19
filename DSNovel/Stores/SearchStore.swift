@@ -374,6 +374,18 @@ final class SearchStore {
         }
     }
 
+    func resetKeepingFocusIfNeeded() {
+        cancelCurrentSearch()
+        mergedItems.removeAll()
+        failedSources.removeAll()
+        pendingHigherRelevanceCount = 0
+        completedSourcesCount = 0
+        totalSourcesCount = 0
+        elapsedSeconds = 0
+        selectedSourceFilterID = "all"
+        phase = .idle
+    }
+
     func reset() {
         cancelCurrentSearch()
         keyword = ""

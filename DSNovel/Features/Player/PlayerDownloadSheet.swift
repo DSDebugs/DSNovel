@@ -214,10 +214,9 @@ struct PlayerDownloadSheet: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(Color.dsSurfaceGrouped)
-            .confirmationDialog(
+            .alert(
                 "确认清理《\(player.currentBook?.title ?? "本书")》全部 \(partitioned.completed.count) 章离线音频（\(fmtBytes(bookBytes))）？",
-                isPresented: $showClearConfirm,
-                titleVisibility: .visible
+                isPresented: $showClearConfirm
             ) {
                 Button("清理本书离线章节", role: .destructive) {
                     if let bid = bookID {

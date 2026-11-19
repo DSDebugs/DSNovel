@@ -16,7 +16,7 @@ struct PlaybackPrefsView: View {
             }
 
             Picker("在线与下载音质", selection: $settings.audioQualityTier) {
-                ForEach(AudioQualityTier.allCases) { tier in
+                ForEach(AudioQualityTier.visibleTiers) { tier in
                     Text(tier.title).tag(tier)
                 }
             }

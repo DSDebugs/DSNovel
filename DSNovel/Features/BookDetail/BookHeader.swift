@@ -18,8 +18,8 @@ struct BookHeader: View {
     init(
         book: BookRef,
         sourceName: String,
-        sourceHealth: DSSourceHealthKind,
-        sourceLatencyMs: Int?,
+        sourceHealth: DSSourceHealthKind = .untested,
+        sourceLatencyMs: Int? = nil,
         requiresLogin: Bool,
         isLoggedIn: Bool,
         totalChapters: Int,
@@ -50,7 +50,7 @@ struct BookHeader: View {
             DSCover(
                 url: book.cover,
                 title: book.title,
-                side: 120,
+                side: 116,
                 badges: downloadedCount > 0 ? [.downloaded] : [],
                 onImageLoaded: onCoverLoaded
             )
@@ -63,57 +63,66 @@ struct BookHeader: View {
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if !book.author.isEmpty {
-                    Button {
-                        if let onTapNarrator {
-                            onTapNarrator(book.author)
-                        } else {
-                            AppRouter.shared.searchByNarrator(book.author)
+                // 元信息顺序：主播名称 -> 书源名称（去延迟数字） -> 共多少集
+                BookHeaderFlowLayout(horizontalSpacing: Spacing.s2, verticalSpacing: 6) {
+                    if !book.author.isEmpty {
+                        Button {
+                            if let onTapNarrator {
+                                onTapNarrator(book.author)
+                            } else {
+                                AppRouter.shared.searchByNarrator(book.author)
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "mic.fill")
+                                    .font(DSTypography.caption2)
+                                Text(book.author)
+                                    .lineLimit(1)
+                                Image(systemName: "chevron.right")
+                                    .font(DSTypography.caption2)
+                            }
+                            .font(DSTypography.subtitle.weight(.medium))
+                            .foregroundStyle(Color.dsAccent)
                         }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "mic.fill")
-                                .font(DSTypography.caption2)
-                            Text(book.author)
-                                .lineLimit(1)
-                            Image(systemName: "chevron.right")
-                                .font(DSTypography.caption2)
-                        }
-                        .font(DSTypography.subtitle.weight(.medium))
-                        .foregroundStyle(Color.dsAccent)
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                }
 
-                HStack(spacing: Spacing.s2) {
-                    let metaParts = [
-                        statusText.isEmpty ? nil : statusText,
-                        totalChapters > 0 ? "共 \(totalChapters) 章" : nil
-                    ].compactMap { $0 }
-                    if !metaParts.isEmpty {
-                        Text(metaParts.joined(separator: " · "))
+                    if !sourceName.isEmpty {
+                        DSSourceBadge(
+                            name: sourceName,
+                            health: sourceHealth,
+                            latencyMs: nil,
+                            showHealthAndLatency: false
+                        )
+                    }
+
+                    let episodeText: String? = {
+                        var parts: [String] = []
+                        if !statusText.isEmpty {
+                            parts.append(statusText)
+                        }
+                        if totalChapters > 0 {
+                            parts.append("共 \(totalChapters) 集")
+                        }
+                        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+                    }()
+                    if let episodeText {
+                        Text(episodeText)
                             .font(DSTypography.numericCaption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            .padding(.vertical, 4)
                     }
 
                     if downloadedCount > 0 {
                         Button {
                             onTapDownloadedBadge?()
                         } label: {
-                            DSBadge("已下 \(downloadedCount) 章", icon: "checkmark.circle.fill", style: .success)
+                            DSBadge("已下 \(downloadedCount) 集", icon: "checkmark.circle.fill", style: .success)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("已下载 \(downloadedCount) 章，点击查看已下载章节")
+                        .accessibilityLabel("已下载 \(downloadedCount) 集，点击查看已下载章节")
                     }
-                }
-
-                HStack(spacing: Spacing.s2) {
-                    DSSourceBadge(
-                        name: sourceName,
-                        health: sourceHealth,
-                        latencyMs: sourceLatencyMs
-                    )
 
                     if requiresLogin && !isLoggedIn {
                         Button(action: onTapLogin) {
@@ -127,5 +136,53 @@ struct BookHeader: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, Spacing.pageHorizontal)
+    }
+}
+
+private struct BookHeaderFlowLayout: Layout {
+    var horizontalSpacing: CGFloat = 8
+    var verticalSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+            if currentX > 0 && currentX + size.width > maxWidth {
+                currentX = 0
+                currentY += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            rowHeight = max(rowHeight, size.height)
+            currentX += size.width + horizontalSpacing
+            totalWidth = max(totalWidth, currentX - horizontalSpacing)
+        }
+        return CGSize(width: min(maxWidth, totalWidth), height: currentY + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var currentX = bounds.minX
+        var currentY = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            if currentX > bounds.minX && currentX + size.width > bounds.maxX {
+                currentX = bounds.minX
+                currentY += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            subview.place(
+                at: CGPoint(x: currentX, y: currentY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(size)
+            )
+            rowHeight = max(rowHeight, size.height)
+            currentX += size.width + horizontalSpacing
+        }
     }
 }

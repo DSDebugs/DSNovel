@@ -37,6 +37,7 @@ struct DSSearchField: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .onSubmit(onSubmit)
+                    .id("search.textfield.stable")
                     .accessibilityIdentifier("search.field")
 
                 if !text.isEmpty {
@@ -59,6 +60,12 @@ struct DSSearchField: View {
                 RoundedRectangle(cornerRadius: Radius.input, style: .continuous)
                     .fill(Color.dsSurfaceGrouped)
             )
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded {
+                if !isFocused {
+                    isFocused = true
+                }
+            })
 
             if isFocused || !text.isEmpty {
                 Button("取消") {
