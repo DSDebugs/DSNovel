@@ -4,11 +4,12 @@ import UIKit
 
 /// 锁屏与控制中心元数据控制器（§4.2）：
 /// 统一写入标题、书名、时长、实时进度、章节序号（MPMediaItemPropertyAlbumTrackNumber）与异步封面（MPMediaItemPropertyArtwork），
-/// 并按封面 URL 缓存 MPMediaItemArtwork，避免每秒周期刷新时重复请求或闪烁。
+/// 并按封面 URL 缓存 MPMediaItemArtwork，避免周期刷新时重复请求或闪烁。
 @MainActor
 final class NowPlayingController {
     static let shared = NowPlayingController()
 
+    private var activeBookID: String?
     private var cachedCoverURL: String = ""
     private var cachedArtwork: MPMediaItemArtwork?
     private var loadingCoverURL: String = ""
@@ -18,6 +19,10 @@ final class NowPlayingController {
 
     func clear() {
         coverLoadTask?.cancel()
+        coverLoadTask = nil
+        activeBookID = nil
+        cachedCoverURL = ""
+        cachedArtwork = nil
         loadingCoverURL = ""
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
@@ -37,6 +42,10 @@ final class NowPlayingController {
             return
         }
 
+        activeBookID = book.id
+        let targetBookID = book.id
+        let coverURL = book.cover
+
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: chapter.title,
             MPMediaItemPropertyArtist: book.author.isEmpty ? book.title : "\(book.title) · \(book.author)",
@@ -55,28 +64,48 @@ final class NowPlayingController {
             info[MPMediaItemPropertyAlbumTrackCount] = totalChapters
         }
 
-        let coverURL = book.cover
-        if !coverURL.isEmpty, coverURL == cachedCoverURL, let cachedArtwork {
+        if coverURL.isEmpty {
+            // 切换至无封面书籍时主动清理旧书封面缓存与进行中的拉取任务
+            coverLoadTask?.cancel()
+            coverLoadTask = nil
+            cachedCoverURL = ""
+            cachedArtwork = nil
+            loadingCoverURL = ""
+        } else if coverURL == cachedCoverURL, let cachedArtwork {
             info[MPMediaItemPropertyArtwork] = cachedArtwork
-        } else if !coverURL.isEmpty,
-                  let memImg = CoverImagePipeline.shared.cachedInMemory(for: coverURL, side: 280) {
+        } else if let memImg = CoverImagePipeline.shared.cachedInMemory(for: coverURL, side: 280) {
             let art = MPMediaItemArtwork(boundsSize: memImg.size) { _ in memImg }
             cachedCoverURL = coverURL
             cachedArtwork = art
+            loadingCoverURL = ""
             info[MPMediaItemPropertyArtwork] = art
-        } else if !coverURL.isEmpty, loadingCoverURL != coverURL {
+        } else if loadingCoverURL != coverURL {
+            // 切换到不同封面 URL 时清理旧封面避免串图
+            if cachedCoverURL != coverURL {
+                cachedCoverURL = ""
+                cachedArtwork = nil
+            }
             loadingCoverURL = coverURL
             coverLoadTask?.cancel()
             coverLoadTask = Task { [weak self] in
+                defer {
+                    if let self, self.loadingCoverURL == coverURL {
+                        self.loadingCoverURL = ""
+                    }
+                }
                 let fetched = await CoverImagePipeline.shared.image(
                     for: coverURL,
                     targetSize: CGSize(width: 280, height: 280)
                 )
-                guard !Task.isCancelled, let self, let fetched else { return }
+                guard !Task.isCancelled,
+                      let self,
+                      self.activeBookID == targetBookID,
+                      let fetched else {
+                    return
+                }
                 let art = MPMediaItemArtwork(boundsSize: fetched.size) { _ in fetched }
                 self.cachedCoverURL = coverURL
                 self.cachedArtwork = art
-                self.loadingCoverURL = ""
                 var currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
                 currentInfo[MPMediaItemPropertyArtwork] = art
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = currentInfo

@@ -158,6 +158,31 @@ final class SourceStore {
 
     init() {}
 
+    private static func didSaveAffectSources(_ notification: Notification) -> Bool {
+        guard let userInfo = notification.userInfo else { return true }
+        let targetEntities: Set<String> = ["PluginRecord", "PluginGroup"]
+        let keys: [ModelContext.NotificationKey] = [
+            .insertedIdentifiers,
+            .updatedIdentifiers,
+            .deletedIdentifiers
+        ]
+        var hasIdentifierCollection = false
+        for key in keys {
+            if let ids = userInfo[key] as? [PersistentIdentifier] {
+                hasIdentifierCollection = true
+                if ids.contains(where: { targetEntities.contains($0.entityName) }) {
+                    return true
+                }
+            } else if let ids = userInfo[key] as? Set<PersistentIdentifier> {
+                hasIdentifierCollection = true
+                if ids.contains(where: { targetEntities.contains($0.entityName) }) {
+                    return true
+                }
+            }
+        }
+        return !hasIdentifierCollection
+    }
+
     private func observeContextNotifications() {
         if let token = saveObserver {
             NotificationCenter.default.removeObserver(token)
@@ -166,7 +191,8 @@ final class SourceStore {
             forName: ModelContext.didSave,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] notification in
+            guard Self.didSaveAffectSources(notification) else { return }
             Task { @MainActor [weak self] in
                 self?.scheduleRefresh()
             }

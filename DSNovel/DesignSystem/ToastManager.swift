@@ -13,11 +13,10 @@ final class ToastManager {
     init() {}
 
     func show(_ message: String, duration: TimeInterval = 2.5) {
-        BannerCenter.shared.show(message, kind: .info)
+        BannerCenter.shared.show(message, kind: .info, duration: duration)
     }
 
     func triggerHaptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
         DSHapticPolicy.fire(.chapterSwitch)
     }
 }
-

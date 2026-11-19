@@ -11,6 +11,7 @@ struct SourceDetailView: View {
     @State private var highlightParser = false
     @State private var showDeleteDialog = false
     @State private var showLogoutConfirm = false
+    @State private var supportsBuiltinParser = false
 
     init(sourceID: String, focus: SourceFocus? = nil) {
         self.sourceID = sourceID
@@ -27,12 +28,26 @@ struct SourceDetailView: View {
                 if let src = source {
                     detailForm(src, proxy: proxy)
                 } else {
-                    DSStateView(kind: .empty)
+                    DSStateView(
+                        kind: .empty,
+                        titleOverride: "未找到该书源",
+                        messageOverride: "该书源可能已被删除或移除"
+                    )
                 }
             }
         }
+        .background(Color.dsSurfaceGrouped)
         .navigationTitle(source?.name ?? "书源详情")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: sourceID) {
+            if let src = source {
+                supportsBuiltinParser = BuiltinParserSection.isSupportedSource(src)
+            }
+            await BuiltinParserSection.refreshSupportedSourcesCache()
+            if let src = source {
+                supportsBuiltinParser = BuiltinParserSection.isSupportedSource(src)
+            }
+        }
     }
 
     private func detailForm(_ src: PluginRecord, proxy: ScrollViewProxy) -> some View {
@@ -50,7 +65,9 @@ struct SourceDetailView: View {
                     }
                     .disabled(sourceStore.checkingSourceIDs.contains(src.id))
                 }
+                .listRowBackground(Color.dsSurfaceCard)
                 LabeledContent("站点域名", value: src.siteURL)
+                    .listRowBackground(Color.dsSurfaceCard)
             }
 
             if (src.requiresLogin && !src.loggedIn) || (!src.loggedIn && src.healthState == .needAuth) || src.healthState == .unavailable {
@@ -60,11 +77,13 @@ struct SourceDetailView: View {
                             AuthCoordinator.shared.presentLogin(forSourceID: src.id)
                         }
                         .foregroundStyle(Color.dsAccent)
+                        .listRowBackground(Color.dsSurfaceCard)
                     }
                     if src.healthState == .unavailable {
                         Text(src.lastCheckMessage.isEmpty ? "最近一次检测异常，请点击重新检测" : src.lastCheckMessage)
                             .font(DSTypography.caption)
                             .foregroundStyle(.red)
+                            .listRowBackground(Color.dsSurfaceCard)
                     }
                 }
             }
@@ -82,6 +101,7 @@ struct SourceDetailView: View {
                         Text(grp.name).tag(grp.id)
                     }
                 }
+                .listRowBackground(Color.dsSurfaceCard)
 
                 Toggle("启用书源", isOn: Binding(
                     get: { src.isEnabled },
@@ -91,6 +111,7 @@ struct SourceDetailView: View {
                         sourceStore.recomputeDerived()
                     }
                 ))
+                .listRowBackground(Color.dsSurfaceCard)
                 Toggle("置顶书源", isOn: Binding(
                     get: { src.isPinned },
                     set: {
@@ -99,6 +120,7 @@ struct SourceDetailView: View {
                         sourceStore.recomputeDerived()
                     }
                 ))
+                .listRowBackground(Color.dsSurfaceCard)
                 Toggle("允许发现浏览", isOn: Binding(
                     get: { src.discoverable },
                     set: {
@@ -107,6 +129,7 @@ struct SourceDetailView: View {
                         sourceStore.recomputeDerived()
                     }
                 ))
+                .listRowBackground(Color.dsSurfaceCard)
                 Toggle("允许参与搜索", isOn: Binding(
                     get: { src.searchable },
                     set: {
@@ -115,36 +138,44 @@ struct SourceDetailView: View {
                         sourceStore.recomputeDerived()
                     }
                 ))
+                .listRowBackground(Color.dsSurfaceCard)
             }
 
             if src.requiresLogin {
                 Section("账号") {
                     LabeledContent("登录状态", value: src.loggedIn ? "已登录" : "未登录")
+                        .listRowBackground(Color.dsSurfaceCard)
                     if src.loggedIn {
                         Button("退出登录", role: .destructive) {
                             showLogoutConfirm = true
                         }
+                        .listRowBackground(Color.dsSurfaceCard)
                     } else {
                         Button("去登录") {
                             AuthCoordinator.shared.presentLogin(forSourceID: src.id)
                         }
                         .foregroundStyle(Color.dsAccent)
+                        .listRowBackground(Color.dsSurfaceCard)
                     }
                 }
             }
 
-            if BuiltinParserSection.isSupportedSource(src) {
+            if supportsBuiltinParser || BuiltinParserSection.isSupportedSource(src) {
                 Section("内置解析") {
                     BuiltinParserSummaryCard(plugin: src, isHighlighted: highlightParser)
                         .id("builtinParserCard")
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
             }
 
             Section("元数据") {
                 LabeledContent("包 ID", value: src.packageID)
+                    .listRowBackground(Color.dsSurfaceCard)
                 LabeledContent("版本", value: src.version)
+                    .listRowBackground(Color.dsSurfaceCard)
                 if !src.author.isEmpty {
                     LabeledContent("作者", value: src.author)
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
             }
 
@@ -152,8 +183,11 @@ struct SourceDetailView: View {
                 Button("删除书源", role: .destructive) {
                     showDeleteDialog = true
                 }
+                .listRowBackground(Color.dsSurfaceCard)
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Color.dsSurfaceGrouped)
         .alert("退出书源账号", isPresented: $showLogoutConfirm) {
             Button("取消", role: .cancel) {}
             Button("退出登录", role: .destructive) {

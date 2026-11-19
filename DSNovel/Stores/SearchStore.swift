@@ -255,7 +255,11 @@ final class SearchStore {
         activeTask = Task { [weak self] in
             guard let self else { return }
             await withTaskGroup(of: (SearchSourceDescriptor, Result<[BookRef], Error>).self) { group in
-                for src in descriptors {
+                // 5 路并发滑动窗口，避免大量书源同时争抢同包 JSContext 池导致排队超时
+                let maxConcurrent = 5
+                var nextIndex = 0
+
+                func enqueue(_ src: SearchSourceDescriptor) {
                     group.addTask {
                         do {
                             if let runner {
@@ -275,9 +279,21 @@ final class SearchStore {
                     }
                 }
 
+                while nextIndex < min(maxConcurrent, descriptors.count) {
+                    enqueue(descriptors[nextIndex])
+                    nextIndex += 1
+                }
+
                 var lastFlushTime = Date().timeIntervalSince1970
                 for await (src, outcome) in group {
-                    guard !Task.isCancelled, self.searchGeneration == gen else { return }
+                    guard !Task.isCancelled, self.searchGeneration == gen else {
+                        group.cancelAll()
+                        return
+                    }
+                    if nextIndex < descriptors.count {
+                        enqueue(descriptors[nextIndex])
+                        nextIndex += 1
+                    }
                     self.completedSourcesCount += 1
                     switch outcome {
                     case .success(let books):

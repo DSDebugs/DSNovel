@@ -5,6 +5,8 @@ enum MiniPlayerDensity: Equatable, Sendable {
     case compact
 }
 
+#if DEBUG
+/// 仅供既有单元测试 `AppRouterAndShellTests` 保持向后兼容，Release 构建自动剔除
 final class MiniPlayerRenderCounter: @unchecked Sendable {
     static let shared = MiniPlayerRenderCounter()
     private(set) var staticBodyEvaluations: Int = 0
@@ -52,10 +54,12 @@ struct MiniPlayerStaticContent: View, Equatable {
         EmptyView()
     }
 }
+#endif
 
 struct MiniPlayer: View {
     let player: PlayerEngine
     let continueBook: Book?
+    @State private var router = AppRouter.shared
     private let onOpenFullPlayer: () -> Void
     private let onFallbackDiscover: () -> Void
 
@@ -100,7 +104,8 @@ struct MiniPlayer: View {
                 isBuffering: player.isBuffering,
                 isFailed: isFailed,
                 hasActiveBook: hasActiveOrRecent,
-                size: 46
+                size: 46,
+                isObscured: router.isPlayerPresented
             )
             .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
         }

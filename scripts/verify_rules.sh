@@ -54,7 +54,7 @@ check_grep_rule "no-hardcoded-color" "Color\(red:|Color\(hex|UIColor\(red:" "DSN
 # 4. no-repeat-forever
 check_grep_rule "no-repeat-forever" "repeatForever" "DSNovel"
 
-# 5. no-unvalued-animation
+# 5. no-unvalued-animation (跨平台 python3 实现，兼容 macOS BSD grep 与 Linux GNU grep)
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
   file="${line%%:*}"
@@ -62,7 +62,24 @@ while IFS= read -r line; do
     echo "[FAIL] no-unvalued-animation -> ${line}"
     TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
   fi
-done < <(grep -rnP --include="*.swift" "\.animation\([^,)]*\)(?!.*value)" "DSNovel" || true)
+done < <(python3 -c '
+import pathlib, re
+pat = re.compile(r"\.animation\([^,)]*\)(?!.*value)")
+comment_pat = re.compile(r"^\s*(//|///|\*|/\*)")
+root = pathlib.Path("DSNovel")
+if root.exists():
+    for path in sorted(root.rglob("*.swift")):
+        rel = path.as_posix()
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for idx, line in enumerate(text.splitlines(), 1):
+            if comment_pat.match(line):
+                continue
+            if pat.search(line):
+                print(f"{rel}:{idx}:{line}")
+' || true)
 
 # 6. no-legacy-glass
 check_grep_rule "no-legacy-glass" "LegacyGlass" "DSNovel"

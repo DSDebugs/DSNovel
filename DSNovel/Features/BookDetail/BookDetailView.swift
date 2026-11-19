@@ -184,6 +184,7 @@ struct BookDetailView: View {
         .sheet(isPresented: $showRangeDownloadSheet) {
             RangeDownloadSheet(
                 totalChapters: detailModel.chapters.count,
+                currentChapterIndex: max(1, liveChapterIndex),
                 onConfirmRange: { s, e in detailModel.enqueueRange(s, e) },
                 onClose: { showRangeDownloadSheet = false }
             )
@@ -236,6 +237,9 @@ struct BookDetailView: View {
                 savedChapterID: savedBook?.lastChapterID,
                 savedChapterIndex: savedBook?.lastChapterIndex
             )
+        }
+        .onDisappear {
+            detailModel.cancelPendingTasks()
         }
     }
 
@@ -352,6 +356,8 @@ struct BookDetailView: View {
                 kind: kind,
                 onPrimary: {
                     if case .needLogin = kind {
+                        AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID)
+                    } else if case .needVerify = kind {
                         AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID)
                     } else if case .vipChapter = kind {
                         AppRouter.shared.openBuiltinParser(sourceID: detailModel.currentBookRef.sourceID)

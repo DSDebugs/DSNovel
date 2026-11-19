@@ -16,6 +16,9 @@ struct HistoryView: View {
             if sections.isEmpty {
                 DSStateView(
                     kind: .empty,
+                    titleOverride: "暂无播放历史",
+                    messageOverride: "收听过的有声书会自动记录在这里",
+                    primaryTitleOverride: "去发现",
                     onPrimary: { AppRouter.shared.selectedTab = .discover },
                     onSecondary: nil
                 )
@@ -30,7 +33,7 @@ struct HistoryView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
+                .scrollContentBackground(.hidden)
             }
         }
         .background(Color.dsSurfaceBase)

@@ -47,10 +47,10 @@ struct DSBottomBar: View {
             tabButton(for: .me, badge: meBadge)
         }
         .padding(.horizontal, Spacing.s3)
-        .frame(height: 60)
+        .frame(minHeight: 60)
         .background {
             Capsule(style: .continuous)
-                .fill(.regularMaterial)
+                .fill(Color.clear)
                 .glassEffect(.regular, in: Capsule(style: .continuous))
                 .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
         }
@@ -92,6 +92,7 @@ struct DSBottomBar: View {
                 Text(tab.title)
                     .font(DSTypography.caption2.weight(isSelected ? .semibold : .medium))
                     .lineLimit(1)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
             }
             .foregroundStyle(isSelected ? Color.dsAccent : .secondary)
             .frame(maxWidth: .infinity, minHeight: 48)

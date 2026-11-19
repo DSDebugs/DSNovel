@@ -88,8 +88,8 @@ struct SleepSheet: View {
                     sleepChapterRow(title: "再听 5 章后停止", option: .chaptersRemaining(5))
                 }
 
-                Section("自定义时长（1–180 分钟）") {
-                    Stepper("自定义：\(customMinutes) 分钟", value: $customMinutes, in: 1...180, step: 5)
+                Section("自定义时长（5–180 分钟）") {
+                    Stepper("自定义：\(customMinutes) 分钟", value: $customMinutes, in: 5...180, step: 5)
                     Button {
                         DSHapticPolicy.fire(.selection)
                         player.setSleepTimer(.minutes(customMinutes))

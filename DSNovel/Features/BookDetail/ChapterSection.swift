@@ -84,12 +84,15 @@ struct ChapterSection: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.tertiary)
+                                .frame(minWidth: 36, minHeight: 36)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("清除搜索词")
                     }
                 }
                 .padding(.horizontal, Spacing.s3)
-                .frame(height: 40)
+                .frame(minHeight: 40)
                 .background(
                     RoundedRectangle(cornerRadius: Radius.input, style: .continuous)
                         .fill(Color.dsSurfaceGrouped)
@@ -113,24 +116,6 @@ struct ChapterSection: View {
                         )
                         .equatable()
                         .id(snap.id)
-                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                            Button(role: snap.downloadState == .completed ? .destructive : nil) {
-                                onDownloadAction(snap)
-                            } label: {
-                                Label(
-                                    snap.downloadState == .completed ? "删除下载" : "下载",
-                                    systemImage: snap.downloadState == .completed ? "trash" : "arrow.down.circle"
-                                )
-                            }
-                            .tint(snap.downloadState == .completed ? .red : Color.dsAccent)
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button {
-                                onToggleFinished(snap)
-                            } label: {
-                                Label(snap.isFinished ? "标为未听" : "标为已听", systemImage: "checkmark.circle")
-                            }
-                        }
                         .contextMenu {
                             Button {
                                 onSelectSnapshot(snap)
@@ -176,7 +161,7 @@ struct ChapterSection: View {
     // MARK: - 1. 章节标题与右侧工具栏（排序 / 搜索 / 定位当前章节）
 
     private var headerTitleAndToolsRow: some View {
-        HStack(spacing: Spacing.s2) {
+        HStack(spacing: Spacing.s1) {
             Text(isShowingDownloadedOnly ? "已下载章节" : "章节目录")
                 .font(DSTypography.sectionHeader)
                 .foregroundStyle(.primary)
@@ -196,6 +181,8 @@ struct ChapterSection: View {
                     .foregroundStyle(.primary)
                     .frame(width: 34, height: 34)
                     .background(Circle().fill(Color.dsSurfaceGrouped))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("切换正序倒序，当前为\(isAscending ? "正序" : "倒序")")
@@ -214,6 +201,8 @@ struct ChapterSection: View {
                     .background(
                         Circle().fill(showInlineSearch ? Color.dsAccent.opacity(0.15) : Color.dsSurfaceGrouped)
                     )
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("搜索章节")
@@ -226,8 +215,10 @@ struct ChapterSection: View {
                 .font(DSTypography.caption.weight(.semibold))
                 .foregroundStyle(Color.dsAccent)
                 .padding(.horizontal, Spacing.s3)
-                .frame(height: 34)
+                .frame(minHeight: 34)
                 .background(Capsule().fill(Color.dsAccent.opacity(0.14)))
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("定位当前播放章节")
@@ -265,8 +256,10 @@ struct ChapterSection: View {
                     .font(DSTypography.caption.weight(.medium))
                     .foregroundStyle(.red)
                     .padding(.horizontal, Spacing.s3)
-                    .frame(height: 34)
+                    .frame(minHeight: 34)
                     .background(Capsule().fill(Color.red.opacity(0.12)))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -304,7 +297,7 @@ struct ChapterSection: View {
                 .font(DSTypography.numericCaption.weight(.semibold))
                 .foregroundStyle(isSelected ? Color.dsOnAccent : .primary)
                 .padding(.horizontal, Spacing.s4)
-                .frame(height: 28)
+                .frame(minHeight: 30)
                 .background(Capsule(style: .continuous).fill(isSelected ? Color.dsAccent : Color.clear))
                 .contentShape(Capsule(style: .continuous))
         }
@@ -381,6 +374,7 @@ struct ChapterSection: View {
                             .foregroundStyle(Color.dsOnAccent)
                             .padding(.horizontal, Spacing.s4)
                             .padding(.vertical, Spacing.s2)
+                            .frame(minHeight: 44)
                             .background(Capsule().fill(Color.dsAccent))
                     }
                     .buttonStyle(.plain)
@@ -393,6 +387,7 @@ struct ChapterSection: View {
                             .foregroundStyle(.primary)
                             .padding(.horizontal, Spacing.s4)
                             .padding(.vertical, Spacing.s2)
+                            .frame(minHeight: 44)
                             .background(Capsule().fill(Color.dsSurfaceGrouped))
                     }
                     .buttonStyle(.plain)
@@ -414,6 +409,7 @@ struct ChapterSection: View {
                     }
                     .font(DSTypography.cardTitle)
                     .foregroundStyle(Color.dsAccent)
+                    .frame(minHeight: 44)
                     .buttonStyle(.plain)
                 }
             }
@@ -460,8 +456,10 @@ private struct BookChapterSegmentMenu: View, Equatable {
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, Spacing.s3)
-            .frame(height: 34)
+            .frame(minHeight: 34)
             .background(Capsule(style: .continuous).fill(Color.dsSurfaceGrouped))
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
         .accessibilityLabel("切换章节区间")
     }

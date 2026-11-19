@@ -24,6 +24,14 @@ struct DSBookRow: View {
         self.onNarratorTap = onNarratorTap
     }
 
+    private func handleNarratorTap() {
+        if let onNarratorTap {
+            onNarratorTap(model.author)
+        } else {
+            AppRouter.shared.searchByNarrator(model.author)
+        }
+    }
+
     var body: some View {
         let authorLine = [model.author, model.sourceName].filter { !$0.isEmpty }.joined(separator: " · ")
         let showProgressLine = !model.progressSubtitle.isEmpty
@@ -46,6 +54,7 @@ struct DSBookRow: View {
                         badges: model.badges
                     )
                 }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.dsCard)
 
@@ -69,54 +78,68 @@ struct DSBookRow: View {
 
                 if !model.author.isEmpty {
                     if !isEditing {
-                        Button {
-                            if let onNarratorTap {
-                                onNarratorTap(model.author)
-                            } else {
-                                AppRouter.shared.searchByNarrator(model.author)
+                        HStack(spacing: 0) {
+                            Button(action: handleNarratorTap) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "mic.fill")
+                                        .font(DSTypography.caption2)
+                                    Text(model.author)
+                                        .lineLimit(1)
+                                }
+                                .font(DSTypography.subtitle)
+                                .foregroundStyle(Color.dsAccent)
+                                .padding(.vertical, 2)
+                                .contentShape(Rectangle())
                             }
-                        } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "mic.fill")
-                                    .font(DSTypography.caption2)
-                                Text(model.author)
-                                    .lineLimit(1)
-                            }
-                            .font(DSTypography.subtitle)
-                            .foregroundStyle(Color.dsAccent)
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        Text(model.author)
-                            .font(DSTypography.subtitle)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
+                            .buttonStyle(.plain)
 
-                if !model.sourceName.isEmpty || showProgressLine {
-                    HStack(spacing: Spacing.s2) {
-                        if !model.sourceName.isEmpty {
-                            DSSourceBadge(
-                                name: model.sourceName,
-                                latencyMs: nil,
-                                showHealthAndLatency: false
-                            )
-                            .layoutPriority(1)
-                        }
-
-                        if showProgressLine {
                             Button(action: onSelect) {
-                                Text(model.progressSubtitle)
-                                    .font(DSTypography.numericCaption)
-                                    .foregroundStyle(model.isPlaying ? Color.dsAccent : .secondary)
-                                    .lineLimit(1)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Color.clear
+                                    .frame(maxWidth: .infinity, minHeight: 20)
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }
+                    } else {
+                        Button(action: onSelect) {
+                            Text(model.author)
+                                .font(DSTypography.subtitle)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
+                }
+
+                if !model.sourceName.isEmpty || showProgressLine || model.isPlaying {
+                    Button(action: onSelect) {
+                        HStack(spacing: Spacing.s2) {
+                            if !model.sourceName.isEmpty {
+                                DSSourceBadge(
+                                    name: model.sourceName,
+                                    latencyMs: nil,
+                                    showHealthAndLatency: false
+                                )
+                                .layoutPriority(1)
+                            }
+
+                            if model.isPlaying {
+                                LiveBookRowSubtitleView(baseSubtitle: model.progressSubtitle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else if showProgressLine {
+                                Text(model.progressSubtitle)
+                                    .font(DSTypography.numericCaption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -129,6 +152,7 @@ struct DSBookRow: View {
                         .frame(width: 36, height: 36)
                         .background(Circle().fill(Color.dsAccent))
                         .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(model.isPlaying ? "暂停 \(model.title)" : "继续收听 \(model.title)")
@@ -137,6 +161,35 @@ struct DSBookRow: View {
         .padding(.vertical, Spacing.s2)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.accessibilitySummary)
+        .accessibilityAction { onSelect() }
+        .accessibilityAction(named: Text(!model.author.isEmpty && !isEditing ? "搜索演播：\(model.author)" : "")) {
+            if !model.author.isEmpty && !isEditing {
+                handleNarratorTap()
+            }
+        }
+        .accessibilityAction(named: Text(onPlayTap != nil && !isEditing ? (model.isPlaying ? "暂停" : "继续播放") : "")) {
+            if let onPlayTap, !isEditing {
+                onPlayTap()
+            }
+        }
+    }
+}
+
+/// 隔离观察正在播放书目的实时播放进度，避免触发外层列表每秒重绘
+private struct LiveBookRowSubtitleView: View {
+    let baseSubtitle: String
+    @State private var player = PlayerEngine.shared
+
+    init(baseSubtitle: String) {
+        self.baseSubtitle = baseSubtitle
+    }
+
+    var body: some View {
+        let timeStr = player.clock.formattedCurrent
+        Text(baseSubtitle.isEmpty ? timeStr : "\(baseSubtitle) · \(timeStr)")
+            .font(DSTypography.numericCaption)
+            .foregroundStyle(Color.dsAccent)
+            .lineLimit(1)
     }
 }
 

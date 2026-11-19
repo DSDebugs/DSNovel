@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import AVKit
 
 /// 重新设计的高定卡片式「音质与音效」面板（已按实测反馈调整）：
@@ -8,15 +9,12 @@ import AVKit
 struct AudioEffectsSheet: View {
     @Bindable var player: PlayerEngine
     @Environment(\.dsReduceMotion) private var reduceMotion
+    @State private var routeSnapshot: AudioRouteSnapshot = AudioRouteSnapshot.current()
     private let onClose: () -> Void
 
     init(player: PlayerEngine = .shared, onClose: @escaping () -> Void) {
         self.player = player
         self.onClose = onClose
-    }
-
-    private var routeSnapshot: AudioRouteSnapshot {
-        AudioRouteSnapshot.current()
     }
 
     private var isBoosted: Bool {
@@ -37,6 +35,9 @@ struct AudioEffectsSheet: View {
         DSSheetScaffold(title: "音质与音效", onClose: onClose) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Spacing.s4) {
+                    if !player.isAudioTapSupportedForCurrentItem {
+                        tapUnsupportedBanner
+                    }
                     routeStatusCard
                     qualityTierCard
                     effectPresetsCard
@@ -55,6 +56,34 @@ struct AudioEffectsSheet: View {
         .preferredColorScheme(.dark)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .onAppear {
+            routeSnapshot = AudioRouteSnapshot.current()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { _ in
+            routeSnapshot = AudioRouteSnapshot.current()
+        }
+    }
+
+    private var tapUnsupportedBanner: some View {
+        HStack(spacing: Spacing.s2) {
+            Image(systemName: "info.circle.fill")
+                .font(DSTypography.caption)
+                .foregroundStyle(.orange)
+            Text("当前流格式不支持 EQ 与声道平衡")
+                .font(DSTypography.caption)
+                .foregroundStyle(.orange)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Spacing.s3)
+        .padding(.vertical, Spacing.s2)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.input, style: .continuous)
+                .fill(Color.orange.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.input, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.32), lineWidth: 0.6)
+        )
     }
 
     // MARK: - 1. 顶部输出设备与路由状态卡
@@ -83,9 +112,9 @@ struct AudioEffectsSheet: View {
                         .background(Capsule().fill(Color.dsAccent.opacity(0.16)))
                 }
                 Text(routeStatusSubtitle)
-                .font(DSTypography.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                    .font(DSTypography.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 4)
@@ -122,17 +151,16 @@ struct AudioEffectsSheet: View {
         }
     }
 
-    /// D2=a：全局 4 档；当前书源/章节可能走「内置解析」时，多出一档「无损 · 最高音质」
+    /// 严格按当前章节已走内置解析且解析器声明 lossless 能力时才显示「无损 · 最高音质」
     private var tierOptions: [AudioQualityTier] {
-        let parserUsable = player.currentChapterParserDeclaresLossless
-            || player.currentChapterHasBuiltinParser
-            || QualityPolicy.sourceHasMultipleBitrates(sourceID: player.currentBook?.sourceID ?? "")
-        return QualityPolicy.visibleTiers(parserAvailable: parserUsable)
+        let losslessAvailable = player.currentChapterHasBuiltinParser && player.currentChapterParserDeclaresLossless
+        return QualityPolicy.visibleTiers(parserAvailable: losslessAvailable)
     }
 
     private var qualityTierCard: some View {
         let mode = player.currentAudioQualitySupportMode
-        return VStack(alignment: .leading, spacing: Spacing.s3) {            HStack {
+        return VStack(alignment: .leading, spacing: Spacing.s3) {
+            HStack {
                 Label("在线播放与下载音质", systemImage: "waveform.badge.magnifyingglass")
                     .font(DSTypography.cardTitle)
                     .foregroundStyle(.primary)
@@ -316,9 +344,7 @@ struct AudioEffectsSheet: View {
                 Spacer()
                 Button {
                     DSHapticPolicy.fire(.selection)
-                    for idx in 0..<5 {
-                        player.updateCustomEQBand(index: idx, gainDb: 0.0)
-                    }
+                    player.updateCustomEQBands([0.0, 0.0, 0.0, 0.0, 0.0])
                 } label: {
                     Text("频段归零")
                         .font(DSTypography.caption2.weight(.semibold))
@@ -399,11 +425,17 @@ struct AudioEffectsSheet: View {
                         .font(DSTypography.numericCaption.weight(.semibold))
                         .foregroundStyle(player.bookVolume > 1.01 ? .orange : Color.dsAccent)
                 }
-                Slider(value: $player.bookVolume, in: 0.0...2.0, step: 0.05)
-                    .tint(player.bookVolume > 1.01 ? .orange : Color.dsAccent)
-                    .onChange(of: player.bookVolume) { _, _ in
-                        player.saveBookAudioSettings()
+                Slider(
+                    value: $player.bookVolume,
+                    in: 0.0...2.0,
+                    step: 0.05,
+                    onEditingChanged: { editing in
+                        if !editing {
+                            player.saveBookAudioSettings()
+                        }
                     }
+                )
+                .tint(player.bookVolume > 1.01 ? .orange : Color.dsAccent)
             }
 
             VStack(alignment: .leading, spacing: 6) {

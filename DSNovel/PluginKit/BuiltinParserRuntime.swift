@@ -28,6 +28,7 @@ final class BuiltinParserLogStore: @unchecked Sendable {
     private let lock = NSLock()
     private let ioQueue = DispatchQueue(label: "com.dsnovel.builtinparser.logio", qos: .utility)
     private var buffers: [String: [String]] = [:]
+    private var loadedFromDisk: Set<String> = []
     private var pendingDiskEntries: [String: [String]] = [:]
     private var flushScheduled = false
     /// 展示给 UI 的条数
@@ -75,30 +76,56 @@ final class BuiltinParserLogStore: @unchecked Sendable {
         }
     }
 
-    /// 读取：内存优先；内存为空（通常是重启后）则从磁盘恢复
+    /// 读取：内存优先；已有缓存或已加载过磁盘时直接返回内存快照，避免阻塞主线程
     func lines(for parserID: String) -> [String] {
         lock.lock()
         let memory = buffers[parserID] ?? []
+        let alreadyLoaded = loadedFromDisk.contains(parserID)
         lock.unlock()
-        if !memory.isEmpty {
+        if !memory.isEmpty || alreadyLoaded {
             return Array(memory.suffix(displayCapacity))
         }
         let restored = ioQueue.sync {
             Self.readFromDisk(parserID: parserID)
         }
-        if !restored.isEmpty {
-            lock.lock()
-            if (buffers[parserID] ?? []).isEmpty {
-                buffers[parserID] = restored
-            }
-            lock.unlock()
+        lock.lock()
+        loadedFromDisk.insert(parserID)
+        if (buffers[parserID] ?? []).isEmpty && !restored.isEmpty {
+            buffers[parserID] = restored
         }
-        return Array(restored.suffix(displayCapacity))
+        let latest = buffers[parserID] ?? restored
+        lock.unlock()
+        return Array(latest.suffix(displayCapacity))
+    }
+
+    /// 供 UI 异步读取日志：冷启动未命中内存缓存时在 ioQueue 异步读盘，不阻塞主线程
+    func linesAsync(for parserID: String) async -> [String] {
+        lock.lock()
+        let memory = buffers[parserID] ?? []
+        let alreadyLoaded = loadedFromDisk.contains(parserID)
+        lock.unlock()
+        if !memory.isEmpty || alreadyLoaded {
+            return Array(memory.suffix(displayCapacity))
+        }
+        let restored: [String] = await withCheckedContinuation { continuation in
+            ioQueue.async {
+                continuation.resume(returning: Self.readFromDisk(parserID: parserID))
+            }
+        }
+        lock.lock()
+        loadedFromDisk.insert(parserID)
+        if (buffers[parserID] ?? []).isEmpty && !restored.isEmpty {
+            buffers[parserID] = restored
+        }
+        let latest = buffers[parserID] ?? restored
+        lock.unlock()
+        return Array(latest.suffix(displayCapacity))
     }
 
     func clear(_ parserID: String) {
         lock.lock()
         buffers[parserID] = []
+        loadedFromDisk.insert(parserID)
         pendingDiskEntries[parserID] = nil
         lock.unlock()
         ioQueue.async {
@@ -147,10 +174,10 @@ final class BuiltinParserLogStore: @unchecked Sendable {
 
     private static let sensitivePatterns: [NSRegularExpression] = {
         let raw = [
-            "(1&_token=)[^;\\s&]+",
-            "((?:buy_key|sign|token|cookie|Cookie|Authorization)[=:]\\s*)[^&;\\s\\r\\n]+"
+            "(1(?:&|%26)_token(?:=|%3[Dd]))[^;\\s&%]+",
+            "((?:buy_key|sign|access_token|refresh_token|token|session_id|session|secret|cookie|Authorization)(?:=|%3[Dd]|:\\s*))[^&;\\s\\r\\n]+"
         ]
-        return raw.compactMap { try? NSRegularExpression(pattern: $0) }
+        return raw.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
     }()
 
     // MARK: 磁盘批量刷盘（仅在 ioQueue 执行）
@@ -864,6 +891,10 @@ actor BuiltinParserRuntime {
                 throw BuiltinParserError.notInstalled
             }
             let ctx = await Self.makeContextAsync(parser: parser, prelude: prelude, script: script)
+            // 二次校验世代：若创建期间脚本已更新/卸载，直接丢弃且不改动新世代 contextCount
+            guard (parserGeneration[parser.id] ?? 0) == currentGen else {
+                throw BuiltinParserError.invokeFailed("解析脚本已更新，请重试")
+            }
             if let ctx {
                 return (ctx, currentGen)
             }
@@ -907,14 +938,31 @@ actor BuiltinParserRuntime {
         contextWaiters[parser.id] = waiters.isEmpty ? nil : waiters
 
         contextCount[parser.id] = (contextCount[parser.id] ?? 0) + 1
-        guard let prelude = Self.loadPrelude(),
-              let script = BuiltinParserStore.scriptText(for: parser),
-              let fresh = await Self.makeContextAsync(parser: parser, prelude: prelude, script: script) else {
-            contextCount[parser.id] = max(0, (contextCount[parser.id] ?? 1) - 1)
-            next.resume(throwing: BuiltinParserError.scriptInvalid("重建 JSContext 失败"))
+        let fresh: JSContext?
+        if let prelude = Self.loadPrelude(),
+           let script = BuiltinParserStore.scriptText(for: parser) {
+            fresh = await Self.makeContextAsync(parser: parser, prelude: prelude, script: script)
+        } else {
+            fresh = nil
+        }
+
+        // 二次校验世代：若重建期间脚本已更新/卸载，直接丢弃且不修改新世代 contextCount
+        guard (parserGeneration[parser.id] ?? 0) == currentGen else {
+            _ = next.resume(throwing: BuiltinParserError.invokeFailed("解析脚本已更新，请重试"))
             return
         }
-        next.resume(returning: fresh)
+
+        guard let fresh else {
+            contextCount[parser.id] = max(0, (contextCount[parser.id] ?? 1) - 1)
+            _ = next.resume(throwing: BuiltinParserError.scriptInvalid("重建 JSContext 失败"))
+            return
+        }
+
+        if next.resume(returning: fresh) {
+            return
+        }
+        // 等待者已超时：尝试转交后续等待者，否则归还到空闲池保持 contextCount 守恒
+        releaseContext(fresh, parserID: parser.id, generation: currentGen)
     }
 
     private func releaseContext(_ ctx: JSContext, parserID: String, generation: Int) {
@@ -923,11 +971,12 @@ actor BuiltinParserRuntime {
             // 归还时脚本已更新：直接丢弃，不污染新世代池
             return
         }
-        if var waiters = contextWaiters[parserID], !waiters.isEmpty {
+        while var waiters = contextWaiters[parserID], !waiters.isEmpty {
             let next = waiters.removeFirst()
             contextWaiters[parserID] = waiters.isEmpty ? nil : waiters
-            next.resume(returning: ctx)
-            return
+            if next.resume(returning: ctx) {
+                return
+            }
         }
         var pool = contextPool[parserID] ?? []
         pool.append(PooledContext(context: ctx, generation: generation, lastUsedAt: Date()))
@@ -1135,20 +1184,26 @@ private final class ContextWaiter: @unchecked Sendable {
         self.continuation = continuation
     }
 
-    func resume(returning ctx: JSContext) {
+    @discardableResult
+    func resume(returning ctx: JSContext) -> Bool {
         lock.lock()
         let c = continuation
         continuation = nil
         lock.unlock()
-        c?.resume(returning: ctx)
+        guard let c else { return false }
+        c.resume(returning: ctx)
+        return true
     }
 
-    func resume(throwing error: Error) {
+    @discardableResult
+    func resume(throwing error: Error) -> Bool {
         lock.lock()
         let c = continuation
         continuation = nil
         lock.unlock()
-        c?.resume(throwing: error)
+        guard let c else { return false }
+        c.resume(throwing: error)
+        return true
     }
 }
 

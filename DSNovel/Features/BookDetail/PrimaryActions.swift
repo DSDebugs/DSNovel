@@ -123,8 +123,8 @@ struct PrimaryActions: View {
             .foregroundStyle(Color.dsOnAccent)
             .padding(.leading, Spacing.s2 + 1)
             .padding(.trailing, Spacing.s4)
-            .frame(maxWidth: .infinity)
-            .frame(height: Self.controlHeight)
+            .padding(.vertical, Spacing.s2)
+            .frame(maxWidth: .infinity, minHeight: Self.controlHeight)
             .background(Capsule(style: .continuous).fill(Color.dsAccent))
         }
         .buttonStyle(.dsCard)
@@ -190,8 +190,9 @@ struct PrimaryActions: View {
                         Image(systemName: downloadedCount > 0 ? "arrow.down.circle.fill" : "arrow.down.circle")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(downloadedCount > 0 ? .green : .primary)
-                            .frame(width: Self.controlHeight, height: Self.controlHeight)
+                            .frame(minWidth: Self.controlHeight, minHeight: Self.controlHeight)
                             .background(Circle().fill(Color.dsSurfaceGrouped))
+                            .contentShape(Circle())
 
                         if activeDownloadCount > 0 {
                             Text("\(min(activeDownloadCount, 99))")

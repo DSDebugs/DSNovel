@@ -12,13 +12,17 @@ struct SpeedSheet: View {
         self.onClose = onClose
     }
 
-    private func applySpeed(_ target: Double) {
+    private func applySpeed(_ target: Double, persist: Bool = true) {
         let clamped = PlayerEngine.snapSpeed(target)
         let old = player.speed
         if abs(clamped - old) > 0.001 {
             DSHapticPolicy.fire(clamped >= old ? .speedIncrease : .speedDecrease)
         }
-        player.setSpeed(clamped, persist: true, alsoSetDefault: alsoSetDefault)
+        if persist {
+            player.setSpeed(clamped, persist: true, alsoSetDefault: alsoSetDefault)
+        } else {
+            player.speed = clamped
+        }
     }
 
     var body: some View {
@@ -71,11 +75,16 @@ struct SpeedSheet: View {
                         value: Binding(
                             get: { player.speed },
                             set: { newValue in
-                                applySpeed(newValue)
+                                applySpeed(newValue, persist: false)
                             }
                         ),
                         in: 0.5...3.0,
-                        step: 0.05
+                        step: 0.05,
+                        onEditingChanged: { editing in
+                            if !editing {
+                                player.setSpeed(player.speed, persist: true, alsoSetDefault: alsoSetDefault)
+                            }
+                        }
                     )
                     .tint(Color.dsAccent)
                     .padding(.horizontal, Spacing.pageHorizontal)

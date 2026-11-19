@@ -7,10 +7,34 @@ enum DSScrubberLogic {
         durationSeconds: Double,
         isFineScrubbing: Bool
     ) -> Double {
+        let rate = isFineScrubbing ? 0.25 : 1.0
+        return mapDragDelta(
+            startSeconds: startSeconds,
+            deltaRatio: deltaRatio,
+            durationSeconds: durationSeconds,
+            sensitivity: rate
+        )
+    }
+
+    static func mapDragDelta(
+        startSeconds: Double,
+        deltaRatio: Double,
+        durationSeconds: Double,
+        sensitivity: Double
+    ) -> Double {
         guard durationSeconds > 0 else { return 0 }
-        let sensitivity = isFineScrubbing ? 0.25 : 1.0
         let raw = startSeconds + deltaRatio * durationSeconds * sensitivity
         return min(max(raw, 0), durationSeconds)
+    }
+
+    /// 手指向上偏离轨道的距离自动映射精细调速倍率：0..<40pt -> 1x，40..<80pt -> 0.5x，>=80pt -> 0.25x
+    static func scrubbingSensitivity(forVerticalLift liftPoints: CGFloat) -> Double {
+        if liftPoints >= 80 {
+            return 0.25
+        } else if liftPoints >= 40 {
+            return 0.5
+        }
+        return 1.0
     }
 
     static func crossedWholeMinute(from oldSec: Double, to newSec: Double) -> Bool {
@@ -26,11 +50,12 @@ struct DSScrubber: View {
     private let onSeek: (Double) -> Void
 
     @State private var isDragging = false
-    @State private var isFineMode = false
+    @State private var manualFineMode = false
+    @State private var activeSensitivity: Double = 1.0
     @State private var dragPreviewSec: Double = 0
-    @State private var fineAnchorSec: Double = 0
-    @State private var fineAnchorFraction: Double = 0
+    @State private var lastDragLocationX: CGFloat? = nil
     @State private var minuteBucket: Int = 0
+    @State private var trackWidth: CGFloat = 280
 
     init(
         currentTimeSec: Double,
@@ -62,87 +87,30 @@ struct DSScrubber: View {
         return "已缓冲 \(min(max(pct, 0), 100))%"
     }
 
+    private var effectiveSensitivity: Double {
+        if isDragging {
+            return min(activeSensitivity, manualFineMode ? 0.25 : 1.0)
+        }
+        return manualFineMode ? 0.25 : 1.0
+    }
+
+    private var sensitivityBadgeText: String? {
+        let s = effectiveSensitivity
+        if s <= 0.26 { return "0.25x 精细" }
+        if s <= 0.51 { return "0.5x 半速" }
+        return nil
+    }
+
     var body: some View {
         VStack(spacing: Spacing.s2) {
-            if isDragging {
-                HStack(spacing: Spacing.s2) {
-                    Image(systemName: isFineMode ? "scope" : "waveform")
-                        .font(DSTypography.caption2)
-                        .foregroundStyle(Color.dsAccent)
-                    Text("\(Self.formatTime(displayedSec)) / \(Self.formatTime(durationSec))")
-                        .font(DSTypography.numericCaption.weight(.semibold))
-                        .foregroundStyle(.white)
-                    if isFineMode {
-                        Text("1/4x 精细")
-                            .font(DSTypography.caption2.weight(.semibold))
-                            .foregroundStyle(Color.dsAccent)
+            customTrack
+                .overlay(alignment: .top) {
+                    if isDragging {
+                        dragPreviewBubble
+                            .offset(y: -38)
+                            .allowsHitTesting(false)
                     }
                 }
-                .padding(.horizontal, Spacing.s3)
-                .padding(.vertical, 4)
-                .background(
-                    Capsule().fill(Color.black.opacity(0.45))
-                )
-                .overlay(
-                    Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-                )
-            }
-
-            ZStack(alignment: .center) {
-                ProgressView(value: clampedBufferedFraction, total: 1.0)
-                    .tint(Color.white.opacity(0.28))
-                    .scaleEffect(x: 1.0, y: isDragging ? 1.5 : 1.0)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-
-                Slider(
-                    value: Binding(
-                        get: { progressFraction },
-                        set: { newFraction in
-                            let safeDur = max(durationSec, 1)
-                            let newSec: Double
-                            if isFineMode {
-                                let deltaRatio = newFraction - fineAnchorFraction
-                                newSec = DSScrubberLogic.mapDragDelta(
-                                    startSeconds: fineAnchorSec,
-                                    deltaRatio: deltaRatio,
-                                    durationSeconds: safeDur,
-                                    isFineScrubbing: true
-                                )
-                            } else {
-                                newSec = newFraction * safeDur
-                            }
-                            if DSScrubberLogic.crossedWholeMinute(from: dragPreviewSec, to: newSec) {
-                                minuteBucket = Int(newSec / 60.0)
-                                DSHapticPolicy.fire(.scrubberMinuteTick)
-                            }
-                            dragPreviewSec = newSec
-                        }
-                    ),
-                    in: 0...1,
-                    onEditingChanged: { editing in
-                        isDragging = editing
-                        if editing {
-                            dragPreviewSec = currentTimeSec
-                            fineAnchorSec = currentTimeSec
-                            fineAnchorFraction = progressFraction
-                        } else {
-                            onSeek(dragPreviewSec)
-                        }
-                    }
-                )
-                .tint(Color.dsAccent)
-                .scaleEffect(x: 1.0, y: isDragging ? 1.16 : 1.0)
-                .simultaneousGesture(
-                    LongPressGesture(minimumDuration: 0.45)
-                        .onEnded { _ in
-                            isFineMode = true
-                            fineAnchorSec = displayedSec
-                            fineAnchorFraction = progressFraction
-                            DSHapticPolicy.fire(.selection)
-                        }
-                )
-            }
 
             HStack {
                 Text(Self.formatTime(displayedSec))
@@ -153,26 +121,27 @@ struct DSScrubber: View {
                 Spacer()
 
                 Button {
-                    isFineMode.toggle()
-                    fineAnchorSec = displayedSec
-                    fineAnchorFraction = progressFraction
+                    manualFineMode.toggle()
+                    activeSensitivity = manualFineMode ? 0.25 : 1.0
                     DSHapticPolicy.fire(.selection)
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: isFineMode ? "scope" : "arrow.left.and.right.circle")
+                        Image(systemName: effectiveSensitivity < 0.99 ? "scope" : "arrow.left.and.right.circle")
                             .font(DSTypography.caption2)
-                        Text(isFineMode ? "精细拖动 (1/4x)" : bufferedPercentText)
-                            .font(DSTypography.caption2.weight(isFineMode ? .semibold : .regular))
+                        Text(sensitivityBadgeText ?? bufferedPercentText)
+                            .font(DSTypography.caption2.weight(effectiveSensitivity < 0.99 ? .semibold : .regular))
                     }
-                    .foregroundStyle(isFineMode ? Color.dsAccent : .white.opacity(0.65))
+                    .foregroundStyle(effectiveSensitivity < 0.99 ? Color.dsAccent : .white.opacity(0.65))
                     .padding(.horizontal, Spacing.s2)
                     .padding(.vertical, 3)
                     .background(
-                        Capsule().fill(isFineMode ? Color.dsAccent.opacity(0.18) : Color.white.opacity(0.08))
+                        Capsule().fill(effectiveSensitivity < 0.99 ? Color.dsAccent.opacity(0.18) : Color.white.opacity(0.08))
                     )
                 }
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
                 .buttonStyle(.plain)
-                .accessibilityLabel(isFineMode ? "已开启四分之一精细拖动，点击恢复标准拖动" : "点击开启精细拖动模式")
+                .accessibilityLabel(manualFineMode ? "已开启精细拖动，点击恢复标准拖动" : "点击开启精细拖动模式")
 
                 Spacer()
 
@@ -187,8 +156,123 @@ struct DSScrubber: View {
                 tx.animation = nil
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("播放进度")
+    }
+
+    private var dragPreviewBubble: some View {
+        HStack(spacing: Spacing.s2) {
+            Image(systemName: effectiveSensitivity < 0.99 ? "scope" : "waveform")
+                .font(DSTypography.caption2)
+                .foregroundStyle(Color.dsAccent)
+            Text("\(Self.formatTime(displayedSec)) / \(Self.formatTime(durationSec))")
+                .font(DSTypography.numericCaption.weight(.semibold))
+                .foregroundStyle(.white)
+            if let badge = sensitivityBadgeText {
+                Text(badge)
+                    .font(DSTypography.caption2.weight(.semibold))
+                    .foregroundStyle(Color.dsAccent)
+            }
+        }
+        .padding(.horizontal, Spacing.s3)
+        .padding(.vertical, 4)
+        .background(
+            Capsule().fill(Color.black.opacity(0.62))
+        )
+        .overlay(
+            Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
+        )
+    }
+
+    private var customTrack: some View {
+        let safeTrackWidth = max(trackWidth, 1)
+        let trackHeight: CGFloat = isDragging ? 6 : 4
+        let thumbSize: CGFloat = isDragging ? 18 : 13
+        let filledWidth = safeTrackWidth * CGFloat(progressFraction)
+        let bufferedWidth = safeTrackWidth * CGFloat(clampedBufferedFraction)
+        let thumbX = min(max(filledWidth, thumbSize * 0.5), safeTrackWidth - thumbSize * 0.5)
+
+        return ZStack(alignment: .leading) {
+            // 轨道底槽
+            Capsule()
+                .fill(Color.white.opacity(0.16))
+                .frame(height: trackHeight)
+
+            // 已缓冲进度
+            Capsule()
+                .fill(Color.white.opacity(0.32))
+                .frame(width: max(0, bufferedWidth), height: trackHeight)
+
+            // 已播放进度
+            Capsule()
+                .fill(Color.dsAccent)
+                .frame(width: max(0, filledWidth), height: trackHeight)
+
+            // 拖动手柄
+            Circle()
+                .fill(Color.white)
+                .frame(width: thumbSize, height: thumbSize)
+                .shadow(color: Color.black.opacity(0.35), radius: isDragging ? 5 : 2, y: 1)
+                .offset(x: thumbX - thumbSize * 0.5)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 28)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { newWidth in
+            trackWidth = max(newWidth, 1)
+        }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let safeDur = max(durationSec, 1)
+                    let width = max(trackWidth, 1)
+                    if !isDragging {
+                        isDragging = true
+                        activeSensitivity = manualFineMode ? 0.25 : 1.0
+                        let tappedRatio = min(max(Double(value.startLocation.x / width), 0), 1)
+                        dragPreviewSec = tappedRatio * safeDur
+                        lastDragLocationX = value.location.x
+                        minuteBucket = Int(dragPreviewSec / 60.0)
+                        DSHapticPolicy.fire(.selection)
+                    }
+
+                    // 手指向上偏离轨道自动切换 1x / 0.5x / 0.25x 精细调速
+                    let liftPoints = max(0, -value.translation.height)
+                    let gestureSensitivity = DSScrubberLogic.scrubbingSensitivity(forVerticalLift: liftPoints)
+                    let nextSensitivity = manualFineMode ? min(0.25, gestureSensitivity) : gestureSensitivity
+                    if abs(nextSensitivity - activeSensitivity) > 0.01 {
+                        activeSensitivity = nextSensitivity
+                        DSHapticPolicy.fire(.selection)
+                    }
+
+                    let prevX = lastDragLocationX ?? value.location.x
+                    let deltaX = value.location.x - prevX
+                    lastDragLocationX = value.location.x
+
+                    let deltaRatio = Double(deltaX / width)
+                    let newSec = DSScrubberLogic.mapDragDelta(
+                        startSeconds: dragPreviewSec,
+                        deltaRatio: deltaRatio,
+                        durationSeconds: safeDur,
+                        sensitivity: activeSensitivity
+                    )
+                    if DSScrubberLogic.crossedWholeMinute(from: dragPreviewSec, to: newSec) {
+                        minuteBucket = Int(newSec / 60.0)
+                        DSHapticPolicy.fire(.scrubberMinuteTick)
+                    }
+                    dragPreviewSec = newSec
+                }
+                .onEnded { _ in
+                    let finalSec = dragPreviewSec
+                    isDragging = false
+                    lastDragLocationX = nil
+                    // 松手自动恢复 1x（若未手动锁定精细模式）
+                    activeSensitivity = manualFineMode ? 0.25 : 1.0
+                    onSeek(finalSec)
+                }
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("播放进度条")
         .accessibilityValue("已播放 \(Self.formatTime(displayedSec))，总时长 \(Self.formatTime(durationSec))，\(bufferedPercentText)")
         .accessibilityAdjustableAction { direction in
             let safeDur = max(durationSec, 1)
@@ -200,6 +284,13 @@ struct DSScrubber: View {
             @unknown default:
                 break
             }
+        }
+        .accessibilityAction(named: "快进 30 秒") {
+            let safeDur = max(durationSec, 1)
+            onSeek(min(safeDur, currentTimeSec + 30))
+        }
+        .accessibilityAction(named: "后退 15 秒") {
+            onSeek(max(0, currentTimeSec - 15))
         }
     }
 

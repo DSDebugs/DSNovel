@@ -63,7 +63,7 @@ struct PluginPackageManifest: Codable, Sendable {
     var scripts: [String]
 }
 
-struct ParsedSourceMeta: Hashable, Sendable {
+struct ParsedSourceMeta: Hashable, Codable, Sendable {
     var index: Int
     var id: String
     var name: String
@@ -188,13 +188,62 @@ final class PackageContextPool: @unchecked Sendable {
     }
 }
 
-/// 并发安全的单次恢复门栓：防止超时任务与 GCD JS 执行回调重复 resume Continuation
-private final class PluginContinuationGate<T: Sendable>: @unchecked Sendable {
+/// 并发安全的单次恢复门栓与取消/超时协调器：
+/// 防止超时任务、Task 取消与 GCD JS 执行回调重复 resume，并在超时/取消时通知 JsHostBridge 取消阻塞的网络任务
+private final class PluginExecutionControl<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<T, Error>?
+    private var aborted = false
+    private var activeContext: JSContext?
 
-    init(_ continuation: CheckedContinuation<T, Error>) {
+    func setContinuation(_ continuation: CheckedContinuation<T, Error>) {
+        lock.lock()
+        if aborted {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
         self.continuation = continuation
+        lock.unlock()
+    }
+
+    var isAborted: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return aborted
+    }
+
+    /// 绑定当前检出的 JSContext；若此前已取消/超时则立即触发网络任务取消并返回 false
+    @discardableResult
+    func attachContext(_ ctx: JSContext) -> Bool {
+        lock.lock()
+        activeContext = ctx
+        let alreadyAborted = aborted
+        lock.unlock()
+        if alreadyAborted {
+            JsHostBridge.cancelActiveTasks(for: ctx)
+            return false
+        }
+        return true
+    }
+
+    func detachContext() {
+        lock.lock()
+        activeContext = nil
+        lock.unlock()
+    }
+
+    func abort(with error: Error) {
+        lock.lock()
+        aborted = true
+        let cont = continuation
+        continuation = nil
+        let ctx = activeContext
+        lock.unlock()
+        if let ctx {
+            JsHostBridge.cancelActiveTasks(for: ctx)
+        }
+        cont?.resume(throwing: error)
     }
 
     func resume(with result: Result<T, Error>) {
@@ -326,6 +375,10 @@ actor PluginRuntime {
             }
         }
 
+        if let metaData = try? JSONEncoder().encode(preview.sources) {
+            try? metaData.write(to: pkgDir.appendingPathComponent("sources_meta.json"), options: .atomic)
+        }
+
         if let oldPool = activePools.removeValue(forKey: preview.packageID) {
             oldPool.invalidate()
         }
@@ -376,14 +429,32 @@ actor PluginRuntime {
 
         for dir in dirs where dir.hasDirectoryPath {
             let pkgID = dir.lastPathComponent
-            // 已加载的书源包不再重复创建 JSContext（原实现每次路由未命中都会全量重建）
-            if activePools[pkgID] != nil { continue }
-
             let manifestURL = dir.appendingPathComponent("manifest.json")
             guard let manifestData = try? Data(contentsOf: manifestURL),
                   let manifest = try? JSONDecoder().decode(PluginPackageManifest.self, from: manifestData) else {
                 continue
             }
+
+            // 冷启动优先读取缓存的 sources_meta.json 构建路由表，JSContext 池按需懒创建
+            let metaCacheURL = dir.appendingPathComponent("sources_meta.json")
+            if let metaData = try? Data(contentsOf: metaCacheURL),
+               let cachedMetas = try? JSONDecoder().decode([ParsedSourceMeta].self, from: metaData),
+               !cachedMetas.isEmpty {
+                for m in cachedMetas {
+                    sourceRouting[m.id] = (pkgID, m.index, m)
+                }
+                continue
+            }
+
+            // 已有活跃池时直接复用其元数据
+            if let existingPool = activePools[pkgID] {
+                for m in existingPool.sources {
+                    sourceRouting[m.id] = (pkgID, m.index, m)
+                }
+                continue
+            }
+
+            // 兼容旧版安装目录（尚无 sources_meta.json）：首次解析一次并落盘元数据缓存，不常驻空闲上下文池
             var files: [String: Data] = ["manifest.json": manifestData]
             for script in manifest.scripts {
                 let clean = (script as NSString).lastPathComponent
@@ -392,14 +463,10 @@ actor PluginRuntime {
                     files[clean] = d
                 }
             }
-            if let (ctx, metas) = try? Self.createIsolatedContext(packageID: pkgID, manifest: manifest, scriptFiles: files) {
-                activePools[pkgID] = PackageContextPool(
-                    packageID: pkgID,
-                    manifest: manifest,
-                    scriptFiles: files,
-                    initialContext: ctx,
-                    sources: metas
-                )
+            if let (_, metas) = try? Self.createIsolatedContext(packageID: pkgID, manifest: manifest, scriptFiles: files) {
+                if let encoded = try? JSONEncoder().encode(metas) {
+                    try? encoded.write(to: metaCacheURL, options: .atomic)
+                }
                 for m in metas {
                     sourceRouting[m.id] = (pkgID, m.index, m)
                 }
@@ -1078,84 +1145,106 @@ actor PluginRuntime {
         let siteURL = route.meta.url
         let hasVerify = route.meta.hasSearchVerification
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let gate = PluginContinuationGate(continuation)
-
-            Self.jsExecutionQueue.async {
-                let ctx: JSContext
-                do {
-                    ctx = try pool.checkoutContext(maxWaitSeconds: min(timeoutSec, 12.0))
-                } catch {
-                    gate.resume(with: .failure(error))
+        let control = PluginExecutionControl<String>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                control.setContinuation(continuation)
+                if Task.isCancelled {
+                    control.abort(with: CancellationError())
                     return
                 }
 
-                // 检出 JSContext 后再启动该次方法执行的精确超时门栓
-                Self.jsExecutionQueue.asyncAfter(deadline: .now() + timeoutSec) {
-                    gate.resume(with: .failure(PluginError.timeout))
-                }
+                Self.jsExecutionQueue.async {
+                    guard !control.isAborted else { return }
 
-                var shouldDiscard = false
-                defer {
-                    pool.checkinContext(ctx, discard: shouldDiscard)
-                }
-
-                // 优先调用 ssts 标准 __invokeSafe(i, n, a)
-                if let invokeSafeFn = ctx.objectForKeyedSubscript("__invokeSafe"), !invokeSafeFn.isUndefined {
-                    guard let safeRes = invokeSafeFn.call(withArguments: [sourceIdx, method, argsJson]),
-                          let envelopeStr = safeRes.toString(),
-                          let envData = envelopeStr.data(using: .utf8),
-                          let env = try? JSONSerialization.jsonObject(with: envData) as? [String: Any] else {
-                        shouldDiscard = true
-                        gate.resume(with: .failure(PluginError.parseFailed("调用书源方法 \(method) 失败")))
+                    let ctx: JSContext
+                    do {
+                        ctx = try pool.checkoutContext(maxWaitSeconds: min(timeoutSec, 12.0))
+                    } catch {
+                        control.resume(with: .failure(error))
                         return
                     }
-                    if let errMsg = env["e"] as? String {
+
+                    guard control.attachContext(ctx) else {
+                        pool.checkinContext(ctx, discard: true)
+                        return
+                    }
+
+                    // 检出 JSContext 后再启动该次方法执行的精确超时门栓
+                    let timeoutWork = DispatchWorkItem {
+                        control.abort(with: PluginError.timeout)
+                    }
+                    Self.jsExecutionQueue.asyncAfter(deadline: .now() + timeoutSec, execute: timeoutWork)
+
+                    var shouldDiscard = false
+                    defer {
+                        timeoutWork.cancel()
+                        control.detachContext()
+                        if control.isAborted {
+                            shouldDiscard = true
+                        }
+                        pool.checkinContext(ctx, discard: shouldDiscard)
+                    }
+
+                    // 优先调用 ssts 标准 __invokeSafe(i, n, a)
+                    if let invokeSafeFn = ctx.objectForKeyedSubscript("__invokeSafe"), !invokeSafeFn.isUndefined {
+                        guard let safeRes = invokeSafeFn.call(withArguments: [sourceIdx, method, argsJson]),
+                              let envelopeStr = safeRes.toString(),
+                              let envData = envelopeStr.data(using: .utf8),
+                              let env = try? JSONSerialization.jsonObject(with: envData) as? [String: Any] else {
+                            shouldDiscard = true
+                            control.resume(with: .failure(PluginError.parseFailed("调用书源方法 \(method) 失败")))
+                            return
+                        }
+                        if let errMsg = env["e"] as? String {
+                            let mapped = Self.mapJSException(
+                                errMsg,
+                                sourceID: sourceID,
+                                loginURL: loginURL,
+                                siteURL: siteURL,
+                                hasSearchVerification: hasVerify,
+                                method: method
+                            )
+                            control.resume(with: .failure(mapped))
+                            return
+                        }
+                        if let val = env["v"] as? String {
+                            control.resume(with: .success(val))
+                            return
+                        }
+                        control.resume(with: .failure(PluginError.parseFailed("脚本没有返回结果")))
+                        return
+                    }
+
+                    guard let invokeFn = ctx.objectForKeyedSubscript("__invoke"),
+                          let res = invokeFn.call(withArguments: [sourceIdx, method, argsJson]) else {
+                        shouldDiscard = true
+                        control.resume(with: .failure(PluginError.parseFailed("调用书源方法 \(method) 失败")))
+                        return
+                    }
+                    if let exc = ctx.exception {
+                        let excMsg = exc.toString() ?? "JS Exception"
+                        ctx.exception = nil
                         let mapped = Self.mapJSException(
-                            errMsg,
+                            excMsg,
                             sourceID: sourceID,
                             loginURL: loginURL,
                             siteURL: siteURL,
                             hasSearchVerification: hasVerify,
                             method: method
                         )
-                        gate.resume(with: .failure(mapped))
+                        control.resume(with: .failure(mapped))
                         return
                     }
-                    if let val = env["v"] as? String {
-                        gate.resume(with: .success(val))
+                    guard !res.isNull && !res.isUndefined, let str = res.toString() else {
+                        control.resume(with: .failure(PluginError.parseFailed("脚本没有返回结果")))
                         return
                     }
-                    gate.resume(with: .failure(PluginError.parseFailed("脚本没有返回结果")))
-                    return
+                    control.resume(with: .success(str))
                 }
-
-                guard let invokeFn = ctx.objectForKeyedSubscript("__invoke"),
-                      let res = invokeFn.call(withArguments: [sourceIdx, method, argsJson]) else {
-                    shouldDiscard = true
-                    gate.resume(with: .failure(PluginError.parseFailed("调用书源方法 \(method) 失败")))
-                    return
-                }
-                if let exc = ctx.exception {
-                    let excMsg = exc.toString() ?? "JS Exception"
-                    ctx.exception = nil
-                    let mapped = Self.mapJSException(
-                        excMsg,
-                        sourceID: sourceID,
-                        loginURL: loginURL,
-                        siteURL: siteURL,
-                        hasSearchVerification: hasVerify,
-                        method: method
-                    )
-                    gate.resume(with: .failure(mapped))
-                    return
-                }
-                guard !res.isNull && !res.isUndefined, let str = res.toString() else {
-                    gate.resume(with: .failure(PluginError.parseFailed("脚本没有返回结果")))
-                    return
-                }
-                gate.resume(with: .success(str))
             }
+        } onCancel: {
+            control.abort(with: CancellationError())
         }
     }
 
@@ -1533,12 +1622,20 @@ actor PluginRuntime {
         return String(data: data, encoding: String.Encoding(rawValue: gb18030))
     }
 
-    nonisolated static func loadPreludeScript() -> String {
+    private static let cachedPreludeScript: String = {
         if let url = Bundle.main.url(forResource: "prelude", withExtension: "js"),
-           let text = try? String(contentsOf: url, encoding: .utf8) {
+           let text = try? String(contentsOf: url, encoding: .utf8),
+           !text.isEmpty {
             return text
         }
-        return """
+        return fallbackPreludeScript
+    }()
+
+    nonisolated static func loadPreludeScript() -> String {
+        cachedPreludeScript
+    }
+
+    private static let fallbackPreludeScript: String = """
         var __sources = [];
         function at(obj, path) {
           if (obj === null || obj === undefined) return null;
@@ -1668,5 +1765,4 @@ actor PluginRuntime {
           return (r === undefined || r === null) ? null : JSON.stringify(r);
         }
         """
-    }
 }

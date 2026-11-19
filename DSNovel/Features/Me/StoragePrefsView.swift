@@ -6,19 +6,25 @@ struct StoragePrefsView: View {
     let tempBytes: Int64?
     private let onOpenDownloads: () -> Void
     private let onClearTempCache: () -> Void
+    private let onExportBackup: () -> Void
+    private let onImportBackup: () -> Void
 
     init(
         settings: AppSettingsStore = .shared,
         manualBytes: Int64,
         tempBytes: Int64?,
         onOpenDownloads: @escaping () -> Void,
-        onClearTempCache: @escaping () -> Void
+        onClearTempCache: @escaping () -> Void,
+        onExportBackup: @escaping () -> Void = {},
+        onImportBackup: @escaping () -> Void = {}
     ) {
         self.settings = settings
         self.manualBytes = manualBytes
         self.tempBytes = tempBytes
         self.onOpenDownloads = onOpenDownloads
         self.onClearTempCache = onClearTempCache
+        self.onExportBackup = onExportBackup
+        self.onImportBackup = onImportBackup
     }
 
     private func formatBytes(_ bytes: Int64) -> String {
@@ -68,6 +74,26 @@ struct StoragePrefsView: View {
                     icon: "trash",
                     title: "清理缓存",
                     valueText: tempBytesDisplay,
+                    style: .action
+                )
+            }
+            .buttonStyle(.plain)
+            .listRowBackground(Color.dsSurfaceCard)
+
+            Button(action: onExportBackup) {
+                DSSettingsRow(
+                    icon: "square.and.arrow.up",
+                    title: "导出书架与进度备份",
+                    style: .action
+                )
+            }
+            .buttonStyle(.plain)
+            .listRowBackground(Color.dsSurfaceCard)
+
+            Button(action: onImportBackup) {
+                DSSettingsRow(
+                    icon: "square.and.arrow.down",
+                    title: "从备份文件恢复",
                     style: .action
                 )
             }

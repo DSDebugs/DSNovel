@@ -70,6 +70,7 @@ final class BannerCenter {
         _ message: String,
         kind: DSBannerKind = .info,
         now: TimeInterval = Date().timeIntervalSince1970,
+        duration: TimeInterval? = nil,
         scheduleAutoDismiss: Bool = true,
         bypassDeduplication: Bool = false
     ) {
@@ -81,8 +82,9 @@ final class BannerCenter {
             return
         }
         commitActiveUndoIfNeeded()
+        pruneExpiredRecentMessages(now: now)
         recentMessages[message] = now
-        let item = DSBannerItem(message: message, kind: kind, createdAt: now)
+        let item = DSBannerItem(message: message, kind: kind, createdAt: now, duration: duration)
         currentBanner = item
         UIAccessibility.post(notification: .announcement, argument: message)
 
@@ -111,6 +113,7 @@ final class BannerCenter {
         hasResolvedUndo = false
         activeUndoCallback = onUndo
         activeCommitCallback = onCommit
+        pruneExpiredRecentMessages(now: now)
         recentMessages[message] = now
         let item = DSBannerItem(message: message, kind: .undo, createdAt: now, duration: 5.0)
         currentBanner = item
@@ -150,8 +153,11 @@ final class BannerCenter {
         currentBanner = nil
     }
 
-    func handleDidEnterBackground() {
+    func handleDidEnterBackground(now: TimeInterval = Date().timeIntervalSince1970) {
+        autoDismissTask?.cancel()
         commitActiveUndoIfNeeded()
+        currentBanner = nil
+        pruneExpiredRecentMessages(now: now)
     }
 
     func dismissCurrent() {
@@ -164,6 +170,12 @@ final class BannerCenter {
         guard currentBanner?.id == id else { return }
         commitActiveUndoIfNeeded()
         currentBanner = nil
+    }
+
+    private func pruneExpiredRecentMessages(now: TimeInterval) {
+        for (key, timestamp) in recentMessages where (now - timestamp) > 10.0 {
+            recentMessages.removeValue(forKey: key)
+        }
     }
 
     private func commitActiveUndoIfNeeded() {

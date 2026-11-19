@@ -46,22 +46,32 @@ struct SearchProgressHeader: View {
                         .font(DSTypography.numericCaption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("停止", action: onStop)
-                        .font(DSTypography.caption.weight(.semibold))
-                        .foregroundStyle(Color.dsAccent)
+                    Button(action: onStop) {
+                        Text("停止")
+                            .font(DSTypography.caption.weight(.semibold))
+                            .foregroundStyle(Color.dsAccent)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 } else if totalCount > 0 {
                     Text(String(format: "共 %d 本 · 用时 %.1f 秒", resultCount, elapsedSeconds))
                         .font(DSTypography.numericCaption)
                         .foregroundStyle(.secondary)
                     Spacer()
                     if failedCount > 0 {
-                        Button("\(failedCount) 个书源失败 ›", action: onOpenFailedSheet)
-                            .font(DSTypography.caption.weight(.medium))
-                            .foregroundStyle(.orange)
+                        Button(action: onOpenFailedSheet) {
+                            Text("\(failedCount) 个书源失败 ›")
+                                .font(DSTypography.caption.weight(.medium))
+                                .foregroundStyle(.orange)
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
-            .frame(height: 32)
+            .frame(minHeight: 32)
             .padding(.horizontal, Spacing.pageHorizontal)
 
             if pendingHigherRelevanceCount > 0 {
@@ -70,8 +80,10 @@ struct SearchProgressHeader: View {
                         .font(DSTypography.caption.weight(.semibold))
                         .foregroundStyle(Color.dsOnAccent)
                         .padding(.horizontal, Spacing.s4)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, Spacing.s2)
+                        .frame(minHeight: 36)
                         .background(Capsule().fill(Color.dsAccent))
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }

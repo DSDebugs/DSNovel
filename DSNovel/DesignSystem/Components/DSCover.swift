@@ -18,16 +18,26 @@ enum DSCoverBadge: Equatable, Hashable, Sendable {
 }
 
 struct DSCover: View {
+    @Environment(\.displayScale) private var displayScale
+
     let url: String
     let title: String
     let side: CGFloat
     let badges: [DSCoverBadge]
     let showsBorder: Bool
     let showsSoftShadow: Bool
+    let headers: [String: String]
     private let onImageLoaded: ((UIImage) -> Void)?
 
     @State private var loadedImage: UIImage?
-    @State private var loadedURL: String = ""
+    @State private var loadedTaskKey: CoverLoadTaskKey?
+
+    private struct CoverLoadTaskKey: Equatable {
+        let url: String
+        let sideBucket: Int
+        let scaleBucket: Int
+        let headers: [String: String]
+    }
 
     init(
         url: String,
@@ -36,6 +46,7 @@ struct DSCover: View {
         badges: [DSCoverBadge] = [],
         showsBorder: Bool = true,
         showsSoftShadow: Bool = false,
+        headers: [String: String] = [:],
         onImageLoaded: ((UIImage) -> Void)? = nil
     ) {
         self.url = url
@@ -44,6 +55,7 @@ struct DSCover: View {
         self.badges = badges
         self.showsBorder = showsBorder
         self.showsSoftShadow = showsSoftShadow
+        self.headers = headers
         self.onImageLoaded = onImageLoaded
     }
 
@@ -55,15 +67,25 @@ struct DSCover: View {
         Radius.cover(forSide: side)
     }
 
+    private var currentTaskKey: CoverLoadTaskKey {
+        CoverLoadTaskKey(
+            url: url,
+            sideBucket: Int(side.rounded()),
+            scaleBucket: Int((displayScale * 10).rounded()),
+            headers: headers
+        )
+    }
+
     private var effectiveImage: UIImage? {
-        if loadedURL == url, let loadedImage {
+        if loadedTaskKey == currentTaskKey, let loadedImage {
             return loadedImage
         }
-        return CoverImagePipeline.shared.cachedInMemory(for: url, side: side)
+        return CoverImagePipeline.shared.cachedInMemory(for: url, side: side, scale: displayScale)
     }
 
     var body: some View {
         let visibleBadges = Self.topTwoBadges(badges)
+        let taskKey = currentTaskKey
         ZStack(alignment: .topTrailing) {
             coverBody(image: effectiveImage)
                 .frame(width: side, height: side)
@@ -84,23 +106,26 @@ struct DSCover: View {
             x: 0,
             y: showsSoftShadow ? 3 : 0
         )
-        .task(id: url) {
-            if let mem = CoverImagePipeline.shared.cachedInMemory(for: url, side: side) {
+        .task(id: taskKey) {
+            let scale = displayScale
+            if let mem = CoverImagePipeline.shared.cachedInMemory(for: url, side: side, scale: scale) {
                 loadedImage = mem
-                loadedURL = url
+                loadedTaskKey = taskKey
                 onImageLoaded?(mem)
                 return
             }
-            if loadedURL != url {
+            if loadedTaskKey?.url != url {
                 loadedImage = nil
             }
             if let fetched = await CoverImagePipeline.shared.image(
                 for: url,
-                targetSize: CGSize(width: side, height: side)
+                headers: headers,
+                targetSize: CGSize(width: side, height: side),
+                scale: scale
             ) {
                 guard !Task.isCancelled else { return }
                 loadedImage = fetched
-                loadedURL = url
+                loadedTaskKey = taskKey
                 onImageLoaded?(fetched)
             }
         }

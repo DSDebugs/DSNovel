@@ -133,6 +133,32 @@ struct BookSkipConfig: Equatable, Hashable, Sendable {
         guard durationSec > intro + outro + 10.0 else { return false }
         return positionSec >= durationSec - outro
     }
+
+    /// 计算精确片尾跳过边界时刻（供 AVPlayer.addBoundaryTimeObserver 注册）
+    static func outroBoundarySec(
+        durationSec: Double,
+        config: BookSkipConfig
+    ) -> Double? {
+        let outro = Double(config.effectiveOutroSec)
+        let intro = Double(config.effectiveIntroSec)
+        guard outro > 0, durationSec.isFinite, durationSec > intro + outro + 10.0 else {
+            return nil
+        }
+        return max(0, durationSec - outro)
+    }
+
+    /// 用户手动拖回片尾前 2 秒以上时，恢复本章片尾跳过触发能力
+    static func shouldResetOutroSuppression(
+        seekSec: Double,
+        durationSec: Double,
+        config: BookSkipConfig
+    ) -> Bool {
+        let outro = Double(config.effectiveOutroSec)
+        guard outro > 0, durationSec.isFinite, durationSec > 0, seekSec.isFinite else {
+            return false
+        }
+        return seekSec < durationSec - outro - 2.0
+    }
 }
 
 /// 一次性幂等迁移：移除全局片头片尾默认设置并保留每本书当前听感

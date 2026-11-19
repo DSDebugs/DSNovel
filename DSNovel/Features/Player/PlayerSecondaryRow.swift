@@ -1,10 +1,60 @@
 import SwiftUI
 
+private struct SleepSecondaryButton: View {
+    let player: PlayerEngine
+    private let action: () -> Void
+
+    init(player: PlayerEngine, action: @escaping () -> Void) {
+        self.player = player
+        self.action = action
+    }
+
+    private var sleepDisplayLabel: String {
+        guard player.sleepOption != .off else { return "定时" }
+        let rem = player.estimatedSleepRemainingSec
+        if rem > 0 {
+            return PlaybackClock.formatSeconds(Double(rem))
+        }
+        return player.sleepOption.label
+    }
+
+    var body: some View {
+        let isActive = player.sleepOption != .off
+        let label = sleepDisplayLabel
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: isActive ? "moon.fill" : "moon")
+                    .font(DSTypography.body.weight(.semibold))
+                Text(label)
+                    .font(DSTypography.numericCaption)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isActive ? Color.dsAccent : .white.opacity(0.92))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, Spacing.s3)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .fill(isActive ? Color.dsAccent.opacity(0.18) : Color.white.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .strokeBorder(
+                        isActive ? Color.dsAccent.opacity(0.55) : Color.white.opacity(0.08),
+                        lineWidth: 0.8
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("睡眠定时 \(label)")
+    }
+}
+
 struct PlayerSecondaryRow: View {
     let speed: Double
     let effectPreset: AudioEffectPreset
     let sleepOption: SleepTimerOption
     let sleepRemainingSec: Int
+    let sleepPlayer: PlayerEngine?
     let currentChapterIndex: Int
     let totalChapters: Int
     private let onOpenSpeed: () -> Void
@@ -15,8 +65,9 @@ struct PlayerSecondaryRow: View {
     init(
         speed: Double,
         effectPreset: AudioEffectPreset = .original,
-        sleepOption: SleepTimerOption,
+        sleepOption: SleepTimerOption = .off,
         sleepRemainingSec: Int = 0,
+        sleepPlayer: PlayerEngine? = nil,
         currentChapterIndex: Int = 0,
         totalChapters: Int = 0,
         onOpenSpeed: @escaping () -> Void,
@@ -28,6 +79,7 @@ struct PlayerSecondaryRow: View {
         self.effectPreset = effectPreset
         self.sleepOption = sleepOption
         self.sleepRemainingSec = sleepRemainingSec
+        self.sleepPlayer = sleepPlayer
         self.currentChapterIndex = currentChapterIndex
         self.totalChapters = totalChapters
         self.onOpenSpeed = onOpenSpeed
@@ -69,13 +121,17 @@ struct PlayerSecondaryRow: View {
                 accessibilityTitle: "音质与音效 \(effectPreset.title)",
                 action: onOpenAudioEffects
             )
-            secondaryButton(
-                icon: sleepOption == .off ? "moon" : "moon.fill",
-                label: sleepDisplayLabel,
-                isActive: sleepOption != .off,
-                accessibilityTitle: "睡眠定时 \(sleepDisplayLabel)",
-                action: onOpenSleep
-            )
+            if let sleepPlayer {
+                SleepSecondaryButton(player: sleepPlayer, action: onOpenSleep)
+            } else {
+                secondaryButton(
+                    icon: sleepOption == .off ? "moon" : "moon.fill",
+                    label: sleepDisplayLabel,
+                    isActive: sleepOption != .off,
+                    accessibilityTitle: "睡眠定时 \(sleepDisplayLabel)",
+                    action: onOpenSleep
+                )
+            }
             secondaryButton(
                 icon: "list.bullet",
                 label: chaptersDisplayLabel,

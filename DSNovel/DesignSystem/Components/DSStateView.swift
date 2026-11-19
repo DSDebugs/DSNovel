@@ -123,6 +123,10 @@ enum UserFacingError {
 struct DSStateView: View {
     let kind: DSStateKind
     let variant: DSStateVariant
+    let titleOverride: String?
+    let messageOverride: String?
+    let primaryTitleOverride: String?
+    let secondaryTitleOverride: String?
     private let onPrimary: (() -> Void)?
     private let onSecondary: (() -> Void)?
     @State private var showErrorDetails = false
@@ -130,13 +134,37 @@ struct DSStateView: View {
     init(
         kind: DSStateKind,
         variant: DSStateVariant = .standard,
+        titleOverride: String? = nil,
+        messageOverride: String? = nil,
+        primaryTitleOverride: String? = nil,
+        secondaryTitleOverride: String? = nil,
         onPrimary: (() -> Void)? = nil,
         onSecondary: (() -> Void)? = nil
     ) {
         self.kind = kind
         self.variant = variant
+        self.titleOverride = titleOverride
+        self.messageOverride = messageOverride
+        self.primaryTitleOverride = primaryTitleOverride
+        self.secondaryTitleOverride = secondaryTitleOverride
         self.onPrimary = onPrimary
         self.onSecondary = onSecondary
+    }
+
+    private var resolvedTitle: String {
+        titleOverride ?? kind.title
+    }
+
+    private var resolvedMessage: String {
+        messageOverride ?? kind.message
+    }
+
+    private var resolvedPrimaryTitle: String? {
+        primaryTitleOverride ?? kind.primaryButtonTitle
+    }
+
+    private var resolvedSecondaryTitle: String? {
+        secondaryTitleOverride ?? kind.secondaryButtonTitle
     }
 
     var body: some View {
@@ -157,13 +185,13 @@ struct DSStateView: View {
             Image(systemName: kind.iconName)
                 .font(.headline)
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle( Color.dsAccent )
+                .foregroundStyle(Color.dsAccent)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(kind.title)
+                Text(resolvedTitle)
                     .font(DSTypography.cardTitle)
                     .foregroundStyle(.primary)
-                Text(kind.message)
+                Text(resolvedMessage)
                     .font(DSTypography.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -171,7 +199,7 @@ struct DSStateView: View {
 
             Spacer(minLength: 0)
 
-            if let primaryTitle = kind.primaryButtonTitle, let onPrimary {
+            if let primaryTitle = resolvedPrimaryTitle, let onPrimary {
                 Button(primaryTitle, action: onPrimary)
                     .font(DSTypography.caption.weight(.semibold))
                     .foregroundStyle(Color.dsOnAccent)
@@ -181,7 +209,7 @@ struct DSStateView: View {
                     .buttonStyle(.plain)
             }
 
-            if let secondaryTitle = kind.secondaryButtonTitle, let onSecondary {
+            if let secondaryTitle = resolvedSecondaryTitle, let onSecondary {
                 Button(secondaryTitle, action: onSecondary)
                     .font(DSTypography.caption.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -204,12 +232,12 @@ struct DSStateView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 48, height: 48)
 
-            Text(kind.title)
+            Text(resolvedTitle)
                 .font(DSTypography.rowTitle)
                 .foregroundStyle(.primary)
                 .multilineTextAlignment(.center)
 
-            Text(kind.message)
+            Text(resolvedMessage)
                 .font(DSTypography.cardTitle)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -227,7 +255,7 @@ struct DSStateView: View {
             }
 
             HStack(spacing: Spacing.s3) {
-                if let primaryTitle = kind.primaryButtonTitle, let onPrimary {
+                if let primaryTitle = resolvedPrimaryTitle, let onPrimary {
                     Button(action: onPrimary) {
                         Text(primaryTitle)
                             .font(DSTypography.cardTitle)
@@ -240,7 +268,7 @@ struct DSStateView: View {
                     .buttonStyle(.plain)
                 }
 
-                if let secondaryTitle = kind.secondaryButtonTitle, let onSecondary {
+                if let secondaryTitle = resolvedSecondaryTitle, let onSecondary {
                     Button(action: onSecondary) {
                         Text(secondaryTitle)
                             .font(DSTypography.cardTitle)

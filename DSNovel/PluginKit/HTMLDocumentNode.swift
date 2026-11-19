@@ -555,32 +555,37 @@ enum HTMLTokenizer {
         "li", "p", "dt", "dd", "option", "tr", "td", "th"
     ]
 
+    private static let commentRegex = try? NSRegularExpression(pattern: "<!--[\\s\\S]*?-->", options: [])
+    private static let doctypeRegex = try? NSRegularExpression(pattern: "<!doctype[^>]*>", options: [.caseInsensitive])
+    private static let scriptStyleBlockRegex = try? NSRegularExpression(pattern: "<(script|style)\\b[^>]*>[\\s\\S]*?</\\1>", options: [.caseInsensitive])
+    private static let tagRegex = try? NSRegularExpression(pattern: "<(/?)([a-zA-Z][a-zA-Z0-9:-]*)([^>]*?)(/?)>", options: [.dotMatchesLineSeparators])
+    private static let attrRegex = try? NSRegularExpression(pattern: "([a-zA-Z0-9_:-]+)\\s*(?:=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'=<>`]+)))?", options: [])
+    private static let stripScriptStyleRegex = try? NSRegularExpression(pattern: "<(script|style)[^>]*>[\\s\\S]*?</\\1>", options: [.caseInsensitive])
+    private static let stripTagRegex = try? NSRegularExpression(pattern: "<[^>]+>", options: [])
+    private static let numericEntityRegex = try? NSRegularExpression(pattern: "&#(x?[0-9a-fA-F]+);", options: [])
+    private static let namedEntities: [(String, String)] = [
+        ("&nbsp;", " "), ("&#160;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+        ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&ldquo;", "“"),
+        ("&rdquo;", "”"), ("&hellip;", "…"), ("&mdash;", "—"), ("&middot;", "·")
+    ]
+
+    private static func replacing(_ text: String, with regex: NSRegularExpression?, template: String) -> String {
+        guard let regex else { return text }
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
+    }
+
     static func parseDocument(html: String, baseURL: String) -> JsElement {
         let root = JsElement(tagName: "document", attributes: [:], innerHTML: html, baseURL: baseURL)
         guard !html.isEmpty else { return root }
 
-        var cleaned = html.replacingOccurrences(
-            of: "<!--[\\s\\S]*?-->",
-            with: "",
-            options: .regularExpression
-        )
-        cleaned = cleaned.replacingOccurrences(
-            of: "<!(?i:doctype)[^>]*>",
-            with: "",
-            options: .regularExpression
-        )
-        cleaned = cleaned.replacingOccurrences(
-            of: "<(script|style)\\b[^>]*>[\\s\\S]*?</\\1>",
-            with: "",
-            options: [.regularExpression, .caseInsensitive]
-        )
+        var cleaned = replacing(html, with: commentRegex, template: "")
+        cleaned = replacing(cleaned, with: doctypeRegex, template: "")
+        cleaned = replacing(cleaned, with: scriptStyleBlockRegex, template: "")
 
         let ns = cleaned as NSString
         let totalLength = ns.length
-        guard let tagRegex = try? NSRegularExpression(
-            pattern: "<(/?)([a-zA-Z][a-zA-Z0-9:-]*)([^>]*?)(/?)>",
-            options: [.dotMatchesLineSeparators]
-        ) else {
+        guard let tagRegex else {
             return root
         }
 
@@ -658,8 +663,7 @@ enum HTMLTokenizer {
 
     private static func parseAttributes(_ raw: String) -> [String: String] {
         var result: [String: String] = [:]
-        let pattern = "([a-zA-Z0-9_:-]+)\\s*(?:=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'=<>`]+)))?"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return result }
+        guard !raw.isEmpty, let regex = attrRegex else { return result }
         let ns = raw as NSString
         let matches = regex.matches(in: raw, options: [], range: NSRange(location: 0, length: ns.length))
         for m in matches {
@@ -679,16 +683,20 @@ enum HTMLTokenizer {
 
     static func stripTagsAndDecodeEntities(_ html: String) -> String {
         guard !html.isEmpty else { return "" }
-        let withoutScript = html.replacingOccurrences(
-            of: "<(script|style)[^>]*>[\\s\\S]*?</\\1>",
-            with: " ",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        let withoutTags = withoutScript.replacingOccurrences(
-            of: "<[^>]+>",
-            with: " ",
-            options: .regularExpression
-        )
+        // 快速路径：纯文本不含 HTML 标签与实体时跳过正则编译与实体解码
+        if !html.contains("<") && !html.contains("&") {
+            return html
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+        let withoutTags: String
+        if html.contains("<") {
+            let withoutScript = replacing(html, with: stripScriptStyleRegex, template: " ")
+            withoutTags = replacing(withoutScript, with: stripTagRegex, template: " ")
+        } else {
+            withoutTags = html
+        }
         let decoded = decodeHTMLEntities(withoutTags)
         return decoded
             .components(separatedBy: .whitespacesAndNewlines)
@@ -697,17 +705,12 @@ enum HTMLTokenizer {
     }
 
     static func decodeHTMLEntities(_ text: String) -> String {
+        guard text.contains("&") else { return text }
         var s = text
-        let entities: [(String, String)] = [
-            ("&nbsp;", " "), ("&#160;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
-            ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&ldquo;", "“"),
-            ("&rdquo;", "”"), ("&hellip;", "…"), ("&mdash;", "—"), ("&middot;", "·")
-        ]
-        for (k, v) in entities where s.contains(k) {
+        for (k, v) in namedEntities where s.contains(k) {
             s = s.replacingOccurrences(of: k, with: v)
         }
-        if s.contains("&#"),
-           let numRegex = try? NSRegularExpression(pattern: "&#(x?[0-9a-fA-F]+);") {
+        if s.contains("&#"), let numRegex = numericEntityRegex {
             let ns = s as NSString
             let matches = numRegex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed()
             for m in matches {

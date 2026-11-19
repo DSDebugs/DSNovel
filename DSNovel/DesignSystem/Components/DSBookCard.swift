@@ -100,6 +100,14 @@ struct DSBookCard: View {
         side >= 145
     }
 
+    private func handleNarratorTap() {
+        if let onNarratorTap {
+            onNarratorTap(model.author)
+        } else {
+            AppRouter.shared.searchByNarrator(model.author)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s1) {
             Button(action: onAction) {
@@ -142,14 +150,14 @@ struct DSBookCard: View {
             }
             .buttonStyle(.dsCard)
 
-            if model.progressSubtitle.isEmpty && !model.author.isEmpty && !isEditing {
-                Button {
-                    if let onNarratorTap {
-                        onNarratorTap(model.author)
-                    } else {
-                        AppRouter.shared.searchByNarrator(model.author)
-                    }
-                } label: {
+            if model.isPlaying {
+                LiveBookCardSubtitleView(
+                    baseSubtitle: model.progressSubtitle,
+                    isLargeCard: isLargeCard,
+                    side: side
+                )
+            } else if model.progressSubtitle.isEmpty && !model.author.isEmpty && !isEditing {
+                Button(action: handleNarratorTap) {
                     HStack(spacing: 3) {
                         Image(systemName: "mic.fill")
                             .font(DSTypography.caption2)
@@ -172,5 +180,34 @@ struct DSBookCard: View {
         .frame(width: side, alignment: .topLeading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.accessibilitySummary)
+        .accessibilityAction { onAction() }
+        .accessibilityAction(named: Text(!model.author.isEmpty && !isEditing ? "搜索演播：\(model.author)" : "")) {
+            if !model.author.isEmpty && !isEditing {
+                handleNarratorTap()
+            }
+        }
+    }
+}
+
+/// 隔离观察正在播放书目的实时播放时间，避免网格卡片父视图每秒重绘
+private struct LiveBookCardSubtitleView: View {
+    let baseSubtitle: String
+    let isLargeCard: Bool
+    let side: CGFloat
+    @State private var player = PlayerEngine.shared
+
+    init(baseSubtitle: String, isLargeCard: Bool, side: CGFloat) {
+        self.baseSubtitle = baseSubtitle
+        self.isLargeCard = isLargeCard
+        self.side = side
+    }
+
+    var body: some View {
+        let timeStr = player.clock.formattedCurrent
+        Text(baseSubtitle.isEmpty ? timeStr : "\(baseSubtitle) · \(timeStr)")
+            .font(isLargeCard ? DSTypography.numericCaption : DSTypography.caption2.monospacedDigit())
+            .foregroundStyle(Color.dsAccent)
+            .lineLimit(1)
+            .frame(width: side, alignment: .leading)
     }
 }

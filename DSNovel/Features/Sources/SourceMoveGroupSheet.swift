@@ -7,6 +7,7 @@ struct SourceMoveGroupSheet: View {
     private let onClose: () -> Void
 
     @State private var newGroupName: String = ""
+    @State private var validationError: String?
 
     init(
         sourceStore: SourceStore = .shared,
@@ -44,7 +45,7 @@ struct SourceMoveGroupSheet: View {
                                     .font(DSTypography.numericCaption)
                                     .foregroundStyle(.secondary)
                             }
-                            .frame(minHeight: 40)
+                            .frame(minHeight: 44)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -63,7 +64,7 @@ struct SourceMoveGroupSheet: View {
                                 .font(DSTypography.numericCaption)
                                 .foregroundStyle(.secondary)
                         }
-                        .frame(minHeight: 40)
+                        .frame(minHeight: 44)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -78,8 +79,10 @@ struct SourceMoveGroupSheet: View {
                         Button("创建并移入") {
                             if let created = sourceStore.createGroup(named: newGroupName) {
                                 newGroupName = ""
+                                validationError = nil
                                 moveAndFinish(toGroupID: created.id, groupTitle: created.name)
                             } else {
+                                validationError = "分组名称为空或已存在"
                                 DSHapticPolicy.fire(.error)
                                 BannerCenter.shared.show("分组名称为空或已存在", kind: .warning)
                             }
@@ -88,11 +91,21 @@ struct SourceMoveGroupSheet: View {
                         .disabled(newGroupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                     .listRowBackground(Color.dsSurfaceCard)
+
+                    if let validationError {
+                        Text(validationError)
+                            .font(DSTypography.caption)
+                            .foregroundStyle(.red)
+                            .listRowBackground(Color.dsSurfaceCard)
+                    }
                 }
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(Color.dsSurfaceGrouped)
+            .onChange(of: newGroupName) { _, _ in
+                if validationError != nil { validationError = nil }
+            }
         }
         .presentationDetents([.medium, .large])
     }

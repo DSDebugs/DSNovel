@@ -3,6 +3,7 @@ import SwiftUI
 struct SourceGroupEditor: View {
     let sourceStore: SourceStore
     @State private var newGroupName: String = ""
+    @State private var validationError: String?
     @State private var renamingGroup: PluginGroup?
     @State private var renameDraft: String = ""
     @State private var pendingDeleteGroup: PluginGroup?
@@ -22,8 +23,10 @@ struct SourceGroupEditor: View {
                         Button("添加") {
                             if sourceStore.createGroup(named: newGroupName) != nil {
                                 newGroupName = ""
+                                validationError = nil
                                 DSHapticPolicy.fire(.success)
                             } else {
+                                validationError = "分组名称为空或已存在"
                                 DSHapticPolicy.fire(.error)
                                 BannerCenter.shared.show("分组名称为空或已存在", kind: .warning)
                             }
@@ -32,6 +35,13 @@ struct SourceGroupEditor: View {
                         .disabled(newGroupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                     .listRowBackground(Color.dsSurfaceCard)
+
+                    if let validationError {
+                        Text(validationError)
+                            .font(DSTypography.caption)
+                            .foregroundStyle(.red)
+                            .listRowBackground(Color.dsSurfaceCard)
+                    }
                 }
 
                 Section {
@@ -42,7 +52,7 @@ struct SourceGroupEditor: View {
                             .listRowBackground(Color.dsSurfaceCard)
                     } else {
                         ForEach(sourceStore.sortedGroups) { grp in
-                            HStack(spacing: Spacing.s3) {
+                            HStack(spacing: Spacing.s2) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(grp.name)
                                         .font(DSTypography.body)
@@ -61,7 +71,8 @@ struct SourceGroupEditor: View {
                                     Image(systemName: "pencil")
                                         .font(DSTypography.subtitle)
                                         .foregroundStyle(Color.dsAccent)
-                                        .frame(width: 34, height: 34)
+                                        .frame(minWidth: 44, minHeight: 44)
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("重命名 \(grp.name)")
@@ -72,7 +83,8 @@ struct SourceGroupEditor: View {
                                     Image(systemName: "trash")
                                         .font(DSTypography.subtitle)
                                         .foregroundStyle(.red)
-                                        .frame(width: 34, height: 34)
+                                        .frame(minWidth: 44, minHeight: 44)
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("删除分组 \(grp.name)")
@@ -97,6 +109,9 @@ struct SourceGroupEditor: View {
             .scrollContentBackground(.hidden)
             .background(Color.dsSurfaceGrouped)
             .environment(\.editMode, .constant(.active))
+            .onChange(of: newGroupName) { _, _ in
+                if validationError != nil { validationError = nil }
+            }
         }
         .alert(
             "重命名分组",
@@ -110,8 +125,10 @@ struct SourceGroupEditor: View {
             Button("保存") {
                 if let target = renamingGroup {
                     if sourceStore.renameGroup(target, to: renameDraft) {
+                        validationError = nil
                         DSHapticPolicy.fire(.success)
                     } else {
+                        validationError = "分组名称为空或已存在"
                         DSHapticPolicy.fire(.error)
                         BannerCenter.shared.show("分组名称为空或已存在", kind: .warning)
                     }

@@ -91,13 +91,15 @@ struct DiscoverHeaderBar: View {
                             Image(systemName: "xmark.circle.fill")
                                 .font(DSTypography.caption)
                                 .foregroundStyle(.tertiary)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("清除源内搜索")
                     }
                 }
                 .padding(.horizontal, Spacing.s3)
-                .frame(height: 38)
+                .frame(minHeight: 38)
                 .background(Capsule().fill(Color.dsSurfaceGrouped))
 
                 Menu {
@@ -157,8 +159,10 @@ struct DiscoverHeaderBar: View {
                     }
                     .foregroundStyle(Color.dsAccent)
                     .padding(.horizontal, Spacing.s3)
-                    .frame(height: 32)
+                    .frame(minHeight: 34)
                     .background(Capsule().fill(Color.dsAccent.opacity(0.14)))
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
                 }
                 .tint(Color.dsAccent)
                 .buttonStyle(.plain)

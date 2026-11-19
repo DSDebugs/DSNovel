@@ -6,22 +6,29 @@ final class BackgroundDownloadSession: NSObject, DownloadTransport {
     static let shared = BackgroundDownloadSession()
     static let sessionIdentifier = "com.dsnovel.downloads"
 
+    nonisolated static var stagingDirectory: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("DSNovelDownloadStaging", isDirectory: true)
+    }
+
     var onEvent: ((DownloadTransportEvent) -> Void)?
     var systemCompletionHandler: (() -> Void)?
 
     private var tasksByItemID: [String: URLSessionDownloadTask] = [:]
     private var lastProgressEmitTime: [String: TimeInterval] = [:]
+    private var session: URLSession!
 
-    private lazy var session: URLSession = {
+    override init() {
+        super.init()
         let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
         config.sessionSendsLaunchEvents = true
         config.isDiscretionary = false
         config.waitsForConnectivity = true
-        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
-    }()
+        self.session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }
 
-    override init() {
-        super.init()
+    /// 供 AppDelegate 后台唤醒时显式触发单例与底层 URLSession 就绪
+    func ensureSessionInitialized() {
+        _ = session
     }
 
     func start(request: URLRequest, descriptor: DownloadTaskDescriptor, resumeData: Data?) {
@@ -130,7 +137,7 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
     ) {
         guard let desc = Self.decodeDescriptor(from: downloadTask) else { return }
         // 同步移动临时文件到 App 自己的临时目录（系统回调返回后即删除 location）
-        let stagingDir = FileManager.default.temporaryDirectory.appendingPathComponent("DSNovelDownloadStaging", isDirectory: true)
+        let stagingDir = Self.stagingDirectory
         try? FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
         let stagedURL = stagingDir.appendingPathComponent("\(UUID().uuidString).tmp")
         do {
@@ -146,9 +153,22 @@ extension BackgroundDownloadSession: URLSessionDownloadDelegate {
         let http = downloadTask.response as? HTTPURLResponse
         let code = http?.statusCode ?? 200
         let mime = http?.mimeType
+        let originalURL = downloadTask.originalRequest?.url
+        let suggestedFilename = downloadTask.response?.suggestedFilename
+        let rawExpectedLength = downloadTask.response?.expectedContentLength ?? -1
+        let expectedLength: Int64? = rawExpectedLength > 0 ? rawExpectedLength : nil
+
         Task { @MainActor [weak self] in
             self?.tasksByItemID.removeValue(forKey: desc.itemID)
-            self?.onEvent?(.finished(descriptor: desc, tempFileURL: stagedURL, statusCode: code, mimeType: mime))
+            self?.onEvent?(.finished(
+                descriptor: desc,
+                tempFileURL: stagedURL,
+                statusCode: code,
+                mimeType: mime,
+                originalURL: originalURL,
+                suggestedFilename: suggestedFilename,
+                expectedContentLength: expectedLength
+            ))
         }
     }
 

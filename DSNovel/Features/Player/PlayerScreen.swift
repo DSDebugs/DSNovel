@@ -14,6 +14,24 @@ enum PlayerActiveSheet: String, Identifiable {
     var id: String { rawValue }
 }
 
+/// 独立进度条叶子容器：仅自身订阅 `player.clock` 与 `player.bufferedRange`，彻底隔绝 PlayerScreen 每秒全页重绘
+private struct PlayerScrubberContainer: View {
+    let player: PlayerEngine
+
+    init(player: PlayerEngine) {
+        self.player = player
+    }
+
+    var body: some View {
+        DSScrubber(
+            currentTimeSec: player.clock.currentTimeSec,
+            durationSec: player.clock.durationSec,
+            bufferedFraction: player.bufferedRange,
+            onSeek: { sec in player.seek(to: sec) }
+        )
+    }
+}
+
 struct PlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -23,12 +41,14 @@ struct PlayerScreen: View {
     @State private var libraryStore = LibraryStore.shared
     @State private var sourceStore = SourceStore.shared
     @State private var downloadManager = DownloadManager.shared
+    @State private var settings = AppSettingsStore.shared
     @State private var activeSheet: PlayerActiveSheet?
+    @State private var pendingSheet: PlayerActiveSheet?
     @State private var ambientColor: Color
     @State private var isBookFavorited: Bool = false
     @State private var heartBounceCount: Int = 0
     @State private var downloadBounceCount: Int = 0
-    @GestureState private var dragOffset: CGFloat = 0
+    @State private var dragOffset: CGFloat = 0
 
     init() {
         let currentBook = PlayerEngine.shared.currentBook
@@ -51,37 +71,44 @@ struct PlayerScreen: View {
         return sourceStore.sourceName(for: sid)
     }
 
+    /// 仅读取内存快照状态，不在渲染路径中触发 SwiftData / 文件系统回退查库
     private var currentChapterDownloadState: ChapterDownloadState {
         guard let bid = player.currentBookID, let cid = player.currentChapter?.id else {
             return .notDownloaded
         }
-        let state = downloadManager.downloadState(bookID: bid, chapterID: cid)
-        if state != .notDownloaded {
-            return state
-        }
-        if downloadManager.localFileURL(bookID: bid, chapterID: cid) != nil {
-            return .completed
-        }
-        return .notDownloaded
+        return downloadManager.downloadState(bookID: bid, chapterID: cid)
+    }
+
+    /// 与 AppearancePrefsView「仅在深色外观下生效」语义一致
+    private var isEffectiveDarkAppearance: Bool {
+        settings.appearanceMode == .dark
+            || (settings.appearanceMode == .system && UITraitCollection.current.userInterfaceStyle == .dark)
     }
 
     private func syncFavoriteState() {
         isBookFavorited = libraryStore.isBookInShelf(player.currentBookID, fallbackContext: modelContext)
     }
 
+    private func switchToSheetAfterDismiss(_ next: PlayerActiveSheet) {
+        pendingSheet = next
+        activeSheet = nil
+    }
+
     var body: some View {
+        let isCoveredBySheet = (activeSheet != nil)
+
         ZStack {
             PlayerAmbientBackground(
                 primaryColor: ambientColor,
-                isPlaying: player.state == .playing
+                isPlaying: player.state == .playing,
+                isObscured: isCoveredBySheet
             )
 
             VStack(spacing: 0) {
                 PlayerHeader(
                     sourceName: currentSourceName,
                     streamBadgeText: player.streamStatusBadgeText,
-                    sleepOption: player.sleepOption,
-                    sleepRemainingSec: player.estimatedSleepRemainingSec,
+                    sleepPlayer: player,
                     onDismiss: { dismiss() },
                     onOpenAudioEffects: { activeSheet = .audioEffects },
                     onOpenSleepSheet: { activeSheet = .sleep },
@@ -96,6 +123,7 @@ struct PlayerScreen: View {
                     bookID: player.currentBookID,
                     ambientColor: ambientColor,
                     playbackState: player.state,
+                    isObscured: isCoveredBySheet,
                     onDoubleTapPlayPause: {
                         DSHapticPolicy.fire(.playPause)
                         player.togglePlayPause()
@@ -143,13 +171,8 @@ struct PlayerScreen: View {
                         onTapShelf: { toggleShelf() }
                     )
 
-                    DSScrubber(
-                        currentTimeSec: player.clock.currentTimeSec,
-                        durationSec: player.clock.durationSec,
-                        bufferedFraction: player.bufferedRange,
-                        onSeek: { sec in player.seek(to: sec) }
-                    )
-                    .padding(.horizontal, Spacing.pageHorizontal)
+                    PlayerScrubberContainer(player: player)
+                        .padding(.horizontal, Spacing.pageHorizontal)
 
                     PlayerControls(
                         isPlaying: player.state == .playing,
@@ -175,8 +198,7 @@ struct PlayerScreen: View {
                     PlayerSecondaryRow(
                         speed: player.speed,
                         effectPreset: player.audioEffectPreset,
-                        sleepOption: player.sleepOption,
-                        sleepRemainingSec: player.estimatedSleepRemainingSec,
+                        sleepPlayer: player,
                         currentChapterIndex: player.currentChapterOneBasedIndex,
                         totalChapters: player.chapterQueue.count,
                         onOpenSpeed: { activeSheet = .speed },
@@ -190,6 +212,12 @@ struct PlayerScreen: View {
             .offset(y: max(0, dragOffset))
             .animation(Motion.resolve(Motion.follow, reduce: reduceMotion), value: dragOffset)
             .animation(Motion.resolve(Motion.snappy, reduce: reduceMotion), value: player.inlineFeedback?.id)
+
+            if settings.nightDimEnabled && isEffectiveDarkAppearance {
+                Color.black.opacity(0.16)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
         }
         .environment(\.colorScheme, .dark)
         .preferredColorScheme(.dark)
@@ -212,18 +240,32 @@ struct PlayerScreen: View {
         }
         .gesture(
             DragGesture(minimumDistance: 24)
-                .updating($dragOffset) { value, state, _ in
+                .onChanged { value in
                     if value.translation.height > 0 && abs(value.translation.height) > abs(value.translation.width) * 1.2 {
-                        state = value.translation.height
+                        dragOffset = value.translation.height
+                    } else if dragOffset > 0 {
+                        dragOffset = 0
                     }
                 }
                 .onEnded { value in
-                    if value.translation.height > 120 || value.predictedEndTranslation.height > 320 {
+                    let shouldDismiss = dragOffset > 0
+                        && (value.translation.height > 120 || value.predictedEndTranslation.height > 320)
+                    dragOffset = 0
+                    if shouldDismiss {
                         dismiss()
                     }
                 }
         )
-        .sheet(item: $activeSheet, content: sheetContent)
+        .sheet(
+            item: $activeSheet,
+            onDismiss: {
+                if let next = pendingSheet {
+                    pendingSheet = nil
+                    activeSheet = next
+                }
+            },
+            content: sheetContent
+        )
     }
 
     private func inlineFeedbackPill(_ feedback: PlayerInlineFeedback) -> some View {
@@ -274,9 +316,7 @@ struct PlayerScreen: View {
                     }
                 },
                 onOpenBatchDownload: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        activeSheet = .downloads
-                    }
+                    switchToSheetAfterDismiss(.downloads)
                 },
                 onClose: { activeSheet = nil }
             )
@@ -295,19 +335,13 @@ struct PlayerScreen: View {
             MoreSheet(
                 player: player,
                 onOpenSkip: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        activeSheet = .skip
-                    }
+                    switchToSheetAfterDismiss(.skip)
                 },
                 onOpenAudioEffects: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        activeSheet = .audioEffects
-                    }
+                    switchToSheetAfterDismiss(.audioEffects)
                 },
                 onOpenDownloads: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        activeSheet = .downloads
-                    }
+                    switchToSheetAfterDismiss(.downloads)
                 },
                 onOpenBookDetail: {
                     dismiss()

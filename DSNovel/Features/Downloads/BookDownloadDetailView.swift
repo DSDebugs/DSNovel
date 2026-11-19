@@ -5,8 +5,7 @@ struct BookDownloadDetailView: View {
     @Environment(\.modelContext) private var modelContext
     let bookID: String
     let bookTitle: String
-    @Query(sort: [SortDescriptor(\DownloadItem.createdAt)])
-    private var allItems: [DownloadItem]
+    @Query private var allItems: [DownloadItem]
 
     @State private var downloadManager = DownloadManager.shared
     @State private var player = PlayerEngine.shared
@@ -16,6 +15,11 @@ struct BookDownloadDetailView: View {
     init(bookID: String, bookTitle: String) {
         self.bookID = bookID
         self.bookTitle = bookTitle
+        let targetID = bookID
+        self._allItems = Query(
+            filter: #Predicate<DownloadItem> { $0.bookID == targetID },
+            sort: [SortDescriptor(\DownloadItem.createdAt)]
+        )
     }
 
     private func formatBytes(_ bytes: Int64) -> String {
@@ -32,6 +36,9 @@ struct BookDownloadDetailView: View {
             if completedItems.isEmpty && partitioned.active.isEmpty && partitioned.failed.isEmpty {
                 DSStateView(
                     kind: .empty,
+                    titleOverride: "暂无已下载章节",
+                    messageOverride: "前往书籍详情页选择需要离线下载的章节",
+                    primaryTitleOverride: "前往书籍页",
                     onPrimary: {
                         let ref = DownloadsDataHelper.buildBookRef(bookID: bookID, bookTitle: bookTitle, items: [])
                         AppRouter.shared.open(.book(ref, preferDownloaded: false))
@@ -63,6 +70,7 @@ struct BookDownloadDetailView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        .listRowBackground(Color.dsSurfaceCard)
                     }
 
                     if !partitioned.active.isEmpty {
@@ -83,6 +91,7 @@ struct BookDownloadDetailView: View {
                                         style: .ring(size: 20, lineWidth: 2)
                                     )
                                 }
+                                .listRowBackground(Color.dsSurfaceCard)
                             }
                         }
                     }
@@ -100,6 +109,7 @@ struct BookDownloadDetailView: View {
                                 }
                                 .font(DSTypography.caption.weight(.semibold))
                             }
+                            .listRowBackground(Color.dsSurfaceCard)
                             ForEach(partitioned.failed) { item in
                                 HStack {
                                     Text(item.chapterTitle)
@@ -112,6 +122,7 @@ struct BookDownloadDetailView: View {
                                     .font(DSTypography.caption)
                                     .foregroundStyle(Color.dsAccent)
                                 }
+                                .listRowBackground(Color.dsSurfaceCard)
                             }
                         }
                     }
@@ -150,17 +161,22 @@ struct BookDownloadDetailView: View {
                                     }
                                     .buttonStyle(.plain)
 
-                                    Button {
-                                        pendingDeleteItem = item
+                                    Menu {
+                                        Button(role: .destructive) {
+                                            pendingDeleteItem = item
+                                        } label: {
+                                            Label("删除离线文件", systemImage: "trash")
+                                        }
                                     } label: {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.title3)
-                                            .foregroundStyle(.green)
-                                            .frame(width: 36, height: 36)
+                                        Image(systemName: "ellipsis")
+                                            .font(.body.weight(.medium))
+                                            .foregroundStyle(.secondary)
+                                            .frame(minWidth: 44, minHeight: 44)
+                                            .contentShape(Rectangle())
                                     }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("已下载，点击删除此章离线文件")
+                                    .accessibilityLabel("更多操作：\(item.chapterTitle)")
                                 }
+                                .listRowBackground(Color.dsSurfaceCard)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button(role: .destructive) {
                                         pendingDeleteItem = item
@@ -174,9 +190,10 @@ struct BookDownloadDetailView: View {
                 }
                 .listStyle(.insetGrouped)
                 .scrollContentBackground(.hidden)
+                .background(Color.dsSurfaceGrouped)
             }
         }
-        .background(Color.dsSurfaceBase)
+        .background(Color.dsSurfaceGrouped)
         .navigationTitle(bookTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

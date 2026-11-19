@@ -12,6 +12,25 @@ import UIKit
 // - 所有二级页面（编辑脚本、查看日志）一律采用 NavigationLink 推入当前导航栈，不叠加嵌套 .sheet。
 
 struct BuiltinParserSection: View {
+    private enum ActiveAlert: Identifiable {
+        case message(String)
+        case deleteConfirm
+
+        var id: String {
+            switch self {
+            case .message(let text): return "message:\(text)"
+            case .deleteConfirm: return "deleteConfirm"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .message: return "提示"
+            case .deleteConfirm: return "删除内置解析脚本"
+            }
+        }
+    }
+
     @Environment(\.modelContext) private var modelContext
     @Query(sort: [SortDescriptor(\BuiltinParserRecord.importedAt, order: .reverse)])
     private var records: [BuiltinParserRecord]
@@ -22,35 +41,58 @@ struct BuiltinParserSection: View {
         self.plugin = plugin
     }
 
-    @State private var errorAlertMessage: String?
+    @State private var activeAlert: ActiveAlert?
     @State private var statusNote: String = ""
-    @State private var showDeleteConfirm = false
-    /// P2-02：异步加载的已安装解析器与备份标记，消除 SwiftUI 渲染期主线程同步扫盘 I/O
+    /// 异步加载的已安装解析器与备份标记，消除 SwiftUI 渲染期主线程同步扫盘 I/O
     @State private var cachedInstalledParser: InstalledBuiltinParser?
     @State private var cachedScriptText: String = ""
     @State private var hasBackup: Bool = false
-    /// P2-02：本地状态镜像 Keychain 配置值，确保 Toggle / Picker / TextField 编辑后界面即时刷新
+    /// 本地状态镜像 Keychain 配置值，确保 Toggle / Picker / TextField 编辑后界面即时刷新
     @State private var configValues: [String: String] = [:]
 
-    /// 只对「喜马拉雅」类书源或已匹配的内置解析书源展示内置解析分区
+    /// 内存缓存的已安装解析器匹配目标，避免在 body 中同步扫盘
+    @MainActor
+    private static var cachedParserTargets: [BuiltinParserTargets] = []
+
+    /// 异步刷新已安装解析器目标缓存（在后台 Actor 读取，不阻塞主线程）
+    static func refreshSupportedSourcesCache() async {
+        let parsers = await BuiltinParserRuntime.shared.installedParsers()
+        var targets: [BuiltinParserTargets] = []
+        targets.reserveCapacity(parsers.count)
+        for parser in parsers {
+            targets.append(parser.meta.targets)
+        }
+        await MainActor.run {
+            cachedParserTargets = targets
+        }
+    }
+
+    /// 只对「喜马拉雅」类书源或已匹配内存缓存的内置解析书源展示内置解析分区（纯内存 O(n)，零磁盘 I/O）
+    @MainActor
     static func isSupportedSource(_ plugin: PluginRecord) -> Bool {
         let host = URL(string: plugin.siteURL)?.host?.lowercased() ?? ""
         if host == "ximalaya.com" || host.hasSuffix(".ximalaya.com")
             || host == "xmcdn.com" || host.hasSuffix(".xmcdn.com") {
             return true
         }
-        return BuiltinParserStore.installedParsers().contains {
-            $0.meta.targets.matches(sourceID: plugin.id, sourceURL: plugin.siteURL)
+        for target in cachedParserTargets {
+            if target.matches(sourceID: plugin.id, sourceURL: plugin.siteURL) {
+                return true
+            }
         }
+        return false
     }
 
     private var activeRecord: BuiltinParserRecord? {
-        records.first { record in
+        for record in records {
             let hosts = Self.parseCSV(record.targetHosts)
             let sourceIDs = Self.parseCSV(record.targetSourceIDs)
-            return BuiltinParserTargets(hosts: hosts, sourceIDs: sourceIDs)
-                .matches(sourceID: plugin.id, sourceURL: plugin.siteURL)
+            if BuiltinParserTargets(hosts: hosts, sourceIDs: sourceIDs)
+                .matches(sourceID: plugin.id, sourceURL: plugin.siteURL) {
+                return record
+            }
         }
+        return nil
     }
 
     private static func parseCSV(_ raw: String) -> [String] {
@@ -80,34 +122,45 @@ struct BuiltinParserSection: View {
             } else {
                 // 中性空位：只有状态与编辑入口，没有任何引导性文案
                 LabeledContent("解析脚本", value: BuiltinParserStrings.notInstalledValue)
+                    .listRowBackground(Color.dsSurfaceCard)
                 editScriptLink(title: "编辑脚本")
+                    .listRowBackground(Color.dsSurfaceCard)
             }
 
             if !statusNote.isEmpty {
                 LabeledContent("最近自检", value: statusNote)
+                    .listRowBackground(Color.dsSurfaceCard)
             }
         }
-        .alert("提示", isPresented: Binding(
-            get: { errorAlertMessage != nil },
-            set: { if !$0 { errorAlertMessage = nil } }
-        )) {
-            Button("知道了", role: .cancel) { errorAlertMessage = nil }
-        } message: {
-            Text(errorAlertMessage ?? "")
-        }
-        .background {
-            Color.clear
-                .alert("删除内置解析脚本", isPresented: $showDeleteConfirm) {
-                    Button("取消", role: .cancel) {}
-                    Button("删除解析脚本", role: .destructive) {
-                        Task { await deleteParser() }
-                    }
-                } message: {
-                    Text("确认删除该内置解析脚本？")
+        .alert(
+            activeAlert?.title ?? "",
+            isPresented: Binding(
+                get: { activeAlert != nil },
+                set: { if !$0 { activeAlert = nil } }
+            ),
+            presenting: activeAlert
+        ) { alert in
+            switch alert {
+            case .message:
+                Button("知道了", role: .cancel) { activeAlert = nil }
+            case .deleteConfirm:
+                Button("取消", role: .cancel) { activeAlert = nil }
+                Button("删除解析脚本", role: .destructive) {
+                    activeAlert = nil
+                    Task { await deleteParser() }
                 }
+            }
+        } message: { alert in
+            switch alert {
+            case .message(let text):
+                Text(text)
+            case .deleteConfirm:
+                Text("确认删除该内置解析脚本？")
+            }
         }
         .task(id: activeRecord?.id) {
             await loadCachedState()
+            await Self.refreshSupportedSourcesCache()
         }
     }
 
@@ -116,7 +169,9 @@ struct BuiltinParserSection: View {
     @ViewBuilder
     private func installedRows(_ record: BuiltinParserRecord) -> some View {
         LabeledContent("解析脚本", value: "\(record.name) v\(record.version)")
+            .listRowBackground(Color.dsSurfaceCard)
         LabeledContent("更新时间", value: Self.dateFormatter.string(from: record.importedAt))
+            .listRowBackground(Color.dsSurfaceCard)
 
         Toggle("启用", isOn: Binding(
             get: { record.isEnabled },
@@ -126,9 +181,11 @@ struct BuiltinParserSection: View {
                 Task { await BuiltinParserRuntime.shared.setEnabled(newValue, for: record.id) }
             }
         ))
+        .listRowBackground(Color.dsSurfaceCard)
 
         ForEach(visibleConfigItems, id: \.key) { item in
             configRow(item, parserID: record.id)
+                .listRowBackground(Color.dsSurfaceCard)
         }
 
         Button {
@@ -136,14 +193,17 @@ struct BuiltinParserSection: View {
         } label: {
             Label("自检", systemImage: "stethoscope")
         }
+        .listRowBackground(Color.dsSurfaceCard)
 
         editScriptLink(title: "编辑脚本")
+            .listRowBackground(Color.dsSurfaceCard)
 
         NavigationLink {
             BuiltinParserLogView(parserID: record.id)
         } label: {
             Label("查看日志", systemImage: "text.alignleft")
         }
+        .listRowBackground(Color.dsSurfaceCard)
 
         if hasBackup {
             Button {
@@ -151,13 +211,15 @@ struct BuiltinParserSection: View {
             } label: {
                 Label("回滚到上一版脚本", systemImage: "arrow.uturn.backward")
             }
+            .listRowBackground(Color.dsSurfaceCard)
         }
 
         Button(role: .destructive) {
-            showDeleteConfirm = true
+            activeAlert = .deleteConfirm
         } label: {
             Label("删除解析脚本", systemImage: "trash")
         }
+        .listRowBackground(Color.dsSurfaceCard)
     }
 
     @ViewBuilder
@@ -214,7 +276,10 @@ struct BuiltinParserSection: View {
                 installedVersion: versionLabel,
                 onInstalled: { parser in
                     BuiltinParserRegistrySync.upsert(context: modelContext, parser: parser)
-                    Task { await loadCachedState() }
+                    Task {
+                        await loadCachedState()
+                        await Self.refreshSupportedSourcesCache()
+                    }
                 }
             )
         } label: {
@@ -268,9 +333,11 @@ struct BuiltinParserSection: View {
                 statusNote = ""
             }
             await loadCachedState()
+            await Self.refreshSupportedSourcesCache()
         } catch {
             await MainActor.run {
-                errorAlertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                activeAlert = .message(message)
             }
         }
     }
@@ -283,12 +350,14 @@ struct BuiltinParserSection: View {
                 if let restored = parsers.first(where: { $0.id == parserID }) {
                     BuiltinParserRegistrySync.upsert(context: modelContext, parser: restored)
                 }
-                errorAlertMessage = nil
+                activeAlert = nil
             }
             await loadCachedState()
+            await Self.refreshSupportedSourcesCache()
         } catch {
             await MainActor.run {
-                errorAlertMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                activeAlert = .message(message)
             }
         }
     }
@@ -314,7 +383,7 @@ struct BuiltinParserSection: View {
             let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             await MainActor.run {
                 statusNote = "失败 · \(reason)"
-                // P2-02 修复：自检抛错时也同步更新 SwiftData 持久化状态
+                // 自检抛错时也同步更新 SwiftData 持久化状态
                 if let record = activeRecord {
                     record.lastCheckStatus = "failed"
                     record.lastCheckMessage = reason
@@ -358,6 +427,16 @@ struct BuiltinParserEditorPage: View {
     @State private var isAnalyzing: Bool = false
     @State private var preview: BuiltinParserPreview?
     @State private var errorMessage: String?
+    @FocusState private var isEditorFocused: Bool
+
+    private static func countLines(in text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        var newlines = 0
+        for byte in text.utf8 where byte == 0x0A {
+            newlines += 1
+        }
+        return newlines + 1
+    }
 
     var body: some View {
         Group {
@@ -367,9 +446,17 @@ struct BuiltinParserEditorPage: View {
                 editorMainView
             }
         }
+        .background(Color.dsSurfaceBase)
         .navigationTitle(preview == nil ? "编辑脚本" : "确认保存")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("完成") {
+                    isEditorFocused = false
+                }
+                .fontWeight(.semibold)
+            }
             if preview != nil {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("返回编辑") {
@@ -388,6 +475,7 @@ struct BuiltinParserEditorPage: View {
             } else {
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
+                        isEditorFocused = false
                         Task { await validateScript() }
                     } label: {
                         if isAnalyzing {
@@ -425,6 +513,7 @@ struct BuiltinParserEditorPage: View {
 
             ZStack(alignment: .topLeading) {
                 TextEditor(text: $scriptText)
+                    .focused($isEditorFocused)
                     .font(.system(.footnote, design: .monospaced))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -440,13 +529,14 @@ struct BuiltinParserEditorPage: View {
                         .allowsHitTesting(false)
                 }
             }
+            .background(Color.dsSurfaceCard)
         }
     }
 
     /// 工具条：从剪贴板填入 / 清空 / 只读统计（已安装版本 · 字节数 · 行数）
     private var scriptEditorHeader: some View {
         let byteCount = scriptText.utf8.count
-        let lineCount = scriptText.isEmpty ? 0 : scriptText.components(separatedBy: "\n").count
+        let lineCount = Self.countLines(in: scriptText)
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
@@ -482,7 +572,7 @@ struct BuiltinParserEditorPage: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(Color(.secondarySystemBackground))
+        .background(Color.dsSurfaceGrouped)
     }
 
     private func fillFromClipboard() {
@@ -496,23 +586,32 @@ struct BuiltinParserEditorPage: View {
         Form {
             Section("解析脚本") {
                 LabeledContent("名称", value: preview.meta.name)
+                    .listRowBackground(Color.dsSurfaceCard)
                 LabeledContent("版本", value: preview.meta.displayVersion)
+                    .listRowBackground(Color.dsSurfaceCard)
                 if !preview.meta.author.isEmpty {
                     LabeledContent("作者", value: preview.meta.author)
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
                 LabeledContent("文件", value: preview.fileName)
+                    .listRowBackground(Color.dsSurfaceCard)
                 LabeledContent("大小", value: String(format: "%.1f KB", Double(preview.sizeBytes) / 1024.0))
+                    .listRowBackground(Color.dsSurfaceCard)
                 LabeledContent("SHA-256", value: String(preview.sha256.prefix(16)))
+                    .listRowBackground(Color.dsSurfaceCard)
             }
 
             Section("目标书源与权限边界") {
                 if !preview.meta.targets.hosts.isEmpty {
                     LabeledContent("允许域名", value: preview.meta.targets.hosts.joined(separator: ", "))
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
                 if !preview.meta.targets.sourceIDs.isEmpty {
                     LabeledContent("sourceID", value: preview.meta.targets.sourceIDs.joined(separator: ", "))
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
                 LabeledContent("能力", value: capabilitiesText(for: preview))
+                    .listRowBackground(Color.dsSurfaceCard)
             }
 
             if !preview.meta.summary.isEmpty {
@@ -520,18 +619,23 @@ struct BuiltinParserEditorPage: View {
                     Text(preview.meta.summary)
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
             }
 
             if preview.isUpdate {
                 Section {
                     LabeledContent("已安装版本", value: preview.installedVersion ?? "—")
+                        .listRowBackground(Color.dsSurfaceCard)
                     Text("确认后将覆盖同名解析脚本，旧脚本会保留为备份以便回滚。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Color.dsSurfaceGrouped)
     }
 
     private func capabilitiesText(for preview: BuiltinParserPreview) -> String {
@@ -588,33 +692,42 @@ struct BuiltinParserEditorPage: View {
 // MARK: - 日志页面（含脱敏导出与统计摘要；⑦ 可观测性）
 
 struct BuiltinParserLogView: View {
+    private struct LogEntry: Identifiable, Equatable {
+        let id: String
+        let text: String
+    }
+
     let parserID: String
 
     init(parserID: String) {
         self.parserID = parserID
     }
 
-    @State private var lines: [String] = []
+    @State private var entries: [LogEntry] = []
     @State private var stats: BuiltinParserLogStats = BuiltinParserLogStats(totalResolves: 0, successes: 0, failures: 0, cacheHits: 0)
     @State private var copiedNotice: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
-            if !lines.isEmpty {
+            if !entries.isEmpty {
                 summaryRow
                 Divider()
             }
 
-            if lines.isEmpty {
+            if entries.isEmpty {
                 ContentUnavailableView("暂无日志", systemImage: "text.alignleft")
             } else {
-                List(Array(lines.enumerated()), id: \.offset) { _, line in
-                    Text(line)
+                List(entries) { entry in
+                    Text(entry.text)
                         .font(.system(.caption, design: .monospaced))
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
                 .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(Color.dsSurfaceBase)
             }
         }
+        .background(Color.dsSurfaceBase)
         .navigationTitle("解析日志")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -627,15 +740,15 @@ struct BuiltinParserLogView: View {
                         DSHapticPolicy.fire(.selection)
                     }
                 }
-                .disabled(lines.isEmpty)
+                .disabled(entries.isEmpty)
 
                 Button("清空") {
                     BuiltinParserLogStore.shared.clear(parserID)
-                    lines = []
+                    entries = []
                     stats = BuiltinParserLogStats(totalResolves: 0, successes: 0, failures: 0, cacheHits: 0)
                     copiedNotice = false
                 }
-                .disabled(lines.isEmpty)
+                .disabled(entries.isEmpty)
             }
         }
         .task {
@@ -650,15 +763,20 @@ struct BuiltinParserLogView: View {
 
     private func refreshLines() {
         let latest = BuiltinParserLogStore.shared.lines(for: parserID)
-        if latest != lines {
-            lines = latest
+        var built: [LogEntry] = []
+        built.reserveCapacity(latest.count)
+        for (idx, line) in latest.enumerated() {
+            built.append(LogEntry(id: "\(idx):\(line)", text: line))
+        }
+        if built != entries {
+            entries = built
             stats = BuiltinParserLogStore.shared.stats(for: parserID)
         }
     }
 
     /// 只读摘要：最近一次解析 + 成功率/缓存统计
     private var summaryRow: some View {
-        let parsed = Self.parseLastLine(lines.last)
+        let parsed = Self.parseLastLine(entries.last?.text)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Text("最近一次解析")
@@ -678,7 +796,7 @@ struct BuiltinParserLogView: View {
         .font(.caption)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(Color(.secondarySystemBackground))
+        .background(Color.dsSurfaceGrouped)
     }
 
     private static func parseLastLine(_ line: String?) -> (time: String, result: String) {

@@ -1,5 +1,6 @@
 import SwiftUI
 
+#if DEBUG
 final class ChapterRowRenderCounter: @unchecked Sendable {
     static let shared = ChapterRowRenderCounter()
     private(set) var evaluationsByChapterID: [String: Int] = [:]
@@ -16,6 +17,7 @@ final class ChapterRowRenderCounter: @unchecked Sendable {
         evaluationsByChapterID.removeAll()
     }
 }
+#endif
 
 struct ChapterRow: View, Equatable {
     let snapshot: ChapterRowSnapshot
@@ -37,7 +39,9 @@ struct ChapterRow: View, Equatable {
     }
 
     var body: some View {
+        #if DEBUG
         let _ = ChapterRowRenderCounter.shared.record(chapterID: snapshot.id)
+        #endif
         HStack(spacing: Spacing.s3) {
             Button(action: onSelect) {
                 HStack(spacing: Spacing.s3) {
@@ -88,14 +92,7 @@ struct ChapterRow: View, Equatable {
             }
             .buttonStyle(.plain)
 
-            Button(action: onDownloadAction) {
-                downloadStatusIcon
-                    .frame(width: 40, height: 40)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(snapshot.isDeleting)
-            .accessibilityLabel(downloadButtonAccessibilityLabel)
+            trailingDownloadControl
         }
         .padding(.leading, Spacing.pageHorizontal)
         .padding(.trailing, Spacing.s2)
@@ -121,6 +118,33 @@ struct ChapterRow: View, Equatable {
     }
 
     private static let indexColumnWidth: CGFloat = 30
+
+    @ViewBuilder
+    private var trailingDownloadControl: some View {
+        if snapshot.downloadState == .completed && !snapshot.isDeleting {
+            Menu {
+                Button(role: .destructive, action: onDownloadAction) {
+                    Label("删除离线文件", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("第 \(snapshot.displayIndex) 章已下载，更多操作")
+        } else {
+            Button(action: onDownloadAction) {
+                downloadStatusIcon
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(snapshot.isDeleting)
+            .accessibilityLabel(downloadButtonAccessibilityLabel)
+        }
+    }
 
     @ViewBuilder
     private func staticSubtitleRow(text: String) -> some View {
@@ -154,7 +178,7 @@ struct ChapterRow: View, Equatable {
         case .downloading(let p):
             return "正在下载 \(Int((p * 100).rounded()))%"
         case .completed:
-            return "第 \(snapshot.displayIndex) 章已下载，点击删除离线文件"
+            return "第 \(snapshot.displayIndex) 章已下载"
         case .failed:
             return "第 \(snapshot.displayIndex) 章下载失败，点击重试"
         }
@@ -190,6 +214,10 @@ struct ChapterRow: View, Equatable {
 private struct LiveChapterSubtitleView: View {
     let snapshot: ChapterRowSnapshot
     @State private var player = PlayerEngine.shared
+
+    init(snapshot: ChapterRowSnapshot) {
+        self.snapshot = snapshot
+    }
 
     var body: some View {
         let livePosMs = max(0, Int(player.clock.currentTimeSec * 1000))

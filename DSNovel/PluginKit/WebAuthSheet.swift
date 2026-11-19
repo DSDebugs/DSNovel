@@ -280,7 +280,7 @@ private struct WebAuthViewRepresentable: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            syncCookiesAndRunScript(from: webView, isFinished: false)
+            parent.onStateChange(webView.url?.absoluteString ?? parent.urlString, true, 0)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -289,6 +289,17 @@ private struct WebAuthViewRepresentable: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             syncCookiesAndRunScript(from: webView, isFinished: true)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            let currentURL = webView.url?.absoluteString ?? parent.urlString
+            let domainCookieCount: Int
+            if let targetURL = JsHostBridge.makeRequestURL(from: currentURL) {
+                domainCookieCount = CookieSync.cookies(for: targetURL).count
+            } else {
+                domainCookieCount = 0
+            }
+            parent.onStateChange(currentURL, false, domainCookieCount)
         }
 
         private func syncCookiesAndRunScript(from webView: WKWebView, isFinished: Bool) {

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 struct DiscoverCategorySlotKey: Hashable, Equatable, Sendable {
     let sourceID: String
@@ -9,14 +10,39 @@ struct DiscoverCategorySlotKey: Hashable, Equatable, Sendable {
 
 final class DiscoverRenderCounter: @unchecked Sendable {
     static let shared = DiscoverRenderCounter()
-    private(set) var rootBodyEvaluations: Int = 0
-    private(set) var contentBodyEvaluations: Int = 0
+    private let lock = NSLock()
+    private var _rootBodyEvaluations: Int = 0
+    private var _contentBodyEvaluations: Int = 0
 
-    func recordRoot() { rootBodyEvaluations += 1 }
-    func recordContent() { contentBodyEvaluations += 1 }
+    var rootBodyEvaluations: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _rootBodyEvaluations
+    }
+
+    var contentBodyEvaluations: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _contentBodyEvaluations
+    }
+
+    func recordRoot() {
+        lock.lock()
+        _rootBodyEvaluations += 1
+        lock.unlock()
+    }
+
+    func recordContent() {
+        lock.lock()
+        _contentBodyEvaluations += 1
+        lock.unlock()
+    }
+
     func reset() {
-        rootBodyEvaluations = 0
-        contentBodyEvaluations = 0
+        lock.lock()
+        _rootBodyEvaluations = 0
+        _contentBodyEvaluations = 0
+        lock.unlock()
     }
 }
 
@@ -56,12 +82,53 @@ final class DiscoverStore {
     @ObservationIgnored private var searchGeneration: UInt64 = 0
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var loadGeneration: UInt64 = 0
+    @ObservationIgnored private var slotAccessOrder: [DiscoverCategorySlotKey] = []
+    @ObservationIgnored private let maxCachedSlots = 16
+    @ObservationIgnored private var memoryWarningObserver: NSObjectProtocol?
 
     var customSourceSearchLoader: ((String, String) async throws -> [BookRef])?
     var customMenusLoader: ((String) async throws -> [DiscoverSectionDTO])?
     var customPageLoader: ((String, String, Int) async throws -> DiscoverPageDTO)?
 
-    init() {}
+    init() {
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.trimCacheForMemoryWarning()
+            }
+        }
+    }
+
+    private func touchSlot(_ slot: DiscoverCategorySlotKey) {
+        if let idx = slotAccessOrder.firstIndex(of: slot) {
+            slotAccessOrder.remove(at: idx)
+        }
+        slotAccessOrder.append(slot)
+        let activeSlot = currentSlotKey
+        while slotAccessOrder.count > maxCachedSlots {
+            guard let evictIdx = slotAccessOrder.firstIndex(where: { $0 != activeSlot && $0 != slot }) else {
+                break
+            }
+            let victim = slotAccessOrder.remove(at: evictIdx)
+            booksBySlot.removeValue(forKey: victim)
+            nextPageBySlot.removeValue(forKey: victim)
+            currentPageNumBySlot.removeValue(forKey: victim)
+        }
+    }
+
+    func trimCacheForMemoryWarning() {
+        let activeSlot = currentSlotKey
+        let keysToDrop = booksBySlot.keys.filter { $0 != activeSlot }
+        for key in keysToDrop {
+            booksBySlot.removeValue(forKey: key)
+            nextPageBySlot.removeValue(forKey: key)
+            currentPageNumBySlot.removeValue(forKey: key)
+        }
+        slotAccessOrder = booksBySlot[activeSlot] != nil ? [activeSlot] : []
+    }
 
     var currentSlotKey: DiscoverCategorySlotKey {
         DiscoverCategorySlotKey(
@@ -215,8 +282,11 @@ final class DiscoverStore {
         let sid = currentSourceID
         guard !sid.isEmpty else { return }
         if !forceReload, let existing = sectionsBySource[sid], !existing.isEmpty, !currentBooks.isEmpty {
+            touchSlot(currentSlotKey)
             return
         }
+        loadGeneration &+= 1
+        let gen = loadGeneration
         isLoadingInitial = true
         lastError = nil
         do {
@@ -226,6 +296,7 @@ final class DiscoverStore {
             } else {
                 menus = try await PluginRuntime.shared.discoverSections(sourceID: sid)
             }
+            guard !Task.isCancelled, loadGeneration == gen, currentSourceID == sid else { return }
             sectionsBySource[sid] = menus
             if !menus.indices.contains(selectedSectionIndex) {
                 selectedSectionIndex = 0
@@ -237,6 +308,7 @@ final class DiscoverStore {
             isLoadingInitial = false
             await loadFirstPage(forceReload: true)
         } catch {
+            guard !Task.isCancelled, loadGeneration == gen, currentSourceID == sid else { return }
             isLoadingInitial = false
             lastError = error
             if let pErr = error as? PluginError {
@@ -253,6 +325,7 @@ final class DiscoverStore {
     func loadFirstPage(forceReload: Bool = false) async {
         let slot = currentSlotKey
         if !forceReload, let cached = booksBySlot[slot], !cached.isEmpty {
+            touchSlot(slot)
             isLoadingInitial = false
             lastError = nil
             return
@@ -281,6 +354,7 @@ final class DiscoverStore {
             booksBySlot[slot] = page.books
             nextPageBySlot[slot] = page.nextPageURL
             currentPageNumBySlot[slot] = 1
+            touchSlot(slot)
             isLoadingInitial = false
         } catch {
             guard !Task.isCancelled, loadGeneration == gen, currentSlotKey == slot else { return }
@@ -333,6 +407,7 @@ final class DiscoverStore {
             let hasNewBooks = merged.count > oldCount
             nextPageBySlot[slot] = hasNewBooks ? page.nextPageURL : nil
             currentPageNumBySlot[slot] = nextPageNum
+            touchSlot(slot)
             isLoadingMore = false
         } catch {
             guard loadGeneration == gen, currentSlotKey == slot else {
@@ -352,6 +427,7 @@ final class DiscoverStore {
         nextPageBySlot.removeAll()
         currentPageNumBySlot.removeAll()
         scrollAnchorBySlot.removeAll()
+        slotAccessOrder.removeAll()
         isLoadingInitial = false
         isLoadingMore = false
         loadMoreFailed = false

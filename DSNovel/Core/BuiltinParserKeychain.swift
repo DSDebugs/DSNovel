@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import OSLog
 
 /// 内置解析器敏感配置与凭证的 Keychain 存储（⑤ 凭证隔离 + L-10）
 ///
@@ -8,6 +9,15 @@ import Security
 enum BuiltinParserKeychain {
     private static let service = "com.dsnovel.app.builtinparser.prefs"
     private static let lock = NSLock()
+    private static let logger = Logger(subsystem: "com.dsnovel.app", category: "BuiltinParserKeychain")
+
+    private static var allowsUserDefaultsFallback: Bool {
+        #if DEBUG
+        return true
+        #else
+        return ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        #endif
+    }
 
     static func string(forKey key: String) -> String? {
         lock.lock()
@@ -18,8 +28,10 @@ enum BuiltinParserKeychain {
         }
         // 兼容迁移：若旧版明文存在于 UserDefaults，迁入 Keychain 并删除明文
         if let legacy = UserDefaults.standard.string(forKey: key), !legacy.isEmpty {
-            _ = writeKeychainLocked(account: key, value: legacy)
-            UserDefaults.standard.removeObject(forKey: key)
+            let migrated = writeKeychainLocked(account: key, value: legacy)
+            if migrated || !allowsUserDefaultsFallback {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
             return legacy
         }
         return nil
@@ -37,8 +49,12 @@ enum BuiltinParserKeychain {
             return
         }
         if !writeKeychainLocked(account: key, value: value) {
-            // 无 Keychain 权限的极端单测宿主环境兜底，避免测试失败
-            UserDefaults.standard.set(value, forKey: key)
+            if allowsUserDefaultsFallback {
+                // 仅在 DEBUG 或 XCTest 无 Keychain 权限的宿主环境下兜底，避免测试失败
+                UserDefaults.standard.set(value, forKey: key)
+            } else {
+                logger.error("Keychain write failed for key=\(key, privacy: .public); refusing plaintext UserDefaults fallback in release.")
+            }
         }
     }
 

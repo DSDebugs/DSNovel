@@ -70,8 +70,8 @@ actor CoverImagePipeline {
         return memoryCache.object(forKey: cacheKey as NSString)
     }
 
-    func image(for url: String, targetSize: CGSize) async -> UIImage? {
-        await loadImage(url: url, headers: [:], targetPointSize: targetSize)
+    func image(for url: String, headers: [String: String] = [:], targetSize: CGSize, scale: CGFloat = 3.0) async -> UIImage? {
+        await loadImage(url: url, headers: headers, targetPointSize: targetSize, scale: scale)
     }
 
     private func acquireDownloadSlot() async {
@@ -109,13 +109,19 @@ actor CoverImagePipeline {
 
         // 磁盘读取与降采样卸载到后台线程，不阻塞 Actor 队列
         let diskImage: UIImage? = await Task.detached(priority: .utility) {
+            let fm = FileManager.default
             guard !Task.isCancelled,
-                  FileManager.default.fileExists(atPath: diskURL.path),
+                  fm.fileExists(atPath: diskURL.path),
                   let data = try? Data(contentsOf: diskURL),
                   let downsampled = CoverImagePipeline.downsample(data: data, maxDimensionInPixels: pixelMax) else {
                 return nil
             }
-            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: diskURL.path)
+            // 1 小时节流更新 modificationDate，避免高频滚动反复写入文件元数据
+            let now = Date()
+            let lastMod = (try? diskURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            if now.timeIntervalSince(lastMod) >= 3600 {
+                try? fm.setAttributes([.modificationDate: now], ofItemAtPath: diskURL.path)
+            }
             return downsampled
         }.value
 
@@ -302,7 +308,12 @@ struct CoverImageView: View, Equatable {
     }
 
     static func == (lhs: CoverImageView, rhs: CoverImageView) -> Bool {
-        lhs.url == rhs.url && lhs.title == rhs.title && lhs.width == rhs.width && lhs.height == rhs.height
+        lhs.url == rhs.url
+            && lhs.title == rhs.title
+            && lhs.width == rhs.width
+            && lhs.height == rhs.height
+            && lhs.cornerRadius == rhs.cornerRadius
+            && lhs.headers == rhs.headers
     }
 
     var body: some View {
@@ -310,6 +321,7 @@ struct CoverImageView: View, Equatable {
             url: url,
             title: title,
             side: max(width, height),
+            headers: headers,
             onImageLoaded: onImageLoaded
         )
         .frame(width: width, height: height)

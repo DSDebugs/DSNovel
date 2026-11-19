@@ -35,7 +35,6 @@ struct HotBooksSection: View {
 
             if isLoading && books.isEmpty {
                 DSSkeleton(mode: .list(rows: 5))
-                    .padding(.horizontal, Spacing.pageHorizontal)
             } else if !books.isEmpty {
                 LazyVStack(spacing: Spacing.s2) {
                     ForEach(Array(books.enumerated()), id: \.element.id) { index, book in

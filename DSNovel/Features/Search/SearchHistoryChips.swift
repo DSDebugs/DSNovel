@@ -31,11 +31,16 @@ struct SearchHistoryChips: View {
                     HStack(spacing: Spacing.s2) {
                         ForEach(histories.prefix(10), id: \.keyword) { item in
                             HStack(spacing: Spacing.s1) {
-                                Button(item.keyword) {
+                                Button {
                                     onTapKeyword(item.keyword)
+                                } label: {
+                                    Text(item.keyword)
+                                        .font(DSTypography.subtitle)
+                                        .foregroundStyle(.primary)
+                                        .padding(.leading, Spacing.s3)
+                                        .frame(minHeight: 36)
+                                        .contentShape(Rectangle())
                                 }
-                                .font(DSTypography.subtitle)
-                                .foregroundStyle(.primary)
 
                                 Button {
                                     onDeleteKeyword(item)
@@ -43,10 +48,13 @@ struct SearchHistoryChips: View {
                                     Image(systemName: "xmark.circle.fill")
                                         .font(DSTypography.caption2)
                                         .foregroundStyle(.tertiary)
+                                        .frame(minWidth: 32, minHeight: 36)
+                                        .contentShape(Rectangle())
                                 }
+                                .accessibilityLabel("删除搜索历史 \(item.keyword)")
                             }
-                            .padding(.horizontal, Spacing.s3)
-                            .padding(.vertical, Spacing.s2)
+                            .padding(.trailing, Spacing.s1)
+                            .frame(minHeight: 36)
                             .background(Capsule().fill(Color.dsSurfaceGrouped))
                             .buttonStyle(.plain)
                         }

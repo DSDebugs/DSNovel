@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MiniPlayerProgressRing: View {
     @Environment(\.dsReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     let clock: PlaybackClock
     let coverURL: String
     let bookTitle: String
@@ -10,6 +11,7 @@ struct MiniPlayerProgressRing: View {
     let isFailed: Bool
     let hasActiveBook: Bool
     let size: CGFloat
+    let isObscured: Bool
 
     @State private var baseAngleDegrees: Double = 0
     @State private var spinStartDate: Date?
@@ -22,7 +24,8 @@ struct MiniPlayerProgressRing: View {
         isBuffering: Bool,
         isFailed: Bool,
         hasActiveBook: Bool,
-        size: CGFloat = 46
+        size: CGFloat = 46,
+        isObscured: Bool = false
     ) {
         self.clock = clock
         self.coverURL = coverURL
@@ -32,6 +35,7 @@ struct MiniPlayerProgressRing: View {
         self.isFailed = isFailed
         self.hasActiveBook = hasActiveBook
         self.size = size
+        self.isObscured = isObscured
     }
 
     var body: some View {
@@ -101,8 +105,9 @@ struct MiniPlayerProgressRing: View {
 
     @ViewBuilder
     private func spinningCover(coverSide: CGFloat) -> some View {
+        let isTimelinePaused = !isPlaying || isObscured || scenePhase != .active
         if isPlaying && !reduceMotion, let start = spinStartDate {
-            TimelineView(.periodic(from: start, by: 1.0 / 30.0)) { context in
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isTimelinePaused)) { context in
                 let elapsed = max(0, context.date.timeIntervalSince(start))
                 let angle = baseAngleDegrees + elapsed * 30.0
                 DSCover(

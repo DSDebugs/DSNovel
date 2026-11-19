@@ -3,8 +3,7 @@ import SwiftData
 
 struct PlayerDownloadSheet: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: [SortDescriptor(\DownloadItem.createdAt, order: .reverse)])
-    private var allItems: [DownloadItem]
+    @Query private var allItems: [DownloadItem]
 
     let player: PlayerEngine
     @State private var downloadManager = DownloadManager.shared
@@ -25,6 +24,11 @@ struct PlayerDownloadSheet: View {
         self.onClose = onClose
         let curOneBased = max(1, player.currentChapterOneBasedIndex)
         let total = max(1, player.chapterQueue.count)
+        let targetBookID = player.currentBookID
+        self._allItems = Query(
+            filter: #Predicate<DownloadItem> { $0.bookID == targetBookID },
+            sort: [SortDescriptor(\DownloadItem.createdAt, order: .reverse)]
+        )
         self._customStartChapter = State(initialValue: curOneBased)
         self._customEndChapter = State(initialValue: min(total, curOneBased + 29))
     }
@@ -60,6 +64,8 @@ struct PlayerDownloadSheet: View {
         let totalCount = max(player.chapterQueue.count, 1)
         let curIndex = max(1, player.currentChapterOneBasedIndex)
         let bookBytes = partitioned.completed.reduce(Int64(0)) { $0 + $1.bytes }
+        let precacheText = fmtBytes(downloadManager.cachedPrecacheBytes)
+        let freeDiskText = downloadManager.cachedAvailableDiskBytes.map(fmtBytes) ?? "计算中..."
 
         DSSheetScaffold(title: "章节离线下载", onClose: onClose) {
             List {
@@ -73,7 +79,7 @@ struct PlayerDownloadSheet: View {
                                 .font(DSTypography.numericCaption.weight(.semibold))
                                 .foregroundStyle(Color.dsAccent)
                         }
-                        Text("本书占用 \(fmtBytes(bookBytes)) · 预缓存 \(fmtBytes(downloadManager.totalPrecacheAndTempBytes())) · 设备剩余 \(fmtBytes(downloadManager.availableDiskBytesProvider()))")
+                        Text("本书占用 \(fmtBytes(bookBytes)) · 预缓存 \(precacheText) · 设备剩余 \(freeDiskText)")
                             .font(DSTypography.numericCaption)
                             .foregroundStyle(.secondary)
                     }
@@ -135,12 +141,16 @@ struct PlayerDownloadSheet: View {
                             Text("下载队列进行中（\(partitioned.active.count) 章）")
                                 .font(DSTypography.cardTitle)
                             Spacer()
-                            Button("暂停全部") {
-                                Task { await downloadManager.pauseAllActive() }
+                            Button("暂停本书") {
+                                if let bid = bookID {
+                                    Task { await downloadManager.pauseItems(forBookID: bid) }
+                                }
                             }
                             .font(DSTypography.caption)
-                            Button("继续全部") {
-                                downloadManager.resumeAllPaused()
+                            Button("继续本书") {
+                                if let bid = bookID {
+                                    downloadManager.resumePausedItems(forBookID: bid)
+                                }
                             }
                             .font(DSTypography.caption)
                         }
@@ -172,9 +182,11 @@ struct PlayerDownloadSheet: View {
                                 .font(DSTypography.cardTitle)
                                 .foregroundStyle(.red)
                             Spacer()
-                            Button("全部重试") {
-                                downloadManager.retryAllFailed()
-                                BannerCenter.shared.show("已重新加入下载队列", kind: .info)
+                            Button("重试本书") {
+                                if let bid = bookID {
+                                    downloadManager.retryFailedItems(forBookID: bid)
+                                    BannerCenter.shared.show("已重新加入下载队列", kind: .info)
+                                }
                             }
                             .font(DSTypography.caption.weight(.semibold))
                         }
@@ -235,6 +247,9 @@ struct PlayerDownloadSheet: View {
             }
             .onAppear {
                 downloadManager.modelContext = modelContext
+            }
+            .task {
+                await downloadManager.refreshCachedStorageMetrics()
             }
         }
         .preferredColorScheme(.dark)

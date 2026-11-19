@@ -10,6 +10,7 @@ struct SearchRootView: View {
     @State private var sourceStore = SourceStore.shared
     @State private var discoverStore = DiscoverStore.shared
     @State private var showFailedSheet = false
+    @State private var pendingLoginSourceID: String?
     @FocusState private var isSearchFocused: Bool
 
     init() {}
@@ -41,11 +42,17 @@ struct SearchRootView: View {
                 searchStore.submit(sources: activeSources, modelContext: modelContext)
             }
         }
-        .sheet(isPresented: $showFailedSheet) {
+        .sheet(isPresented: $showFailedSheet, onDismiss: {
+            if let sourceID = pendingLoginSourceID {
+                pendingLoginSourceID = nil
+                AuthCoordinator.shared.presentLogin(forSourceID: sourceID)
+            }
+        }) {
             FailedSourcesSheet(
                 failedSources: searchStore.failedSources,
                 onLogin: { item in
-                    AuthCoordinator.shared.presentLogin(forSourceID: item.sourceID)
+                    pendingLoginSourceID = item.sourceID
+                    showFailedSheet = false
                 },
                 onRetryAll: {
                     searchStore.submit(sources: activeSources, modelContext: modelContext)
@@ -59,12 +66,6 @@ struct SearchRootView: View {
         .task(id: discoverStore.currentSourceID) {
             sourceStore.modelContext = modelContext
             await searchStore.loadHotBooksIfNeeded(sources: sourceStore.discoverableSources)
-        }
-        .onAppear {
-            sourceStore.modelContext = modelContext
-            Task {
-                await searchStore.loadHotBooksIfNeeded(sources: sourceStore.discoverableSources)
-            }
         }
     }
 
@@ -116,6 +117,10 @@ struct SearchRootView: View {
             case .empty:
                 DSStateView(
                     kind: .empty,
+                    titleOverride: "未找到相关书籍",
+                    messageOverride: "试试更换关键词、演播名或扩大搜索范围",
+                    primaryTitleOverride: "搜索全部书源",
+                    secondaryTitleOverride: "管理书源",
                     onPrimary: {
                         searchStore.selectedScope = .all
                         searchStore.submit(sources: activeSources, modelContext: modelContext)
@@ -125,22 +130,37 @@ struct SearchRootView: View {
             case .allFailed:
                 DSStateView(
                     kind: .error(detail: "全部书源检索失败"),
-                    onPrimary: { showFailedSheet = true },
-                    onSecondary: { searchStore.submit(sources: activeSources, modelContext: modelContext) }
+                    titleOverride: "全部书源检索失败",
+                    messageOverride: "网络或书源响应异常，可重试或查看失败详情",
+                    primaryTitleOverride: "重试",
+                    secondaryTitleOverride: "查看失败原因",
+                    onPrimary: { searchStore.submit(sources: activeSources, modelContext: modelContext) },
+                    onSecondary: { showFailedSheet = true }
                 )
             }
         }
     }
 
     private var browseScrollView: some View {
-        ScrollView {
-            if searchStore.phase == .typing && !searchStore.keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                typingSuggestionsContent
-            } else {
-                idleSectionsContent
+        ScrollViewReader { proxy in
+            ScrollView {
+                Color.clear
+                    .frame(height: 0)
+                    .id("searchBrowseTop")
+
+                if searchStore.phase == .typing && !searchStore.keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    typingSuggestionsContent
+                } else {
+                    idleSectionsContent
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: ScrollToTopCenter.shared.count(for: .search)) { _, _ in
+                withAnimation(Motion.snappy) {
+                    proxy.scrollTo("searchBrowseTop", anchor: .top)
+                }
             }
         }
-        .scrollDismissesKeyboard(.interactively)
     }
 
     private var idleSectionsContent: some View {
@@ -247,29 +267,40 @@ struct SearchRootView: View {
             if searchStore.isSearching && searchStore.mergedItems.isEmpty {
                 DSSkeleton(mode: .list(rows: 6))
             } else {
-                ScrollView {
-                    LazyVStack(spacing: Spacing.s2) {
-                        ForEach(searchStore.displayedItems) { item in
-                            let srcName = sourceStore.sourceName(for: item.primary.sourceID)
-                            let model = BookCardModel(
-                                id: item.id,
-                                title: item.primary.title,
-                                author: item.primary.author,
-                                sourceName: srcName,
-                                coverURL: item.primary.cover,
-                                progressSubtitle: item.primary.discoverSubtitle
-                            )
-                            DSBookRow(
-                                model: model,
-                                onSelect: {
-                                    AppRouter.shared.open(.book(item.primary))
-                                }
-                            )
-                            .padding(.horizontal, Spacing.pageHorizontal)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Color.clear
+                            .frame(height: 0)
+                            .id("searchResultsTop")
+
+                        LazyVStack(spacing: Spacing.s2) {
+                            ForEach(searchStore.displayedItems) { item in
+                                let srcName = sourceStore.sourceName(for: item.primary.sourceID)
+                                let model = BookCardModel(
+                                    id: item.id,
+                                    title: item.primary.title,
+                                    author: item.primary.author,
+                                    sourceName: srcName,
+                                    coverURL: item.primary.cover,
+                                    progressSubtitle: item.primary.discoverSubtitle
+                                )
+                                DSBookRow(
+                                    model: model,
+                                    onSelect: {
+                                        AppRouter.shared.open(.book(item.primary))
+                                    }
+                                )
+                                .padding(.horizontal, Spacing.pageHorizontal)
+                            }
+                        }
+                    }
+                    .scrollDismissesKeyboard(.interactively)
+                    .onChange(of: ScrollToTopCenter.shared.count(for: .search)) { _, _ in
+                        withAnimation(Motion.snappy) {
+                            proxy.scrollTo("searchResultsTop", anchor: .top)
                         }
                     }
                 }
-                .scrollDismissesKeyboard(.interactively)
             }
         }
     }

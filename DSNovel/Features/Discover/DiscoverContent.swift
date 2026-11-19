@@ -79,62 +79,73 @@ struct DiscoverContent: View {
         let rowSpacing = layoutStyle == .largeCard ? Spacing.largeCardRowSpacing : Spacing.gridRowSpacing
         let threshold = tailTriggerThreshold
 
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: rowSpacing) {
-                ForEach(Array(books.enumerated()), id: \.element.id) { index, ref in
-                    let inShelf = shelfBookIDs.contains(ref.id)
-                    let model = BookCardModel(
-                        id: ref.id,
-                        title: ref.title,
-                        author: ref.author,
-                        coverURL: ref.cover,
-                        progressSubtitle: ref.discoverSubtitle,
-                        inShelf: inShelf
-                    )
-                    Group {
-                        if layoutStyle == .list {
-                            DSBookRow(
-                                model: model,
-                                onSelect: { onSelectBook(ref) }
-                            )
-                        } else {
-                            DSBookCard(
-                                model: model,
-                                side: side,
-                                usesSoftCoverShadow: true,
-                                onAction: { onSelectBook(ref) }
-                            )
-                        }
-                    }
-                    .onAppear {
-                        if canLoadMore && !isLoadingMore && !loadMoreFailed && index >= threshold {
-                            onReachLoadMoreTrigger(ref.id)
-                        }
-                    }
-                    .contextMenu {
-                        Button {
-                            onAddToShelf(ref)
-                        } label: {
-                            Label(inShelf ? "已在书架" : "加入书架", systemImage: inShelf ? "checkmark" : "plus.circle")
-                        }
-                        .disabled(inShelf)
+        ScrollViewReader { proxy in
+            ScrollView {
+                Color.clear
+                    .frame(height: 0)
+                    .id("discoverTop")
 
-                        Button {
-                            onCopyLink(ref)
-                        } label: {
-                            Label("复制链接", systemImage: "doc.on.doc")
+                LazyVGrid(columns: columns, spacing: rowSpacing) {
+                    ForEach(Array(books.enumerated()), id: \.element.id) { index, ref in
+                        let inShelf = shelfBookIDs.contains(ref.id)
+                        let model = BookCardModel(
+                            id: ref.id,
+                            title: ref.title,
+                            author: ref.author,
+                            coverURL: ref.cover,
+                            progressSubtitle: ref.discoverSubtitle,
+                            inShelf: inShelf
+                        )
+                        Group {
+                            if layoutStyle == .list {
+                                DSBookRow(
+                                    model: model,
+                                    onSelect: { onSelectBook(ref) }
+                                )
+                            } else {
+                                DSBookCard(
+                                    model: model,
+                                    side: side,
+                                    usesSoftCoverShadow: true,
+                                    onAction: { onSelectBook(ref) }
+                                )
+                            }
+                        }
+                        .onAppear {
+                            if canLoadMore && !isLoadingMore && !loadMoreFailed && index >= threshold {
+                                onReachLoadMoreTrigger(ref.id)
+                            }
+                        }
+                        .contextMenu {
+                            Button {
+                                onAddToShelf(ref)
+                            } label: {
+                                Label(inShelf ? "已在书架" : "加入书架", systemImage: inShelf ? "checkmark" : "plus.circle")
+                            }
+                            .disabled(inShelf)
+
+                            Button {
+                                onCopyLink(ref)
+                            } label: {
+                                Label("复制链接", systemImage: "doc.on.doc")
+                            }
                         }
                     }
                 }
-            }
-            .padding(.horizontal, Spacing.pageHorizontal)
-            .padding(.top, Spacing.s2)
+                .padding(.horizontal, Spacing.pageHorizontal)
+                .padding(.top, Spacing.s2)
 
-            bottomLoadMoreFooter
-        }
-        .contentMargins(.bottom, DSBottomBar.totalHeight + Spacing.s4, for: .scrollContent)
-        .refreshable {
-            await onRefresh?()
+                bottomLoadMoreFooter
+            }
+            .contentMargins(.bottom, Spacing.s4, for: .scrollContent)
+            .refreshable {
+                await onRefresh?()
+            }
+            .onChange(of: ScrollToTopCenter.shared.count(for: .discover)) { _, _ in
+                withAnimation(Motion.snappy) {
+                    proxy.scrollTo("discoverTop", anchor: .top)
+                }
+            }
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width

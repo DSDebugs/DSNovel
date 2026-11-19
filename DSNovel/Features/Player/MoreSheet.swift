@@ -110,7 +110,10 @@ struct MoreSheet: View {
 
                     Picker("音频通道", selection: Binding(
                         get: { AppSettingsStore.shared.audioChannel },
-                        set: { AppSettingsStore.shared.audioChannel = $0 }
+                        set: { newChannel in
+                            AppSettingsStore.shared.audioChannel = newChannel
+                            player.syncAudioChannelFromSettings()
+                        }
                     )) {
                         ForEach(AudioChannelMode.allCases) { mode in
                             Text(mode.title).tag(mode)

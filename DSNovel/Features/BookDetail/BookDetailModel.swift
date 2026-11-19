@@ -140,7 +140,13 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
 @MainActor
 @Observable
 final class BookDetailModel {
-    var currentBookRef: BookRef
+    var currentBookRef: BookRef {
+        didSet {
+            if currentBookRef.id != oldValue.id {
+                cancelPendingTasks()
+            }
+        }
+    }
     let preferDownloadedOnAppear: Bool
     private(set) var cleanedIntro: String = ""
     private(set) var statusText: String = ""
@@ -158,6 +164,9 @@ final class BookDetailModel {
     private(set) var hasFetchedFullIntro: Bool = false
     private(set) var isLoadingIntro: Bool = false
 
+    @ObservationIgnored
+    private var silentRefreshTask: Task<Void, Never>?
+
     var customDetailLoader: ((BookRef) async throws -> BookDetailDTO)?
 
     init(book: BookRef, preferDownloaded: Bool = false) {
@@ -167,6 +176,11 @@ final class BookDetailModel {
         if preferDownloaded {
             self.isShowingDownloadedOnly = true
         }
+    }
+
+    func cancelPendingTasks() {
+        silentRefreshTask?.cancel()
+        silentRefreshTask = nil
     }
 
     nonisolated static func buildSegments(totalCount: Int, pageSize: Int = 50) -> [ChapterSegmentItem] {
@@ -232,14 +246,19 @@ final class BookDetailModel {
     }
 
     func loadChaptersIfNeeded(forceRefresh: Bool = false) async {
-        let bookID = currentBookRef.id
+        cancelPendingTasks()
+        let bookRef = currentBookRef
+        let bookID = bookRef.id
         if !forceRefresh,
            let cached = ChapterCacheStore.loadChapters(for: bookID),
            !cached.isEmpty {
             applyChapters(cached)
             let age = ChapterCacheStore.cacheAge(for: bookID) ?? 9999
             if age < 600 {
-                Task { await refreshChaptersSilently(oldCount: cached.count) }
+                let cachedCount = cached.count
+                silentRefreshTask = Task { [weak self] in
+                    await self?.refreshChaptersSilently(oldCount: cachedCount, expectedBookID: bookID)
+                }
                 return
             }
         }
@@ -247,7 +266,8 @@ final class BookDetailModel {
         isLoadingChapters = chapters.isEmpty
         chapterError = nil
         do {
-            let detail = try await fetchDetail(for: currentBookRef)
+            let detail = try await fetchDetail(for: bookRef)
+            guard !Task.isCancelled, currentBookRef.id == bookID else { return }
             if !detail.intro.isEmpty {
                 cleanedIntro = Self.cleanHTML(detail.intro)
             }
@@ -257,12 +277,13 @@ final class BookDetailModel {
             ChapterCacheStore.saveChapters(detail.chapters, for: bookID)
             isLoadingChapters = false
         } catch {
+            guard !Task.isCancelled, currentBookRef.id == bookID else { return }
             isLoadingChapters = false
             chapterError = error
             if let pErr = error as? PluginError {
                 switch pErr {
                 case .needLogin, .needVerify:
-                    SourceStore.shared.markAuthExpired(sourceID: currentBookRef.sourceID)
+                    SourceStore.shared.markAuthExpired(sourceID: bookRef.sourceID)
                 case .vipRequired, .builtinParserMissing, .builtinParserFailed, .timeout, .network, .rateLimited, .parseFailed:
                     break
                 }
@@ -270,9 +291,12 @@ final class BookDetailModel {
         }
     }
 
-    private func refreshChaptersSilently(oldCount: Int) async {
+    private func refreshChaptersSilently(oldCount: Int, expectedBookID: String) async {
+        guard !Task.isCancelled, currentBookRef.id == expectedBookID else { return }
+        let bookRef = currentBookRef
         do {
-            let detail = try await fetchDetail(for: currentBookRef)
+            let detail = try await fetchDetail(for: bookRef)
+            guard !Task.isCancelled, currentBookRef.id == expectedBookID else { return }
             if !detail.intro.isEmpty {
                 cleanedIntro = Self.cleanHTML(detail.intro)
             }
@@ -283,7 +307,7 @@ final class BookDetailModel {
             guard !detail.chapters.isEmpty else { return }
             let diff = detail.chapters.count - oldCount
             applyChapters(detail.chapters)
-            ChapterCacheStore.saveChapters(detail.chapters, for: currentBookRef.id)
+            ChapterCacheStore.saveChapters(detail.chapters, for: expectedBookID)
             if diff > 0 {
                 BannerCenter.shared.show("新增 \(diff) 章", kind: .info)
             }
@@ -294,6 +318,7 @@ final class BookDetailModel {
 
     func loadFullIntroIfNeeded() async {
         guard !hasFetchedFullIntro, !isLoadingIntro else { return }
+        let expectedBookID = currentBookRef.id
         isLoadingIntro = true
         defer { isLoadingIntro = false }
         do {
@@ -308,6 +333,7 @@ final class BookDetailModel {
                     loadFullPages: false
                 )
             }
+            guard !Task.isCancelled, currentBookRef.id == expectedBookID else { return }
             if !detail.intro.isEmpty {
                 cleanedIntro = Self.cleanHTML(detail.intro)
             }

@@ -128,7 +128,7 @@ struct MorePlaybackPrefsView: View {
         .scrollContentBackground(.hidden)
         .background(Color.dsSurfaceGrouped)
         .contentMargins(.top, Spacing.s2, for: .scrollContent)
-        .contentMargins(.bottom, DSBottomBar.totalHeight + Spacing.s4, for: .scrollContent)
+        .contentMargins(.bottom, Spacing.s4, for: .scrollContent)
         .navigationTitle("更多播放设置")
         .navigationBarTitleDisplayMode(.inline)
     }

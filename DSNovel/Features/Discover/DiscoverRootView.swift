@@ -192,6 +192,8 @@ struct DiscoverRootView: View {
                     onPrimary: {
                         if case .needLogin = kind {
                             AuthCoordinator.shared.presentLogin(forSourceID: discoverStore.currentSourceID)
+                        } else if case .needVerify = kind {
+                            AuthCoordinator.shared.presentLogin(forSourceID: discoverStore.currentSourceID)
                         } else {
                             discoverStore.submitSourceSearch()
                         }
@@ -203,6 +205,10 @@ struct DiscoverRootView: View {
             centeredState {
                 DSStateView(
                     kind: .empty,
+                    titleOverride: "未找到相关书籍",
+                    messageOverride: "当前书源暂无匹配结果，试试更换关键词",
+                    primaryTitleOverride: "返回发现",
+                    secondaryTitleOverride: "重新搜索",
                     onPrimary: { discoverStore.clearSourceSearch() },
                     onSecondary: { discoverStore.submitSourceSearch() }
                 )
@@ -257,20 +263,25 @@ struct DiscoverRootView: View {
     }
 
     private func addRefToShelf(_ ref: BookRef) {
-        let b = Book(
-            id: ref.id,
-            sourceID: ref.sourceID,
-            bookURL: ref.bookURL,
-            title: ref.title,
-            author: ref.author,
-            cover: ref.cover,
-            intro: ref.intro,
-            inShelf: true,
-            totalChapters: ref.chapterCount,
-            speed: AppSettingsStore.shared.defaultSpeed
-        )
-        modelContext.insert(b)
-        try? modelContext.save()
+        if let existing = libraryStore.book(for: ref.id, fallbackContext: modelContext) {
+            existing.inShelf = true
+            try? modelContext.save()
+        } else {
+            let b = Book(
+                id: ref.id,
+                sourceID: ref.sourceID,
+                bookURL: ref.bookURL,
+                title: ref.title,
+                author: ref.author,
+                cover: ref.cover,
+                intro: ref.intro,
+                inShelf: true,
+                totalChapters: ref.chapterCount,
+                speed: AppSettingsStore.shared.defaultSpeed
+            )
+            modelContext.insert(b)
+            try? modelContext.save()
+        }
         DSHapticPolicy.fire(.success)
         BannerCenter.shared.show("已加入书架", kind: .success)
         libraryStore.refreshNow()

@@ -40,6 +40,10 @@ struct SourceListView: View {
         sourceStore.buildOrganizeRows()
     }
 
+    private var allOrganizeSelected: Bool {
+        !sourceStore.allSources.isEmpty && selectedIDs.count == sourceStore.allSources.count
+    }
+
     private var navigationTitleText: String {
         if isOrganizing {
             return selectedIDs.isEmpty ? "整理书源" : "已选 \(selectedIDs.count) 项"
@@ -75,7 +79,6 @@ struct SourceListView: View {
             }
         }
         .searchable(text: $sourceStore.searchKeyword, prompt: "搜索书源名称或域名")
-        .toolbarVisibility(isOrganizing ? .hidden : .visible, for: .tabBar)
         .onChange(of: isOrganizing) { _, organizing in
             AppRouter.shared.isBottomBarHidden = organizing
             if organizing {
@@ -87,6 +90,16 @@ struct SourceListView: View {
         }
         .toolbar {
             if isOrganizing {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(allOrganizeSelected ? "取消全选" : "全选") {
+                        if allOrganizeSelected {
+                            selectedIDs.removeAll()
+                        } else {
+                            selectedIDs = Set(sourceStore.allSources.map(\.id))
+                        }
+                        DSHapticPolicy.fire(.selection)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {
                         isOrganizing = false
@@ -310,7 +323,7 @@ struct SourceListView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
-        .contentMargins(.bottom, DSBottomBar.totalHeight + Spacing.s4, for: .scrollContent)
+        .contentMargins(.bottom, Spacing.s4, for: .scrollContent)
     }
 
     private func browseRow(_ src: PluginRecord) -> some View {

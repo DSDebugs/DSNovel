@@ -118,7 +118,7 @@ struct AboutView: View {
         .scrollContentBackground(.hidden)
         .background(Color.dsSurfaceGrouped)
         .contentMargins(.top, Spacing.s2, for: .scrollContent)
-        .contentMargins(.bottom, DSBottomBar.totalHeight + Spacing.s4, for: .scrollContent)
+        .contentMargins(.bottom, Spacing.s4, for: .scrollContent)
         .navigationTitle("关于 DSNovel")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showDisclaimerSheet) {

@@ -9,7 +9,15 @@ struct DownloadTaskDescriptor: Codable, Equatable, Sendable {
 
 enum DownloadTransportEvent: Sendable {
     case progress(itemID: String, fraction: Double)
-    case finished(descriptor: DownloadTaskDescriptor, tempFileURL: URL, statusCode: Int, mimeType: String?)
+    case finished(
+        descriptor: DownloadTaskDescriptor,
+        tempFileURL: URL,
+        statusCode: Int,
+        mimeType: String?,
+        originalURL: URL? = nil,
+        suggestedFilename: String? = nil,
+        expectedContentLength: Int64? = nil
+    )
     case failed(descriptor: DownloadTaskDescriptor, statusCode: Int?, errorDescription: String)
 }
 

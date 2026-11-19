@@ -78,7 +78,6 @@ final class PlayerChapterListModel {
     }
 
     func reloadDownloadMap() {
-        DownloadManager.shared.rebuildSummariesFromContext()
         guard let ctx = DownloadManager.shared.modelContext else { return }
         let bid = book.id
         let desc = FetchDescriptor<DownloadItem>(predicate: #Predicate<DownloadItem> { $0.bookID == bid && $0.kind == "manual" })
@@ -90,10 +89,16 @@ final class PlayerChapterListModel {
         downloadItems = map
     }
 
-    func visibleSnapshots(from browserModel: BookDetailModel, isPlaying: Bool, currentPlayingPositionMs: Int? = nil) -> [ChapterRowSnapshot] {
+    func visibleSnapshots(
+        from browserModel: BookDetailModel,
+        currentChapterIDOverride: String? = nil,
+        isPlaying: Bool,
+        currentPlayingPositionMs: Int? = nil
+    ) -> [ChapterRowSnapshot] {
         _ = DownloadManager.shared.stateVersion
+        let resolvedChapterID = currentChapterIDOverride ?? currentChapterID
         let base = browserModel.visibleChapterSnapshots(
-            currentPlayingChapterID: currentChapterID,
+            currentPlayingChapterID: resolvedChapterID,
             isEnginePlaying: isPlaying,
             currentPlayingPositionMs: currentPlayingPositionMs,
             forceAllSegmentsWhenFiltered: onlyDownloadedFilter
@@ -104,7 +109,6 @@ final class PlayerChapterListModel {
 
     func confirmDeleteDownload(_ snap: ChapterRowSnapshot) {
         let removed = DownloadManager.shared.invalidateLocalFile(bookID: book.id, chapterID: snap.chapter.id)
-        reloadDownloadMap()
         DSHapticPolicy.fire(.warning)
         BannerCenter.shared.show(
             removed ? "已删除第 \(snap.displayIndex) 章离线文件" : "离线文件不存在，已同步状态",
@@ -118,7 +122,6 @@ final class PlayerChapterListModel {
             if DownloadManager.shared.retryFailedChapter(bookID: book.id, chapterID: snap.chapter.id) {
                 DSHapticPolicy.fire(.selection)
                 BannerCenter.shared.show("已重新加入下载队列", kind: .info, bypassDeduplication: true)
-                reloadDownloadMap()
                 return
             }
         }
@@ -134,7 +137,6 @@ final class PlayerChapterListModel {
             DSHapticPolicy.fire(.error)
             BannerCenter.shared.show(error.localizedDescription, kind: .error)
         }
-        reloadDownloadMap()
     }
 
     func downloadRemaining() {
@@ -150,7 +152,6 @@ final class PlayerChapterListModel {
         DownloadManager.shared.enqueueChapters(remaining, for: book, kind: "manual")
         DSHapticPolicy.fire(.success)
         BannerCenter.shared.show("已加入下载 \(remaining.count) 章", kind: .success)
-        reloadDownloadMap()
     }
 
     static func segmentIndex(for chapterID: String?, in chapters: [ChapterDTO], pageSize: Int = 100) -> Int? {

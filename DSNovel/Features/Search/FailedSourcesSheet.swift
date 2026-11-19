@@ -37,8 +37,12 @@ struct FailedSourcesSheet: View {
                         Spacer()
                         actionButtons(for: item)
                     }
+                    .listRowBackground(Color.dsSurfaceCard)
                 }
             }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Color.dsSurfaceGrouped)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button("全部重试") {
@@ -56,7 +60,6 @@ struct FailedSourcesSheet: View {
             switch item.stateKind {
             case .needLogin, .needVerify:
                 Button("去登录") {
-                    onClose()
                     onLogin(item)
                 }
                 .font(DSTypography.caption.weight(.semibold))

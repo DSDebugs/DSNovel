@@ -3,15 +3,17 @@ import UIKit
 
 /// 播放器沉浸封面组件：
 /// - 播放态：封面立体浮起（1.0x）+ 背部双层声波光环呼吸扩散；
-/// - 暂停态：封面柔和内收（0.86x）+ 背部光环收敛熄灭，封面主体保持纯净无任何文字或浮层遮挡。
+/// - 暂停/遮挡/退后台：封面柔和内收且声波 TimelineView 自动休眠。
 struct PlayerCoverSection: View {
     @Environment(\.dsReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     let coverURL: String
     let bookTitle: String
     let bookID: String?
     let ambientColor: Color
     let playbackState: PlaybackState
+    let isObscured: Bool
     private let onDoubleTapPlayPause: () -> Void
     private let onImageLoaded: (UIImage) -> Void
 
@@ -21,6 +23,7 @@ struct PlayerCoverSection: View {
         bookID: String?,
         ambientColor: Color = .dsAccent,
         playbackState: PlaybackState,
+        isObscured: Bool = false,
         onDoubleTapPlayPause: @escaping () -> Void,
         onImageLoaded: @escaping (UIImage) -> Void
     ) {
@@ -29,6 +32,7 @@ struct PlayerCoverSection: View {
         self.bookID = bookID
         self.ambientColor = ambientColor
         self.playbackState = playbackState
+        self.isObscured = isObscured
         self.onDoubleTapPlayPause = onDoubleTapPlayPause
         self.onImageLoaded = onImageLoaded
     }
@@ -43,6 +47,7 @@ struct PlayerCoverSection: View {
             isPressed: false,
             reduceMotion: reduceMotion
         )
+        let isTimelinePaused = !isPlaying || isObscured || scenePhase != .active
         GeometryReader { geo in
             let adaptiveSide = min(max(geo.size.width * 0.68, 180), 264)
             let cornerRadius = Radius.cover(forSide: adaptiveSide)
@@ -68,7 +73,7 @@ struct PlayerCoverSection: View {
 
                 // 2. 播放态声波律动外环
                 if !reduceMotion {
-                    TimelineView(.periodic(from: .now, by: 1.0 / 24.0)) { context in
+                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: isTimelinePaused)) { context in
                         let t = context.date.timeIntervalSinceReferenceDate
                         let wave1 = isPlaying ? (1.0 + 0.045 * sin(t * 2.4)) : 0.86
                         let wave2 = isPlaying ? (1.05 + 0.055 * cos(t * 1.8)) : 0.86

@@ -7,6 +7,7 @@ struct DownloadsRootView: View {
     private var allItems: [DownloadItem]
     @State private var downloadManager = DownloadManager.shared
     @State private var pendingDeleteSummary: DownloadSummary?
+    @State private var freeDiskBytes: Int64 = 0
 
     init() {}
 
@@ -25,14 +26,15 @@ struct DownloadsRootView: View {
                     Text("设备可用存储空间不足，下载队列已暂停")
                         .font(DSTypography.cardTitle)
                         .foregroundStyle(.red)
+                        .listRowBackground(Color.dsSurfaceCard)
                 }
             }
 
             Section {
                 StorageOverviewCard(
                     manualBytes: downloadManager.cachedManualDownloadedBytes,
-                    precacheBytes: downloadManager.cachedTemporaryCacheBytes ?? downloadManager.totalPrecacheAndTempBytes(),
-                    freeDiskBytes: downloadManager.availableDiskBytesProvider(),
+                    precacheBytes: downloadManager.cachedTemporaryCacheBytes ?? 0,
+                    freeDiskBytes: freeDiskBytes,
                     onClearPrecache: {
                         downloadManager.clearTemporaryCaches()
                         DSHapticPolicy.fire(.success)
@@ -58,6 +60,7 @@ struct DownloadsRootView: View {
                         }
                         .font(DSTypography.caption)
                     }
+                    .listRowBackground(Color.dsSurfaceCard)
                     ForEach(partitioned.active.prefix(5)) { item in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -74,6 +77,7 @@ struct DownloadsRootView: View {
                                 style: .ring(size: 20, lineWidth: 2)
                             )
                         }
+                        .listRowBackground(Color.dsSurfaceCard)
                     }
                 }
             }
@@ -90,6 +94,7 @@ struct DownloadsRootView: View {
                         }
                         .font(DSTypography.caption.weight(.semibold))
                     }
+                    .listRowBackground(Color.dsSurfaceCard)
                     ForEach(partitioned.failed) { item in
                         HStack {
                             Text(item.chapterTitle)
@@ -100,6 +105,7 @@ struct DownloadsRootView: View {
                             }
                             .font(DSTypography.caption)
                         }
+                        .listRowBackground(Color.dsSurfaceCard)
                     }
                 }
             }
@@ -108,9 +114,13 @@ struct DownloadsRootView: View {
                 if summaries.isEmpty {
                     DSStateView(
                         kind: .empty,
+                        titleOverride: "暂无已下载书籍",
+                        messageOverride: "在书籍详情页下载章节后即可离线收听",
+                        primaryTitleOverride: "去发现",
                         onPrimary: { AppRouter.shared.selectedTab = .discover },
                         onSecondary: nil
                     )
+                    .listRowBackground(Color.dsSurfaceCard)
                 } else {
                     ForEach(summaries, id: \.bookID) { sum in
                         NavigationLink {
@@ -135,6 +145,7 @@ struct DownloadsRootView: View {
                                 Spacer()
                             }
                         }
+                        .listRowBackground(Color.dsSurfaceCard)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
                                 pendingDeleteSummary = sum
@@ -148,6 +159,7 @@ struct DownloadsRootView: View {
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
+        .background(Color.dsSurfaceGrouped)
         .navigationTitle("下载管理")
         .navigationBarTitleDisplayMode(.inline)
         .alert(
@@ -179,6 +191,11 @@ struct DownloadsRootView: View {
         }
         .task {
             await downloadManager.refreshCachedStorageMetrics()
+            let provider = downloadManager.availableDiskBytesProvider
+            let computedFree = await Task.detached(priority: .utility) {
+                provider()
+            }.value
+            freeDiskBytes = computedFree
         }
     }
 }

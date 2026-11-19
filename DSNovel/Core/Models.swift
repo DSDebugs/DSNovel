@@ -117,6 +117,18 @@ final class Book {
         return String(format: "%02d:%02d", m, s)
     }
 
+    private static let hhmmFormat = Date.VerbatimFormatStyle(
+        format: "\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
+        timeZone: .current,
+        calendar: .current
+    )
+
+    private static let mmddHHmmFormat = Date.VerbatimFormatStyle(
+        format: "\(month: .twoDigits)-\(day: .twoDigits) \(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased)):\(minute: .twoDigits)",
+        timeZone: .current,
+        calendar: .current
+    )
+
     var formattedLastPlayedAtText: String {
         guard let playedAt = lastPlayedAt else { return "尚未播放" }
         let interval = Date.now.timeIntervalSince(playedAt)
@@ -125,17 +137,11 @@ final class Book {
         } else if interval < 3600 {
             return "\(Int(interval / 60))分钟前"
         } else if Calendar.current.isDateInToday(playedAt) {
-            let f = DateFormatter()
-            f.dateFormat = "今天 HH:mm"
-            return f.string(from: playedAt)
+            return "今天 \(Self.hhmmFormat.format(playedAt))"
         } else if Calendar.current.isDateInYesterday(playedAt) {
-            let f = DateFormatter()
-            f.dateFormat = "昨天 HH:mm"
-            return f.string(from: playedAt)
+            return "昨天 \(Self.hhmmFormat.format(playedAt))"
         } else {
-            let f = DateFormatter()
-            f.dateFormat = "MM-dd HH:mm"
-            return f.string(from: playedAt)
+            return Self.mmddHHmmFormat.format(playedAt)
         }
     }
 

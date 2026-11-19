@@ -1,9 +1,7 @@
 import Foundation
 import Observation
 import AVFoundation
-import MediaPlayer
 import SwiftData
-import UIKit
 
 /// 独立播放时钟 Observable（4.3 节）：仅进度条与时间文字订阅，避免整个播放页每秒重绘
 @MainActor
@@ -39,22 +37,6 @@ final class PlaybackClock {
     }
 }
 
-enum SleepTimerOption: Equatable {
-    case off
-    case minutes(Int)
-    case endOfChapter
-    case chaptersRemaining(Int)
-
-    var label: String {
-        switch self {
-        case .off: return "定时关闭"
-        case .minutes(let m): return "\(m) 分钟"
-        case .endOfChapter: return "本章结束"
-        case .chaptersRemaining(let c): return "\(c) 章后"
-        }
-    }
-}
-
 enum NextChapterAvailability: Equatable, Sendable {
     case none
     case availableOnline(ChapterDTO)
@@ -69,11 +51,6 @@ enum PlaybackState: Equatable {
     case failed(String)
 }
 
-/// 播放引擎：
-/// - 原生 AVURLAsset 自定义请求头 + HLS/MP3/M4A 播放
-/// - KVO 实时监听 status / timeControlStatus / loadedTimeRanges（缓冲进度）
-/// - 五档音质切换（联动 BuiltinParserRuntime）、六种音效预设、5 段人声 EQ 与 0–200% 响度增强
-/// - 动态倍速折算睡眠定时、锁屏封面与章节序号、音频中断自动续播与耳机拔出保护
 struct PlayerInlineFeedback: Identifiable, Equatable, Sendable {
     let id: UUID
     let message: String
@@ -86,12 +63,19 @@ struct PlayerInlineFeedback: Identifiable, Equatable, Sendable {
     }
 }
 
+/// 播放引擎核心（NEW-08 精简后聚焦 AVPlayer 生命周期、队列调度、起播/切章/Seek 与音频 Tap 协调）：
+/// - 睡眠定时由 `SleepTimerController.swift` 负责
+/// - 按书跳过片头片尾由 `SkipIntroOutroCoordinator.swift` 负责
+/// - 远程控制/锁屏/音频中断路由通知由 `PlayerEngine+RemoteCommands.swift` 负责
 @MainActor
 @Observable
 final class PlayerEngine {
     static let shared = PlayerEngine()
 
     let clock = PlaybackClock()
+    let sleepTimer = SleepTimerController()
+    let skipCoordinator = SkipIntroOutroCoordinator()
+
     private(set) var state: PlaybackState = .idle
     private(set) var currentBook: BookRef?
     private(set) var currentChapter: ChapterDTO?
@@ -105,6 +89,7 @@ final class PlayerEngine {
                 player.rate = Float(speed)
             }
             updateRemoteCommandStates()
+            updateNowPlayingInfo()
         }
     }
 
@@ -120,18 +105,15 @@ final class PlayerEngine {
         }
     }
 
-    private(set) var bookSkip: BookSkipConfig = .unset
-    var skipIntroSec: Int { bookSkip.effectiveIntroSec }
-    var skipOutroSec: Int { bookSkip.effectiveOutroSec }
     private(set) var inlineFeedback: PlayerInlineFeedback?
     @ObservationIgnored private var inlineFeedbackTask: Task<Void, Never>?
-    @ObservationIgnored private var outroTriggeredForCurrentChapter: Bool = false
-    @ObservationIgnored private var outroSuppressedForCurrentChapter: Bool = false
 
     // 音质与音效状态（§3.2）
     private(set) var audioQualityTier: AudioQualityTier = AppSettingsStore.shared.audioQualityTier
     private(set) var audioEffectPreset: AudioEffectPreset = AppSettingsStore.shared.audioEffectPreset
     private(set) var customEQBandsDb: [Double] = AppSettingsStore.shared.customEQBandsDb
+    /// 当前流/音轨是否支持 MTAudioProcessingTap（HLS .m3u8 或无音轨时为 false）
+    private(set) var isAudioTapSupportedForCurrentItem: Bool = true
     var audioBoostDB: Double = AppSettingsStore.shared.audioBoostDB {
         didSet {
             let clamped = min(max(audioBoostDB, 0.0), 12.0)
@@ -151,18 +133,13 @@ final class PlayerEngine {
                 return
             }
             AppSettingsStore.shared.audioBalance = clamped
+            applyEffectiveAudioSettings()
         }
     }
 
     var activeEQBandsDb: [Double] {
         audioEffectPreset == .custom ? customEQBandsDb : audioEffectPreset.defaultBandsDb
     }
-
-    // 睡眠定时器状态
-    var sleepOption: SleepTimerOption = .off
-    private(set) var sleepRemainingSec: Int = 0
-    private var sleepChaptersLeft: Int = 0
-    private var sleepTimerTask: Task<Void, Never>?
 
     var isMiniPlayerVisible: Bool {
         currentBook != nil && currentChapter != nil
@@ -192,9 +169,6 @@ final class PlayerEngine {
     }
 
     /// 当前章节音质可调能力分级（区分多码率 / 固定单码率 / 本地离线）
-    ///
-    /// 能力判定集中在 `QualityPolicy`（T4）：内置包 v5.6.5 起只有喜马拉雅具备原生多码率；
-    /// 后续应改为读取书源声明的 `qualities` 能力，而不是在各处堆 sourceID。
     var currentAudioQualitySupportMode: AudioQualitySupportMode {
         if isPlayingLocalFile {
             return .localOffline
@@ -211,9 +185,6 @@ final class PlayerEngine {
     }
 
     /// 顶栏音质徽标文案
-    ///
-    /// E2：多码率源也优先显示**实测码率**（若已测出），这样用户能直接看出档位是否真的生效；
-    /// 未测出时才回落到名义档位文案。
     var streamStatusBadgeText: String {
         if let kbps = detectedAudioBitrateKbps, kbps > 0 {
             return AudioQualityTier.badgeText(forDetectedBitrateKbps: kbps)
@@ -237,68 +208,10 @@ final class PlayerEngine {
         }
         let nextCh = chapterQueue[idx + 1]
         if let book = currentBook,
-           DownloadManager.shared.localFileURL(bookID: book.id, chapterID: nextCh.id) != nil {
+           DownloadManager.shared.downloadState(bookID: book.id, chapterID: nextCh.id) == .completed {
             return .availableDownloaded(nextCh)
         }
         return .availableOnline(nextCh)
-    }
-
-    /// 动态预估睡眠定时剩余秒数（修复 ISS-12：在选择“本章结束”或“N 章后”时按当前倍速动态折算）
-    var estimatedSleepRemainingSec: Int {
-        Self.estimateSleepSeconds(
-            option: sleepOption,
-            countdownSec: sleepRemainingSec,
-            currentTimeSec: clock.currentTimeSec,
-            durationSec: clock.durationSec,
-            chapterQueue: chapterQueue,
-            currentChapterID: currentChapter?.id,
-            chaptersLeft: sleepChaptersLeft,
-            speed: speed
-        )
-    }
-
-    nonisolated static func estimateSleepSeconds(
-        option: SleepTimerOption,
-        countdownSec: Int,
-        currentTimeSec: Double,
-        durationSec: Double,
-        chapterQueue: [ChapterDTO] = [],
-        currentChapterID: String? = nil,
-        chaptersLeft: Int = 1,
-        speed: Double
-    ) -> Int {
-        let safeSpeed = max(0.5, speed)
-        switch option {
-        case .off:
-            return 0
-        case .minutes(let mins):
-            return countdownSec > 0 ? countdownSec : mins * 60
-        case .endOfChapter:
-            let effDur = durationSec > 0 ? durationSec : 600.0
-            let remRaw = max(0.0, effDur - max(0.0, currentTimeSec))
-            return Int((remRaw / safeSpeed).rounded())
-        case .chaptersRemaining(let configuredCount):
-            let effDur = durationSec > 0 ? durationSec : 600.0
-            var totalRawSec = max(0.0, effDur - max(0.0, currentTimeSec))
-            let extraChapters = max(0, (chaptersLeft > 0 ? chaptersLeft : configuredCount) - 1)
-            if extraChapters > 0 {
-                if let currentChapterID,
-                   let curIdx = chapterQueue.firstIndex(where: { $0.id == currentChapterID }) {
-                    let endIdx = min(chapterQueue.count, curIdx + 1 + extraChapters)
-                    if curIdx + 1 < endIdx {
-                        for i in (curIdx + 1)..<endIdx {
-                            let hint = chapterQueue[i].hintDurationSec
-                            totalRawSec += (hint > 0 ? hint : 600.0)
-                        }
-                    } else {
-                        totalRawSec += Double(extraChapters) * (effDur > 0 ? effDur : 600.0)
-                    }
-                } else {
-                    totalRawSec += Double(extraChapters) * (effDur > 0 ? effDur : 600.0)
-                }
-            }
-            return Int((totalRawSec / safeSpeed).rounded())
-        }
     }
 
     static func snapSpeed(_ raw: Double) -> Double {
@@ -330,8 +243,6 @@ final class PlayerEngine {
         }
         let shouldReload = reloadCurrent && currentAudioQualitySupportMode == .multiBitrate
         Task {
-            // T3：音质档不再写入解析器配置（避免静默覆写用户设置），只作废已缓存的直链，
-            // 以便下一章按新档位重新解析。
             let parsers = await BuiltinParserRuntime.shared.installedParsers()
             for p in parsers {
                 await BuiltinParserRuntime.shared.invalidateCache(parserID: p.id, episodeURL: nil)
@@ -348,6 +259,12 @@ final class PlayerEngine {
         applyEffectiveAudioSettings()
     }
 
+    /// 同步音频通道切换（如 MoreSheet 切换人声/默认通道）并立即生效
+    func syncAudioChannelFromSettings() {
+        configureAudioSession()
+        applyEffectiveAudioSettings()
+    }
+
     func syncGlobalAudioPreferencesFromSettings() {
         let settings = AppSettingsStore.shared
         audioQualityTier = settings.audioQualityTier.normalizedForSelection
@@ -358,6 +275,7 @@ final class PlayerEngine {
         if let item = player.currentItem {
             item.preferredForwardBufferDuration = audioQualityTier.preferredForwardBufferDuration
         }
+        configureAudioSession()
         applyEffectiveAudioSettings()
     }
 
@@ -376,49 +294,26 @@ final class PlayerEngine {
         }
     }
 
-    func undoIntroSkipForCurrentChapter() {
+    func clearInlineFeedback() {
         inlineFeedbackTask?.cancel()
         inlineFeedback = nil
-        seek(to: 0)
-    }
-
-    @discardableResult
-    func updateBookSkip(_ newConfig: BookSkipConfig) -> Bool {
-        let normalized = newConfig.normalized
-        let previous = bookSkip
-        bookSkip = normalized
-
-        // 若当前播放位置已落入新设片尾区间，对当前章抑制自动跳过，避免刚调大就立刻切章（B7④）
-        let dur = clock.durationSec
-        let pos = clock.currentTimeSec
-        let outro = Double(normalized.effectiveOutroSec)
-        if outro > 0, dur.isFinite, dur > 0, pos >= dur - outro {
-            outroSuppressedForCurrentChapter = true
-        }
-
-        guard let ctx = modelContext, let book = currentBook else {
-            return true
-        }
-        do {
-            let saved = ensureBookRow(for: book, in: ctx)
-            saved.skipEnabled = normalized.enabled
-            saved.skipIntroSec = normalized.introSec
-            saved.skipOutroSec = normalized.outroSec
-            try ctx.save()
-            return true
-        } catch {
-            bookSkip = previous
-            showInlineToast("保存失败", durationSec: 3.0)
-            return false
-        }
     }
 
     func updateCustomEQBand(index: Int, gainDb: Double) {
         guard (0..<5).contains(index) else { return }
         var bands = customEQBandsDb.count == 5 ? customEQBandsDb : [0.0, 0.0, 0.0, 0.0, 0.0]
         bands[index] = min(max(gainDb, -12.0), 12.0)
-        customEQBandsDb = bands
-        AppSettingsStore.shared.customEQBandsDb = bands
+        updateCustomEQBands(bands)
+    }
+
+    /// 批量更新 5 段自定义 EQ（单次落盘与管线更新，供「频段归零」等批量操作使用）
+    func updateCustomEQBands(_ bands: [Double]) {
+        let normalized: [Double] = (0..<5).map { idx in
+            let raw = idx < bands.count ? bands[idx] : 0.0
+            return min(max(raw, -12.0), 12.0)
+        }
+        customEQBandsDb = normalized
+        AppSettingsStore.shared.customEQBandsDb = normalized
         if audioEffectPreset != .custom {
             audioEffectPreset = .custom
             AppSettingsStore.shared.audioEffectPreset = .custom
@@ -435,15 +330,22 @@ final class PlayerEngine {
         applyEffectiveAudioSettings()
     }
 
-    private func applyEffectiveAudioSettings() {
+    func applyEffectiveAudioSettings() {
         let effective = PlayerAudioPipeline.computeEffectiveVolume(
             bookVolume: bookVolume,
             preset: audioEffectPreset,
             eqBandsDb: activeEQBandsDb,
             boostDB: audioBoostDB
         )
-        player.volume = effective.playerVolume
-        guard let item = player.currentItem else { return }
+        let fade = min(max(sleepTimer.fadeMultiplier, 0.0), 1.0)
+        let scaledPlayerVol = Float(min(max(Double(effective.playerVolume) * Double(fade), 0.0), 1.0))
+        let scaledMixGain = Float(min(max(Double(effective.mixGain) * Double(fade), 0.0), 3.99))
+
+        guard let item = player.currentItem else {
+            player.volume = scaledPlayerVol
+            return
+        }
+
         PlayerAudioPipeline.applyToPlayerItem(
             item,
             preset: audioEffectPreset,
@@ -454,16 +356,67 @@ final class PlayerEngine {
             balance: audioBalance,
             qualityTier: audioQualityTier
         )
-        if effective.isBoosted {
-            let asset = item.asset
-            let targetGain = effective.mixGain
-            Task { @MainActor [weak item] in
-                if let mix = await PlayerAudioPipeline.makeAudioMixIfNeeded(for: asset, mixGain: targetGain) {
-                    item?.audioMix = mix
-                }
-            }
-        } else {
+
+        let itemID = ObjectIdentifier(item)
+        if let ctx = currentTapContext, tapAttachedItemID == itemID, isAudioTapSupportedForCurrentItem {
+            // Tap 已挂载：EQ / 声道平衡 / 响度增益 / 睡眠渐弱 / 软限幅统一在 DSP 渲染回调内实时执行
+            ctx.update(bandsDb: activeEQBandsDb, balance: audioBalance, mixGain: scaledMixGain)
+            player.volume = 1.0
+            return
+        }
+
+        // 尚未挂载或不支持 Tap（如 HLS .m3u8）
+        player.volume = scaledPlayerVol
+        if tapEvaluatedItemID == itemID {
+            // 已评估过不支持 Tap：HLS 下不挂载 audioMix
+            return
+        }
+
+        let asset = item.asset
+        if PlayerAudioPipeline.isHLSAsset(asset) {
+            tapEvaluatedItemID = itemID
+            isAudioTapSupportedForCurrentItem = false
             item.audioMix = nil
+            return
+        }
+
+        // 异步加载音轨并挂载 MTAudioProcessingTap（每条 AVPlayerItem 仅执行一次）
+        tapEvaluatedItemID = itemID
+        let tapContext = AudioTapDSPContext(
+            bandsDb: activeEQBandsDb,
+            balance: audioBalance,
+            mixGain: scaledMixGain
+        )
+        let gen = playbackGeneration
+        Task { @MainActor [weak self, weak item] in
+            guard let self, let item, gen == self.playbackGeneration, self.loadedItem === item else { return }
+            if let mix = await PlayerAudioPipeline.makeAudioTapMix(for: asset, context: tapContext) {
+                guard gen == self.playbackGeneration, self.loadedItem === item else { return }
+                self.currentTapContext = tapContext
+                self.tapAttachedItemID = ObjectIdentifier(item)
+                self.isAudioTapSupportedForCurrentItem = true
+                // 再同步一次最新参数，防止异步挂载期间用户已拖动滑块
+                let latest = PlayerAudioPipeline.computeEffectiveVolume(
+                    bookVolume: self.bookVolume,
+                    preset: self.audioEffectPreset,
+                    eqBandsDb: self.activeEQBandsDb,
+                    boostDB: self.audioBoostDB
+                )
+                let latestFade = min(max(self.sleepTimer.fadeMultiplier, 0.0), 1.0)
+                tapContext.update(
+                    bandsDb: self.activeEQBandsDb,
+                    balance: self.audioBalance,
+                    mixGain: Float(min(max(Double(latest.mixGain) * Double(latestFade), 0.0), 3.99))
+                )
+                item.audioMix = mix
+                self.player.volume = 1.0
+            } else {
+                guard gen == self.playbackGeneration, self.loadedItem === item else { return }
+                self.currentTapContext = nil
+                self.tapAttachedItemID = nil
+                self.isAudioTapSupportedForCurrentItem = false
+                item.audioMix = nil
+            }
         }
     }
 
@@ -491,9 +444,10 @@ final class PlayerEngine {
         currentChapter = chapter
         lastPluginError = nil
         hasRetriedCurrentChapter = false
+        preResolvedNextChapterURL = nil
         loadBookPreferences(for: book.id)
         let startSec = max(0, Double(positionMs) / 1000.0)
-        detachCurrentItem(startSec: startSec)
+        detachCurrentItem(startSec: startSec, isIntroSkip: false)
         state = .paused
         clock.currentTimeSec = startSec
         clock.durationSec = max(chapter.hintDurationSec, startSec > 0 ? startSec + 60 : 600)
@@ -501,34 +455,42 @@ final class PlayerEngine {
         updateNowPlayingInfo()
     }
 
-    private let player = AVPlayer()
-    private var timeObserverToken: Any?
-    private var endObserverToken: NSObjectProtocol?
-    private var failedEndObserverToken: NSObjectProtocol?
-    private var itemStatusObservation: NSKeyValueObservation?
-    private var loadedTimeRangesObservation: NSKeyValueObservation?
-    private var timeControlObservation: NSKeyValueObservation?
-    private var loadTask: Task<Void, Never>?
-    private var playbackGeneration: UInt64 = 0
-    private var pendingSeekSec: Double?
-    private var lastPersistedTime: TimeInterval = 0
-    private var hasRetriedCurrentChapter = false
-    private var wasPlayingBeforeInterruption = false
+    // MARK: - 内部状态（跨文件 extension 需访问的成员使用 internal）
+
+    @ObservationIgnored nonisolated(unsafe) let player = AVPlayer()
+    @ObservationIgnored nonisolated(unsafe) private var timeObserverToken: Any?
+    @ObservationIgnored nonisolated(unsafe) var outroBoundaryObserverToken: Any?
+    @ObservationIgnored nonisolated(unsafe) var notificationTokens: [NSObjectProtocol] = []
+    @ObservationIgnored private var itemStatusObservation: NSKeyValueObservation?
+    @ObservationIgnored private var loadedTimeRangesObservation: NSKeyValueObservation?
+    @ObservationIgnored private var timeControlObservation: NSKeyValueObservation?
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored var playbackGeneration: UInt64 = 0
+    @ObservationIgnored private var pendingSeekSec: Double?
+    @ObservationIgnored private var pendingSeekIsIntroSkip: Bool = false
+    @ObservationIgnored var isSeeking: Bool = false
+    @ObservationIgnored private var seekGeneration: UInt64 = 0
+    @ObservationIgnored private var lastPersistedTime: TimeInterval = 0
+    @ObservationIgnored private var hasRetriedCurrentChapter = false
+    @ObservationIgnored var wasPlayingBeforeInterruption = false
     /// 当前 AVPlayerItem 是否已 readyToPlay 且属于「当前章节」。
-    private var isCurrentItemReady = false
+    @ObservationIgnored var isCurrentItemReady = false
     /// 当前章节对应的 AVPlayerItem，用于周期观察者校验时间来源
-    private var loadedItem: AVPlayerItem?
+    @ObservationIgnored private var loadedItem: AVPlayerItem?
+    @ObservationIgnored private var currentTapContext: AudioTapDSPContext?
+    @ObservationIgnored private var tapAttachedItemID: ObjectIdentifier?
+    @ObservationIgnored private var tapEvaluatedItemID: ObjectIdentifier?
     /// 章节列表缓存签名：同一本书、同一份章节队列只落盘一次
-    private var savedQueueSignature: String?
-    private var precacheTask: Task<Void, Never>?
+    @ObservationIgnored private var savedQueueSignature: String?
+    @ObservationIgnored private var precacheTask: Task<Void, Never>?
     /// 当前章节正在播放本地文件但文件损坏时，强制改走在线流
-    private var bypassLocalChapterID: String?
+    @ObservationIgnored private var bypassLocalChapterID: String?
     /// 当前章节地址是否由「内置解析」给出（用于直链过期后的强制重解析）
-    private var builtinParserResolved = false
+    @ObservationIgnored private var builtinParserResolved = false
     /// ② 能力声明驱动 UI：当前书源已安装的内置解析器是否声明了 lossless 能力
     private(set) var currentChapterParserDeclaresLossless: Bool = false
     /// P-05：记录已触发章尾预解析的下一章 URL，避免重复请求
-    private var preResolvedNextChapterURL: String?
+    @ObservationIgnored private var preResolvedNextChapterURL: String?
     var modelContext: ModelContext?
 
     init() {
@@ -536,6 +498,18 @@ final class PlayerEngine {
         configureRemoteCommands()
         observePeriodicTime()
         observeNotifications()
+    }
+
+    deinit {
+        if let token = timeObserverToken {
+            player.removeTimeObserver(token)
+        }
+        if let boundaryToken = outroBoundaryObserverToken {
+            player.removeTimeObserver(boundaryToken)
+        }
+        for token in notificationTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     // MARK: - 播放入口与章节调度
@@ -556,15 +530,16 @@ final class PlayerEngine {
         currentChapter = startChapter
         lastPluginError = nil
         hasRetriedCurrentChapter = false
+        preResolvedNextChapterURL = nil
+        sleepTimer.resetFadeMultiplier()
 
         loadBookPreferences(for: book.id)
-        let startSec = BookSkipConfig.startPositionSec(
+        let (startSec, isIntroSkip) = skipCoordinator.resolveStartPosition(
             initialPositionMs: initialPositionMs,
-            duration: startChapter.hintDurationSec,
-            config: bookSkip
+            hintDurationSec: startChapter.hintDurationSec
         )
-        detachCurrentItem(startSec: startSec)
-        if initialPositionMs <= 0 && startSec > 0 {
+        detachCurrentItem(startSec: startSec, isIntroSkip: isIntroSkip)
+        if isIntroSkip {
             showInlineToast("已跳过片头 \(Int(startSec.rounded())) 秒", canUndoIntroSkip: true, durationSec: 4.0)
         }
         clock.currentTimeSec = startSec
@@ -581,30 +556,47 @@ final class PlayerEngine {
             return
         }
         loadTask = Task {
-            await loadAndPlay(chapter: startChapter, initialPositionMs: initialPositionMs, generation: gen)
+            await loadAndPlay(chapter: startChapter, initialPositionMs: initialPositionMs, generation: gen, detachFirst: false)
         }
     }
 
     /// 摘除当前播放项并重置所有与「旧音频」相关的状态
-    private func detachCurrentItem(startSec: Double) {
+    private func detachCurrentItem(startSec: Double, isIntroSkip: Bool = false) {
         itemStatusObservation?.invalidate()
         itemStatusObservation = nil
         loadedTimeRangesObservation?.invalidate()
         loadedTimeRangesObservation = nil
         timeControlObservation?.invalidate()
         timeControlObservation = nil
+        removeOutroBoundaryObserver()
         player.pause()
         player.replaceCurrentItem(with: nil)
         loadedItem = nil
+        currentTapContext = nil
+        tapAttachedItemID = nil
+        tapEvaluatedItemID = nil
+        isAudioTapSupportedForCurrentItem = true
         isCurrentItemReady = false
+        isSeeking = false
+        seekGeneration &+= 1
         isPlayingLocalFile = false
         detectedAudioBitrateKbps = nil
-        outroTriggeredForCurrentChapter = false
-        outroSuppressedForCurrentChapter = false
+        skipCoordinator.resetChapterState()
+        preResolvedNextChapterURL = nil
         bufferedRange = 0
         pendingSeekSec = startSec > 0.5 ? startSec : nil
+        pendingSeekIsIntroSkip = (pendingSeekSec != nil) && isIntroSkip
         lastPersistedTime = startSec
         state = .buffering
+    }
+
+    private func startPlayerAtCurrentRate() {
+        if isPlayingLocalFile {
+            player.playImmediately(atRate: Float(speed))
+        } else {
+            // 在线流使用 player.rate 让系统按 automaticallyWaitsToMinimizeStalling 先完成缓冲，避免卡顿起播
+            player.rate = Float(speed)
+        }
     }
 
     func togglePlayPause() {
@@ -612,20 +604,24 @@ final class PlayerEngine {
         case .playing:
             pause()
         case .paused, .idle:
-            if useFakeBackend {
-                state = .playing
-                updateNowPlayingInfo()
-            } else if player.currentItem?.status == .readyToPlay {
-                resume()
-            } else if currentChapter != nil {
-                retryCurrentChapter()
-            } else {
-                resume()
-            }
+            resumeOrReloadCurrentChapter()
         case .failed:
             retryCurrentChapter()
         case .buffering:
             pause()
+        }
+    }
+
+    func resumeOrReloadCurrentChapter() {
+        if useFakeBackend {
+            state = .playing
+            updateNowPlayingInfo()
+        } else if player.currentItem?.status == .readyToPlay {
+            resume()
+        } else if currentChapter != nil {
+            retryCurrentChapter()
+        } else {
+            resume()
         }
     }
 
@@ -638,9 +634,9 @@ final class PlayerEngine {
         hasRetriedCurrentChapter = false
         lastPluginError = nil
         let resumeMs = Int(clock.currentTimeSec * 1000)
-        detachCurrentItem(startSec: Double(resumeMs) / 1000.0)
+        detachCurrentItem(startSec: Double(resumeMs) / 1000.0, isIntroSkip: false)
         loadTask = Task {
-            await loadAndPlay(chapter: ch, initialPositionMs: resumeMs, generation: gen)
+            await loadAndPlay(chapter: ch, initialPositionMs: resumeMs, generation: gen, detachFirst: false)
         }
     }
 
@@ -654,28 +650,33 @@ final class PlayerEngine {
     func resume() {
         configureAudioSession()
         applyEffectiveAudioSettings()
-        player.playImmediately(atRate: Float(speed))
+        startPlayerAtCurrentRate()
         state = .playing
         updateNowPlayingInfo()
     }
 
     func seek(to seconds: Double) {
         let clamped = max(0, seconds)
-        let dur = clock.durationSec
-        let outro = Double(bookSkip.effectiveOutroSec)
-        if outro > 0, dur.isFinite, dur > 0, clamped >= dur - outro {
-            outroSuppressedForCurrentChapter = true
-        }
+        skipCoordinator.handleSeek(to: clamped, durationSec: clock.durationSec)
         clock.currentTimeSec = clamped
         guard isCurrentItemReady, let item = player.currentItem, item.status == .readyToPlay else {
             pendingSeekSec = clamped
+            pendingSeekIsIntroSkip = false
             persistProgressNow(positionMsOverride: Int(clamped * 1000))
             return
         }
+        isSeeking = true
+        seekGeneration &+= 1
+        let currentSeekGen = seekGeneration
+        let currentPlayGen = playbackGeneration
         let target = CMTime(seconds: clamped, preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+        let tolerance: CMTime = isPlayingLocalFile ? .zero : CMTime(seconds: 0.5, preferredTimescale: 600)
+        player.seek(to: target, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self,
+                      currentSeekGen == self.seekGeneration,
+                      currentPlayGen == self.playbackGeneration else { return }
+                self.isSeeking = false
                 self.clock.currentTimeSec = clamped
                 self.persistProgressNow(positionMsOverride: Int(clamped * 1000))
                 self.updateNowPlayingInfo()
@@ -707,22 +708,23 @@ final class PlayerEngine {
         currentChapter = nextCh
         lastPluginError = nil
         hasRetriedCurrentChapter = false
-        let startSec = BookSkipConfig.startPositionSec(
+        sleepTimer.resetFadeMultiplier()
+        let (startSec, isIntroSkip) = skipCoordinator.resolveStartPosition(
             initialPositionMs: 0,
-            duration: nextCh.hintDurationSec,
-            config: bookSkip
+            hintDurationSec: nextCh.hintDurationSec
         )
-        detachCurrentItem(startSec: startSec)
-        if startSec > 0 {
+        detachCurrentItem(startSec: startSec, isIntroSkip: isIntroSkip)
+        if isIntroSkip {
             showInlineToast("已跳过片头 \(Int(startSec.rounded())) 秒", canUndoIntroSkip: true, durationSec: 4.0)
         }
         clock.currentTimeSec = startSec
         clock.durationSec = nextCh.hintDurationSec
         persistProgressNow(positionMsOverride: max(0, Int(startSec * 1000)))
         updateRemoteCommandStates()
+        updateNowPlayingInfo()
 
         loadTask = Task {
-            await loadAndPlay(chapter: nextCh, initialPositionMs: 0, generation: gen)
+            await loadAndPlay(chapter: nextCh, initialPositionMs: 0, generation: gen, detachFirst: false)
         }
     }
 
@@ -741,103 +743,23 @@ final class PlayerEngine {
         currentChapter = prevCh
         lastPluginError = nil
         hasRetriedCurrentChapter = false
-        let startSec = BookSkipConfig.startPositionSec(
+        sleepTimer.resetFadeMultiplier()
+        let (startSec, isIntroSkip) = skipCoordinator.resolveStartPosition(
             initialPositionMs: 0,
-            duration: prevCh.hintDurationSec,
-            config: bookSkip
+            hintDurationSec: prevCh.hintDurationSec
         )
-        detachCurrentItem(startSec: startSec)
-        if startSec > 0 {
+        detachCurrentItem(startSec: startSec, isIntroSkip: isIntroSkip)
+        if isIntroSkip {
             showInlineToast("已跳过片头 \(Int(startSec.rounded())) 秒", canUndoIntroSkip: true, durationSec: 4.0)
         }
         clock.currentTimeSec = startSec
         clock.durationSec = prevCh.hintDurationSec
         persistProgressNow(positionMsOverride: max(0, Int(startSec * 1000)))
         updateRemoteCommandStates()
+        updateNowPlayingInfo()
 
         loadTask = Task {
-            await loadAndPlay(chapter: prevCh, initialPositionMs: 0, generation: gen)
-        }
-    }
-
-    // MARK: - 睡眠定时器与最后 30 秒线性音量渐弱（4.3 节）
-
-    func setSleepTimer(_ option: SleepTimerOption) {
-        sleepTimerTask?.cancel()
-        sleepOption = option
-        applyEffectiveAudioSettings()
-
-        switch option {
-        case .off:
-            sleepRemainingSec = 0
-            sleepChaptersLeft = 0
-        case .minutes(let mins):
-            sleepRemainingSec = mins * 60
-            startCountdownTimer()
-        case .endOfChapter:
-            sleepRemainingSec = 0
-            sleepChaptersLeft = 1
-        case .chaptersRemaining(let count):
-            sleepRemainingSec = 0
-            sleepChaptersLeft = max(1, count)
-        }
-    }
-
-    /// 快捷延长睡眠定时（修复 ISS-12：一键 +15 分钟续时）
-    func extendSleepTimer(byMinutes extraMinutes: Int = 15) {
-        let addSec = max(1, extraMinutes) * 60
-        switch sleepOption {
-        case .off:
-            setSleepTimer(.minutes(extraMinutes))
-        case .minutes:
-            sleepRemainingSec += addSec
-        case .endOfChapter, .chaptersRemaining:
-            let baseSec = estimatedSleepRemainingSec
-            sleepTimerTask?.cancel()
-            sleepChaptersLeft = 0
-            sleepRemainingSec = baseSec + addSec
-            let totalMins = max(1, Int((Double(sleepRemainingSec) / 60.0).rounded()))
-            sleepOption = .minutes(totalMins)
-            startCountdownTimer()
-        }
-    }
-
-    /// 计算最后 30 秒线性渐弱音量（供单元测试与定时器共用）
-    nonisolated static func computeFadeVolume(baseVolume: Double, remainingSeconds: Int, fadeEnabled: Bool) -> Float {
-        guard fadeEnabled, remainingSeconds > 0, remainingSeconds <= 30 else {
-            return Float(min(max(baseVolume, 0), 1.0))
-        }
-        let ratio = Double(remainingSeconds) / 30.0
-        return Float(min(max(baseVolume * ratio, 0), 1.0))
-    }
-
-    private func startCountdownTimer() {
-        sleepTimerTask = Task {
-            while !Task.isCancelled && sleepRemainingSec > 0 {
-                try? await Task.sleep(for: .seconds(1))
-                if Task.isCancelled { break }
-                if state == .playing {
-                    sleepRemainingSec -= 1
-                    let fadeOn = AppSettingsStore.shared.sleepFadeOutEnabled
-                    let effective = PlayerAudioPipeline.computeEffectiveVolume(
-                        bookVolume: bookVolume,
-                        preset: audioEffectPreset,
-                        eqBandsDb: activeEQBandsDb,
-                        boostDB: audioBoostDB
-                    )
-                    player.volume = Self.computeFadeVolume(
-                        baseVolume: Double(effective.playerVolume),
-                        remainingSeconds: sleepRemainingSec,
-                        fadeEnabled: fadeOn
-                    )
-                    if sleepRemainingSec <= 0 {
-                        pause()
-                        applyEffectiveAudioSettings()
-                        sleepOption = .off
-                        break
-                    }
-                }
-            }
+            await loadAndPlay(chapter: prevCh, initialPositionMs: 0, generation: gen, detachFirst: false)
         }
     }
 
@@ -877,14 +799,20 @@ final class PlayerEngine {
         return AVURLAsset(url: playURL, options: options)
     }
 
-    private func loadAndPlay(chapter: ChapterDTO, initialPositionMs: Int, generation: UInt64) async {
+    private func loadAndPlay(
+        chapter: ChapterDTO,
+        initialPositionMs: Int,
+        generation: UInt64,
+        detachFirst: Bool = false
+    ) async {
         guard let book = currentBook, generation == playbackGeneration else { return }
-        let startSec = BookSkipConfig.startPositionSec(
+        let (startSec, isIntroSkip) = skipCoordinator.resolveStartPosition(
             initialPositionMs: initialPositionMs,
-            duration: chapter.hintDurationSec,
-            config: bookSkip
+            hintDurationSec: chapter.hintDurationSec
         )
-        detachCurrentItem(startSec: startSec)
+        if detachFirst {
+            detachCurrentItem(startSec: startSec, isIntroSkip: isIntroSkip)
+        }
 
         state = .buffering
         lastPluginError = nil
@@ -903,9 +831,9 @@ final class PlayerEngine {
                 playURL = localURL
                 usingLocal = true
                 bufferedRange = 1.0
+                builtinParserResolved = false
+                currentChapterParserDeclaresLossless = false
             } else {
-                // 音质档由 QualityPolicy 在解析入口内部换算成"当前链"的码（T3：不再写解析器配置），
-                // 这里只需把用户档位透传下去。
                 let stream = try await PluginRuntime.shared.resolvePlayStream(
                     sourceID: book.sourceID,
                     episodeURL: chapter.url,
@@ -920,7 +848,7 @@ final class PlayerEngine {
                 headers = stream.headers
                 streamKind = stream.kind
                 builtinParserResolved = stream.resolvedBy == BuiltinParserRuntime.resolverTag
-                if let matchedParser = await BuiltinParserRuntime.shared.parser(forSourceID: book.sourceID, sourceURL: book.url) {
+                if let matchedParser = await BuiltinParserRuntime.shared.parser(forSourceID: book.sourceID, sourceURL: book.bookURL) {
                     currentChapterParserDeclaresLossless = QualityPolicy.parserDeclaresLossless(matchedParser.meta.qualities)
                 } else {
                     currentChapterParserDeclaresLossless = false
@@ -934,13 +862,14 @@ final class PlayerEngine {
 
             loadedItem = item
             isPlayingLocalFile = usingLocal
+            isAudioTapSupportedForCurrentItem = !PlayerAudioPipeline.isHLSAsset(asset)
             detectedAudioBitrateKbps = nil
             observePlayerItem(item, chapter: chapter, initialPositionMs: initialPositionMs, generation: generation)
             player.replaceCurrentItem(with: item)
             applyEffectiveAudioSettings()
 
             if pendingSeekSec == nil {
-                player.playImmediately(atRate: Float(speed))
+                startPlayerAtCurrentRate()
             }
             persistProgressNow(positionMsOverride: Int(startSec * 1000))
             updateNowPlayingInfo()
@@ -955,7 +884,7 @@ final class PlayerEngine {
             }
             if !hasRetriedCurrentChapter, case .network = pErr {
                 hasRetriedCurrentChapter = true
-                await loadAndPlay(chapter: chapter, initialPositionMs: initialPositionMs, generation: generation)
+                await loadAndPlay(chapter: chapter, initialPositionMs: initialPositionMs, generation: generation, detachFirst: true)
             } else {
                 state = .failed(pErr.localizedDescription)
             }
@@ -963,7 +892,7 @@ final class PlayerEngine {
             guard !Task.isCancelled, generation == playbackGeneration else { return }
             if !hasRetriedCurrentChapter {
                 hasRetriedCurrentChapter = true
-                await loadAndPlay(chapter: chapter, initialPositionMs: initialPositionMs, generation: generation)
+                await loadAndPlay(chapter: chapter, initialPositionMs: initialPositionMs, generation: generation, detachFirst: true)
             } else {
                 state = .failed(error.localizedDescription)
             }
@@ -1036,21 +965,43 @@ final class PlayerEngine {
                     self.isCurrentItemReady = true
                     if itemDurationSec.isFinite && itemDurationSec > 0 {
                         self.clock.durationSec = itemDurationSec
+                        self.configureOutroBoundaryObserver(durationSec: itemDurationSec)
                     }
                     self.applyEffectiveAudioSettings()
                     self.inspectActualAudioBitrate(for: loaded, generation: generation)
                     self.schedulePrecache(generation: generation)
+
+                    // 二次短章校验：拿到真实时长后，若片头跳过超过 (duration - 5s) 则取消跳过从 0 起播
+                    if self.pendingSeekIsIntroSkip,
+                       let introSeek = self.pendingSeekSec,
+                       self.skipCoordinator.shouldCancelPendingIntroSkip(
+                           pendingIntroSeekSec: introSeek,
+                           actualDurationSec: itemDurationSec
+                       ) {
+                        self.pendingSeekSec = nil
+                        self.pendingSeekIsIntroSkip = false
+                        self.clock.currentTimeSec = 0
+                    }
+
                     if let seekSec = self.pendingSeekSec, seekSec > 0 {
                         self.clock.currentTimeSec = seekSec
+                        self.isSeeking = true
+                        self.seekGeneration &+= 1
+                        let currentSeekGen = self.seekGeneration
                         let target = CMTime(seconds: seekSec, preferredTimescale: 600)
-                        self.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                        let tolerance: CMTime = self.isPlayingLocalFile ? .zero : CMTime(seconds: 0.5, preferredTimescale: 600)
+                        self.player.seek(to: target, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] _ in
                             Task { @MainActor [weak self] in
                                 guard let self, generation == self.playbackGeneration else { return }
+                                if currentSeekGen == self.seekGeneration {
+                                    self.isSeeking = false
+                                }
                                 self.pendingSeekSec = nil
+                                self.pendingSeekIsIntroSkip = false
                                 self.lastPersistedTime = seekSec
                                 self.configureAudioSession()
                                 self.applyEffectiveAudioSettings()
-                                self.player.playImmediately(atRate: Float(self.speed))
+                                self.startPlayerAtCurrentRate()
                                 self.state = .playing
                                 self.persistProgressNow(positionMsOverride: Int(seekSec * 1000))
                                 self.updateNowPlayingInfo()
@@ -1058,9 +1009,10 @@ final class PlayerEngine {
                         }
                     } else {
                         self.pendingSeekSec = nil
+                        self.pendingSeekIsIntroSkip = false
                         self.configureAudioSession()
                         self.applyEffectiveAudioSettings()
-                        self.player.playImmediately(atRate: Float(self.speed))
+                        self.startPlayerAtCurrentRate()
                         self.state = .playing
                         self.persistProgressNow()
                         self.updateNowPlayingInfo()
@@ -1073,7 +1025,8 @@ final class PlayerEngine {
                         await self.loadAndPlay(
                             chapter: chapter,
                             initialPositionMs: Int(self.clock.currentTimeSec * 1000),
-                            generation: generation
+                            generation: generation,
+                            detachFirst: true
                         )
                     } else if !self.hasRetriedCurrentChapter {
                         self.hasRetriedCurrentChapter = true
@@ -1083,7 +1036,8 @@ final class PlayerEngine {
                         await self.loadAndPlay(
                             chapter: chapter,
                             initialPositionMs: initialPositionMs,
-                            generation: generation
+                            generation: generation,
+                            detachFirst: true
                         )
                     } else {
                         self.state = .failed(errMsg)
@@ -1109,9 +1063,15 @@ final class PlayerEngine {
                         self.state = .buffering
                     }
                 case .paused:
-                    if case .playing = self.state {
+                    switch self.state {
+                    case .playing:
                         self.state = .paused
                         self.updateNowPlayingInfo()
+                    case .buffering where self.isCurrentItemReady && !self.isSeeking:
+                        self.state = .paused
+                        self.updateNowPlayingInfo()
+                    default:
+                        break
                     }
                 @unknown default:
                     break
@@ -1149,20 +1109,57 @@ final class PlayerEngine {
         DownloadManager.shared.enqueueChapters(upcoming, for: book, kind: "precache")
     }
 
-    private func configureAudioSession() {
+    func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         let mode: AVAudioSession.Mode = AppSettingsStore.shared.audioChannel == .spokenAudio ? .spokenAudio : .default
         try? session.setCategory(.playback, mode: mode, options: [])
         try? session.setActive(true)
     }
 
+    /// 供通知协调扩展调用：系统媒体服务重置后重建会话与 AudioTap 状态
+    func handleMediaServicesWereReset() {
+        let shouldResume = (state == .playing)
+        configureAudioSession()
+        tapEvaluatedItemID = nil
+        tapAttachedItemID = nil
+        currentTapContext = nil
+        applyEffectiveAudioSettings()
+        if shouldResume {
+            retryCurrentChapter()
+        }
+    }
+
+    /// 供通知协调扩展调用：播到章尾失败时的本地回退与单次重试
+    func handleItemFailedToPlayToEnd(errorMessage: String) async {
+        let gen = playbackGeneration
+        let resumeMs = max(0, Int(clock.currentTimeSec * 1000))
+        if isPlayingLocalFile, let book = currentBook, let ch = currentChapter {
+            DownloadManager.shared.invalidateLocalFile(bookID: book.id, chapterID: ch.id)
+            bypassLocalChapterID = ch.id
+            await loadAndPlay(chapter: ch, initialPositionMs: resumeMs, generation: gen, detachFirst: true)
+        } else if !hasRetriedCurrentChapter, let ch = currentChapter {
+            hasRetriedCurrentChapter = true
+            if builtinParserResolved {
+                await BuiltinParserRuntime.shared.invalidateCache(parserID: nil, episodeURL: ch.url)
+            }
+            await loadAndPlay(chapter: ch, initialPositionMs: resumeMs, generation: gen, detachFirst: true)
+        } else {
+            state = .failed(errorMessage)
+        }
+    }
+
     /// P-05：播放接近章尾时低优先级预热下一章解析缓存，切章时近零等待
     private func preResolveNextChapterIfNeeded() {
         guard let book = currentBook,
               let cur = currentChapter,
-              let idx = chapters.firstIndex(where: { $0.id == cur.id }),
-              idx + 1 < chapters.count else { return }
-        let next = chapters[idx + 1]
+              let idx = chapterQueue.firstIndex(where: { $0.id == cur.id }),
+              idx + 1 < chapterQueue.count else { return }
+        let next = chapterQueue[idx + 1]
+        // 下一章已有本地离线文件时跳过在线预解析
+        if DownloadManager.shared.downloadState(bookID: book.id, chapterID: next.id) == .completed
+            || DownloadManager.shared.localFileURL(bookID: book.id, chapterID: next.id) != nil {
+            return
+        }
         guard next.url != preResolvedNextChapterURL else { return }
         preResolvedNextChapterURL = next.url
         let sourceID = book.sourceID
@@ -1183,39 +1180,36 @@ final class PlayerEngine {
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self else { return }
             Task { @MainActor in
-                guard self.isCurrentItemReady, self.pendingSeekSec == nil,
-                      let item = self.player.currentItem, item === self.loadedItem else { return }
+                guard self.isCurrentItemReady,
+                      self.pendingSeekSec == nil,
+                      !self.isSeeking,
+                      let item = self.player.currentItem,
+                      item === self.loadedItem else { return }
                 let sec = time.seconds
                 guard sec.isFinite && sec >= 0 else { return }
                 self.clock.currentTimeSec = sec
 
                 let dur = item.duration.seconds
                 if dur.isFinite && dur > 0 {
+                    let durationChanged = abs(self.clock.durationSec - dur) > 1.0
                     self.clock.durationSec = dur
+                    if durationChanged {
+                        self.configureOutroBoundaryObserver(durationSec: dur)
+                    }
+                    // 按章定时最后 30 秒线性音量渐弱（同步缩放 mixGain）
+                    self.updateChapterSleepFadeIfNeeded(currentSec: sec, durationSec: dur)
+
                     // P-05：章尾剩余 <= 60s 时后台低优先级预解析下一章直链，降低切章等待
                     if dur > 30, (dur - sec) <= 60 {
                         self.preResolveNextChapterIfNeeded()
                     }
-                    if BookSkipConfig.shouldTriggerOutroSkip(
-                        positionSec: sec,
-                        durationSec: dur,
-                        config: self.bookSkip,
-                        hasTriggered: self.outroTriggeredForCurrentChapter,
-                        isSuppressed: self.outroSuppressedForCurrentChapter
-                    ) {
-                        self.outroTriggeredForCurrentChapter = true
-                        if self.nextChapterAvailability == .none {
-                            self.showInlineToast("已是最后一章", durationSec: 3.0)
-                        } else {
-                            self.showInlineToast("已跳过片尾，正在播放下一章", durationSec: 3.0)
-                        }
-                        self.handleChapterFinished()
+                    // 兜底检查（精准触发由 addBoundaryTimeObserver 主导）
+                    if self.skipCoordinator.shouldTriggerOutroSkip(positionSec: sec, durationSec: dur) {
+                        self.triggerOutroSkip()
                         return
                     }
                 }
 
-                // 1s 节流刷新锁屏、灵动岛与内存章节进度缓存
-                self.updateNowPlayingInfo()
                 if let book = self.currentBook, let chapter = self.currentChapter {
                     ChapterProgressCache.shared.update(
                         bookID: book.id,
@@ -1234,90 +1228,8 @@ final class PlayerEngine {
         }
     }
 
-    private func observeNotifications() {
-        endObserverToken = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            let finishedID = (note.object as AnyObject?).map { ObjectIdentifier($0) }
-            Task { @MainActor [weak self] in
-                guard let self,
-                      let currentItem = self.player.currentItem,
-                      finishedID == ObjectIdentifier(currentItem) else { return }
-                self.handleChapterFinished()
-            }
-        }
-
-        failedEndObserverToken = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemFailedToPlayToEndTime,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            let failedID = (note.object as AnyObject?).map { ObjectIdentifier($0) }
-            let err = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription ?? "播放中断"
-            Task { @MainActor [weak self] in
-                guard let self,
-                      let currentItem = self.player.currentItem,
-                      failedID == ObjectIdentifier(currentItem) else { return }
-                self.state = .failed(err)
-            }
-        }
-
-        // 修复 ISS-10：处理音频中断开始与结束（支持来电/闹钟结束后根据 shouldResume 自动续播）
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let typeVal = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let type = AVAudioSession.InterruptionType(rawValue: typeVal) else { return }
-            let optionsVal = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsVal)
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                switch type {
-                case .began:
-                    self.wasPlayingBeforeInterruption = (self.state == .playing)
-                    self.pause()
-                case .ended:
-                    if self.wasPlayingBeforeInterruption && options.contains(.shouldResume) {
-                        self.wasPlayingBeforeInterruption = false
-                        self.resume()
-                    }
-                @unknown default:
-                    break
-                }
-            }
-        }
-
-        // 修复 ISS-10：监听耳机/蓝牙外设断开（oldDeviceUnavailable），自动暂停并落盘进度防止外放惊扰
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let reasonVal = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-                  let reason = AVAudioSession.RouteChangeReason(rawValue: reasonVal),
-                  reason == .oldDeviceUnavailable else { return }
-            Task { @MainActor [weak self] in
-                guard let self, self.state == .playing else { return }
-                self.pause()
-            }
-        }
-
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.persistProgressNow()
-            }
-        }
-    }
-
-    private func handleChapterFinished() {
+    func handleChapterFinished() {
+        sleepTimer.resetFadeMultiplier()
         if let book = currentBook, let finished = currentChapter {
             let durSec = clock.durationSec > 0 ? clock.durationSec : Double(finished.normalizedDurationSec ?? 0)
             let durMs = max(0, Int(durSec * 1000))
@@ -1331,18 +1243,8 @@ final class PlayerEngine {
             )
             DownloadManager.shared.cleanupPrecacheIfNeeded(bookID: book.id, chapterID: finished.id)
         }
-        if sleepOption == .endOfChapter {
-            pause()
-            sleepOption = .off
+        if handleSleepTimerChapterFinished() {
             return
-        }
-        if case .chaptersRemaining = sleepOption {
-            sleepChaptersLeft -= 1
-            if sleepChaptersLeft <= 0 {
-                pause()
-                sleepOption = .off
-                return
-            }
         }
         playNextChapter()
     }
@@ -1359,14 +1261,14 @@ final class PlayerEngine {
 
         guard let ctx = modelContext else {
             speed = settings.defaultSpeed
-            bookSkip = .unset
+            skipCoordinator.config = .unset
             bookVolume = 1.0
             return
         }
         let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
         if let saved = try? ctx.fetch(descriptor).first {
             speed = saved.speed > 0 ? saved.speed : settings.defaultSpeed
-            bookSkip = BookSkipConfig(
+            skipCoordinator.config = BookSkipConfig(
                 enabled: saved.skipEnabled,
                 introSec: saved.skipIntroSec,
                 outroSec: saved.skipOutroSec
@@ -1374,12 +1276,12 @@ final class PlayerEngine {
             bookVolume = settings.rememberBookVolume ? min(max(saved.volume, 0.0), 2.0) : 1.0
         } else {
             speed = settings.defaultSpeed
-            bookSkip = .unset
+            skipCoordinator.config = .unset
             bookVolume = 1.0
         }
     }
 
-    private func ensureBookRow(for book: BookRef, in ctx: ModelContext) -> Book {
+    func ensureBookRow(for book: BookRef, in ctx: ModelContext) -> Book {
         let bookID = book.id
         let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
         if let existing = try? ctx.fetch(descriptor).first {
@@ -1485,66 +1387,5 @@ final class PlayerEngine {
         Task.detached(priority: .utility) {
             ChapterCacheStore.saveChapters(queue, for: bookID)
         }
-    }
-
-    // MARK: - 锁屏与控制中心（MPNowPlayingInfoCenter & MPRemoteCommandCenter）
-
-    private func configureRemoteCommands() {
-        let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.resume() }
-            return .success
-        }
-        center.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.pause() }
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.togglePlayPause() }
-            return .success
-        }
-        center.nextTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.playNextChapter() }
-            return .success
-        }
-        center.previousTrackCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.playPreviousChapter() }
-            return .success
-        }
-        // 禁用快进/快退 15s/30s 命令，确保灵动岛、锁屏界面与控制中心优先展示「上一章 / 下一章」切换按钮
-        center.skipForwardCommand.isEnabled = false
-        center.skipBackwardCommand.isEnabled = false
-        center.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let posEvent = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            let targetTime = posEvent.positionTime
-            Task { @MainActor in self?.seek(to: targetTime) }
-            return .success
-        }
-        center.changePlaybackRateCommand.supportedPlaybackRates = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-        center.changePlaybackRateCommand.addTarget { [weak self] event in
-            guard let rateEvent = event as? MPChangePlaybackRateCommandEvent else { return .commandFailed }
-            let targetRate = Double(rateEvent.playbackRate)
-            Task { @MainActor in self?.setSpeed(targetRate, persist: true) }
-            return .success
-        }
-    }
-
-    private func updateRemoteCommandStates() {
-        let center = MPRemoteCommandCenter.shared()
-        center.previousTrackCommand.isEnabled = canPlayPreviousChapter
-        center.nextTrackCommand.isEnabled = (nextChapterAvailability != .none)
-    }
-
-    private func updateNowPlayingInfo() {
-        NowPlayingController.shared.update(
-            book: currentBook,
-            chapter: currentChapter,
-            chapterIndexOneBased: currentChapterOneBasedIndex,
-            totalChapters: chapterQueue.count,
-            elapsedSec: clock.currentTimeSec,
-            durationSec: clock.durationSec,
-            isPlaying: state == .playing,
-            speed: speed
-        )
     }
 }

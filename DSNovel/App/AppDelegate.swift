@@ -7,8 +7,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         completionHandler: @escaping () -> Void
     ) {
         if identifier == BackgroundDownloadSession.sessionIdentifier {
-            Task { @MainActor in
+            MainActor.assumeIsolated {
+                // 同步保存系统回调并立即唤醒 DownloadManager 与非懒加载后台 URLSession，避免错过后台重连事件
                 BackgroundDownloadSession.shared.systemCompletionHandler = completionHandler
+                _ = DownloadManager.shared
+                BackgroundDownloadSession.shared.ensureSessionInitialized()
             }
         } else {
             completionHandler()

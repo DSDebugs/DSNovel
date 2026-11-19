@@ -19,25 +19,32 @@ enum PlayerAmbientFallbackPolicy {
 }
 
 /// 沉浸式流体极光与声学呼吸背景：
-/// - 播放态：9 点 3×3 MeshGradient 较大振幅流动 + 双层径向聚光灯随律动呼吸扩散，呈现饱满通透的封面氛围色与琥珀流光；
-/// - 暂停态：背景光晕平滑收敛变暗、聚光半径收缩，与播放态形成鲜明且优雅的视觉对比。
+/// - 播放态：9 点 3×3 MeshGradient 15fps 轻流 + 双层径向聚光灯随律动呼吸扩散；
+/// - 暂停/遮挡/退后台：TimelineView 自动休眠停止帧驱动；
+/// - 低电量/高热态：动态监听系统通知自动降级为静态渐变。
 struct PlayerAmbientBackground: View {
     @Environment(\.dsReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isLowPowerMode: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @State private var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+
     let primaryColor: Color
     let isPlaying: Bool
+    let isObscured: Bool
 
-    init(primaryColor: Color, isPlaying: Bool) {
+    init(primaryColor: Color, isPlaying: Bool, isObscured: Bool = false) {
         self.primaryColor = primaryColor
         self.isPlaying = isPlaying
+        self.isObscured = isObscured
     }
 
     var body: some View {
-        let info = ProcessInfo.processInfo
         let useStatic = PlayerAmbientFallbackPolicy.shouldUseStaticGradient(
-            isLowPowerMode: info.isLowPowerModeEnabled,
+            isLowPowerMode: isLowPowerMode,
             reduceMotion: reduceMotion,
-            thermalState: info.thermalState
+            thermalState: thermalState
         )
+        let isTimelinePaused = !isPlaying || isObscured || scenePhase != .active
 
         ZStack {
             Color.dsSurfaceBase
@@ -45,7 +52,7 @@ struct PlayerAmbientBackground: View {
             if useStatic {
                 staticAtmosphereLayer
             } else {
-                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
+                TimelineView(.animation(minimumInterval: 1.0 / 15.0, paused: isTimelinePaused)) { context in
                     let t = context.date.timeIntervalSinceReferenceDate
                     animatedAtmosphereLayer(time: t)
                 }
@@ -53,6 +60,12 @@ struct PlayerAmbientBackground: View {
         }
         .dsAnimation(Motion.ambient, value: isPlaying)
         .ignoresSafeArea()
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
+            thermalState = ProcessInfo.processInfo.thermalState
+        }
     }
 
     private var staticAtmosphereLayer: some View {

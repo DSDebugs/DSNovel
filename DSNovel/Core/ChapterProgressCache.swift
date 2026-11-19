@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftData
+import UIKit
 
 struct ChapterProgressSnapshot: Equatable, Hashable, Sendable {
     var bookID: String
@@ -19,12 +20,37 @@ final class ChapterProgressCache {
     static let migrationFlagKey = "chapterProgressMigratedV1"
     static let maxPerBook = 2000
     static let maxGlobal = 20000
+    static let boundsCheckWriteInterval = 50
 
     private var byBook: [String: [String: ChapterProgressSnapshot]] = [:]
     private var lastPersistedAt: [String: TimeInterval] = [:]
+    @ObservationIgnored private var writesSinceBoundsCheck: Int = 0
+    @ObservationIgnored private var lastWrittenBookID: String?
+    @ObservationIgnored nonisolated(unsafe) private var backgroundObserverToken: NSObjectProtocol?
     var modelContext: ModelContext?
 
-    init() {}
+    init() {
+        backgroundObserverToken = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let ctx = self.modelContext else { return }
+                if self.writesSinceBoundsCheck > 0, let bookID = self.lastWrittenBookID {
+                    self.writesSinceBoundsCheck = 0
+                    self.enforceBounds(in: ctx, bookID: bookID)
+                    try? ctx.save()
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let token = backgroundObserverToken {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
 
     func migrateLegacyIfNeeded(
         context: ModelContext,
@@ -78,7 +104,7 @@ final class ChapterProgressCache {
                 updatedAt: r.updatedAt
             )
         }
-        if dict.isEmpty {
+        if dict.isEmpty && !UserDefaults.standard.bool(forKey: Self.migrationFlagKey) {
             let legacy = ChapterProgressStore.loadAll(for: bookID)
             for (cid, pos) in legacy {
                 dict[cid] = ChapterProgressSnapshot(
@@ -176,12 +202,16 @@ final class ChapterProgressCache {
     }
 
     private func persistToStore(_ snap: ChapterProgressSnapshot) {
-        ChapterProgressStore.save(
-            bookID: snap.bookID,
-            chapterID: snap.chapterID,
-            positionMs: snap.positionMs,
-            now: snap.updatedAt.timeIntervalSince1970
-        )
+        let isMigrated = UserDefaults.standard.bool(forKey: Self.migrationFlagKey)
+        // SwiftData 迁移完成后停止每 5 秒双写 UserDefaults，仅在无上下文或未完成迁移时回落旧存储
+        if modelContext == nil || !isMigrated {
+            ChapterProgressStore.save(
+                bookID: snap.bookID,
+                chapterID: snap.chapterID,
+                positionMs: snap.positionMs,
+                now: snap.updatedAt.timeIntervalSince1970
+            )
+        }
         guard let ctx = modelContext else { return }
         let pid = "\(snap.bookID)::\(snap.chapterID)"
         let desc = FetchDescriptor<ChapterProgress>(predicate: #Predicate<ChapterProgress> { $0.id == pid })
@@ -201,26 +231,41 @@ final class ChapterProgressCache {
                 updatedAt: snap.updatedAt
             ))
         }
-        enforceBounds(in: ctx, bookID: snap.bookID)
+        writesSinceBoundsCheck += 1
+        lastWrittenBookID = snap.bookID
+        if writesSinceBoundsCheck >= Self.boundsCheckWriteInterval {
+            writesSinceBoundsCheck = 0
+            enforceBounds(in: ctx, bookID: snap.bookID)
+        }
         try? ctx.save()
     }
 
     func enforceBounds(in ctx: ModelContext, bookID: String) {
-        let bookDesc = FetchDescriptor<ChapterProgress>(
-            predicate: #Predicate<ChapterProgress> { $0.bookID == bookID },
-            sortBy: [SortDescriptor(\ChapterProgress.updatedAt, order: .reverse)]
+        let bookCountDesc = FetchDescriptor<ChapterProgress>(
+            predicate: #Predicate<ChapterProgress> { $0.bookID == bookID }
         )
-        if let bookItems = try? ctx.fetch(bookDesc), bookItems.count > Self.maxPerBook {
-            for stale in bookItems.dropFirst(Self.maxPerBook) {
-                ctx.delete(stale)
+        let bookCount = (try? ctx.fetchCount(bookCountDesc)) ?? 0
+        if bookCount > Self.maxPerBook {
+            let bookDesc = FetchDescriptor<ChapterProgress>(
+                predicate: #Predicate<ChapterProgress> { $0.bookID == bookID },
+                sortBy: [SortDescriptor(\ChapterProgress.updatedAt, order: .reverse)]
+            )
+            if let bookItems = try? ctx.fetch(bookDesc), bookItems.count > Self.maxPerBook {
+                for stale in bookItems.dropFirst(Self.maxPerBook) {
+                    ctx.delete(stale)
+                }
             }
         }
-        let globalDesc = FetchDescriptor<ChapterProgress>(
-            sortBy: [SortDescriptor(\ChapterProgress.updatedAt, order: .reverse)]
-        )
-        if let allItems = try? ctx.fetch(globalDesc), allItems.count > Self.maxGlobal {
-            for stale in allItems.dropFirst(Self.maxGlobal) {
-                ctx.delete(stale)
+
+        let globalCount = (try? ctx.fetchCount(FetchDescriptor<ChapterProgress>())) ?? 0
+        if globalCount > Self.maxGlobal {
+            let globalDesc = FetchDescriptor<ChapterProgress>(
+                sortBy: [SortDescriptor(\ChapterProgress.updatedAt, order: .reverse)]
+            )
+            if let allItems = try? ctx.fetch(globalDesc), allItems.count > Self.maxGlobal {
+                for stale in allItems.dropFirst(Self.maxGlobal) {
+                    ctx.delete(stale)
+                }
             }
         }
     }
@@ -228,5 +273,7 @@ final class ChapterProgressCache {
     func resetMemoryForTesting() {
         byBook.removeAll()
         lastPersistedAt.removeAll()
+        writesSinceBoundsCheck = 0
+        lastWrittenBookID = nil
     }
 }

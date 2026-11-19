@@ -1,8 +1,6 @@
 import SwiftUI
-import SwiftData
 
 struct OnboardingView: View {
-    @Environment(\.modelContext) private var modelContext
     let hasSeededSource: Bool
     private let onUseBuiltIn: () -> Void
     private let onImportOwn: () -> Void
@@ -29,7 +27,7 @@ struct OnboardingView: View {
             VStack(spacing: Spacing.s2) {
                 Text("欢迎使用 DSNovel")
                     .font(DSTypography.bookTitleLarge)
-                Text("DSNovel 通过书源播放有声书，首次启动已内置 1 个书源")
+                Text("DSNovel 通过书源播放有声书，首次启动已内置精选有声书源")
                     .font(DSTypography.cardTitle)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

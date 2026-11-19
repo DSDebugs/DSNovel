@@ -82,15 +82,19 @@ struct DSNovelApp: App {
                         }
                         #endif
 
+                        // 提前恢复上次播放状态，缩短冷启动首帧到可播态的等待时间
+                        autoResumeIfNeeded(context: context)
                         downloadManager.recoverInterruptedItems()
-                        _ = await CookieSync.pullFromWebView()
+                        // 将 WKWebView 全量 Cookie 同步延后至后台异步执行，避免阻塞冷启动
+                        Task(priority: .utility) {
+                            _ = await CookieSync.pullFromWebView()
+                        }
                         await BundledSourceSeeder.seedIfNeeded(modelContext: context)
                         await PluginRuntime.shared.reloadInstalledPackages()
                         await BuiltinParserRuntime.shared.reload()
                         BuiltinParserRegistrySync.syncRecords(context: context)
                         LibraryStore.shared.refreshNow()
                         SourceStore.shared.refreshNow()
-                        autoResumeIfNeeded(context: context)
                     }
                     .modelContainer(modelContainer)
 

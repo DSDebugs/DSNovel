@@ -1,6 +1,17 @@
 import SwiftUI
 import UIKit
 
+private struct DSNightDimEnabledKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+extension EnvironmentValues {
+    var dsNightDimEnabled: Bool {
+        get { self[DSNightDimEnabledKey.self] }
+        set { self[DSNightDimEnabledKey.self] = newValue }
+    }
+}
+
 enum DSColorTokenSpec {
     struct RGB: Equatable, Sendable {
         let r: Double

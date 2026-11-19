@@ -65,7 +65,6 @@ struct LibraryRootView: View {
         .background(Color.dsSurfaceBase)
         .navigationTitle(isEditing ? "已选 \(selectedIDs.count) 项" : "书籍")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarVisibility(isEditing ? .hidden : .visible, for: .tabBar)
         .onChange(of: isEditing) { _, hidden in AppRouter.shared.isBottomBarHidden = hidden }
         .toolbar {
             ShelfToolbar(
@@ -134,6 +133,11 @@ struct LibraryRootView: View {
             sourceStore.modelContext = modelContext
             downloadManager.modelContext = modelContext
             downloadManager.reconcileCompletedFiles()
+        }
+        .onDisappear {
+            if isEditing {
+                AppRouter.shared.isBottomBarHidden = false
+            }
         }
     }
 
@@ -248,6 +252,10 @@ struct LibraryRootView: View {
         } else if libraryStore.allShelfBooks.isEmpty && libraryStore.continueBook == nil && libraryStore.shelfBooks.isEmpty {
             DSStateView(
                 kind: .empty,
+                titleOverride: "书架还是空的",
+                messageOverride: "去发现页逛逛或搜索想听的有声书",
+                primaryTitleOverride: "去发现",
+                secondaryTitleOverride: "去搜索",
                 onPrimary: { AppRouter.shared.selectedTab = .discover },
                 onSecondary: { AppRouter.shared.selectedTab = .search }
             )
@@ -265,6 +273,9 @@ struct LibraryRootView: View {
         } else if libraryStore.shelfBooks.isEmpty {
             DSStateView(
                 kind: .empty,
+                titleOverride: "当前筛选下暂无书籍",
+                messageOverride: "试试切换回全部书架查看",
+                primaryTitleOverride: "查看全部",
                 onPrimary: { libraryStore.selectedFilter = .all },
                 onSecondary: nil
             )
@@ -280,9 +291,11 @@ struct LibraryRootView: View {
                         models: models,
                         isEditing: isEditing,
                         selectedIDs: selectedIDs,
+                        isDownloadedFilter: libraryStore.selectedFilter == .downloaded,
                         onSelectBook: { handleCardTap($0) },
                         onPlayBook: { playByModel($0) },
                         onTogglePin: { togglePin($0.id) },
+                        onDownloadUnread: { downloadUnread($0.id) },
                         onRemove: { handleRemoveAction($0.id) }
                     )
                 } else {
@@ -339,10 +352,18 @@ struct LibraryRootView: View {
     }
 
     private func downloadUnread(_ id: String) {
-        guard let book = libraryStore.book(for: id, fallbackContext: modelContext),
-              let chapters = ChapterCacheStore.loadChapters(for: book.id) else { return }
-        DownloadManager.shared.enqueueChapters(chapters, for: book.bookRef, kind: "manual")
-        BannerCenter.shared.show("已加入下载 \(chapters.count) 章", kind: .success)
+        guard let book = libraryStore.book(for: id, fallbackContext: modelContext) else { return }
+        guard let chapters = ChapterCacheStore.loadChapters(for: book.id), !chapters.isEmpty else {
+            BannerCenter.shared.show("请先进入书籍详情加载章节目录", kind: .info)
+            return
+        }
+        let unread = LibraryCardMapper.unreadChapters(from: chapters, lastChapterIndex: book.lastChapterIndex)
+        guard !unread.isEmpty else {
+            BannerCenter.shared.show("《\(book.title)》暂无未听章节", kind: .info)
+            return
+        }
+        DownloadManager.shared.enqueueChapters(unread, for: book.bookRef, kind: "manual")
+        BannerCenter.shared.show("已加入下载 \(unread.count) 章未听章节", kind: .success)
     }
 
     private func handleRemoveAction(_ id: String) {
@@ -357,14 +378,24 @@ struct LibraryRootView: View {
     }
 
     private func batchDownloadSelected() {
+        var enqueuedBooks = 0
+        var enqueuedChapters = 0
         for book in libraryStore.allShelfBooks where selectedIDs.contains(book.id) {
-            if let chs = ChapterCacheStore.loadChapters(for: book.id) {
-                DownloadManager.shared.enqueueChapters(chs, for: book.bookRef, kind: "manual")
+            if let chs = ChapterCacheStore.loadChapters(for: book.id), !chs.isEmpty {
+                let unread = LibraryCardMapper.unreadChapters(from: chs, lastChapterIndex: book.lastChapterIndex)
+                let target = unread.isEmpty ? chs : unread
+                DownloadManager.shared.enqueueChapters(target, for: book.bookRef, kind: "manual")
+                enqueuedBooks += 1
+                enqueuedChapters += target.count
             }
         }
         isEditing = false
         selectedIDs.removeAll()
-        BannerCenter.shared.show("已加入批量下载", kind: .success)
+        if enqueuedChapters > 0 {
+            BannerCenter.shared.show("已将 \(enqueuedBooks) 本书共 \(enqueuedChapters) 章加入下载队列", kind: .success)
+        } else {
+            BannerCenter.shared.show("所选书籍暂无目录缓存，请先打开书籍详情", kind: .info)
+        }
     }
 
     private func batchTogglePinSelected() {

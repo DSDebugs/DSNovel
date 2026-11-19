@@ -48,42 +48,50 @@ struct DSChipBar<ID: Hashable>: View {
                         chipButton(for: item)
                     }
                     if let trailingActionTitle, let onTrailingAction {
-                        Button(action: onTrailingAction) {
-                            Label(trailingActionTitle, systemImage: "plus")
-                                .font(DSTypography.subtitle.weight(.medium))
-                                .padding(.horizontal, Spacing.s3)
-                                .padding(.vertical, Spacing.s2)
-                        }
+                        trailingActionButton(title: trailingActionTitle, action: onTrailingAction)
                     }
                 }
+                .padding(.horizontal, Spacing.pageHorizontal)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Spacing.s2) {
-                        ForEach(items) { item in
-                            chipButton(for: item)
-                        }
-                        if let trailingActionTitle, let onTrailingAction {
-                            Button(action: onTrailingAction) {
-                                Text(trailingActionTitle)
-                                    .font(DSTypography.subtitle.weight(.medium))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, Spacing.s3)
-                                    .padding(.vertical, Spacing.s2)
-                                    .frame(minHeight: 36)
-                                    .background(
-                                        Capsule(style: .continuous)
-                                            .strokeBorder(Color.dsSeparator.opacity(0.5), lineWidth: 0.5)
-                                    )
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: Spacing.s2) {
+                            ForEach(items) { item in
+                                chipButton(for: item)
+                                    .id(item.id)
                             }
-                            .buttonStyle(.plain)
+                            if let trailingActionTitle, let onTrailingAction {
+                                trailingActionButton(title: trailingActionTitle, action: onTrailingAction)
+                            }
+                        }
+                        .padding(.leading, leadingPadding)
+                        .padding(.trailing, Spacing.pageHorizontal)
+                    }
+                    .onChange(of: selection) { _, newValue in
+                        withAnimation(Motion.resolve(Motion.snappy, reduce: reduceMotion)) {
+                            proxy.scrollTo(newValue, anchor: .center)
                         }
                     }
-                    .padding(.leading, leadingPadding)
-                    .padding(.trailing, Spacing.pageHorizontal)
                 }
             }
         }
         .dsHaptic(.selection, trigger: selection)
+    }
+
+    private func trailingActionButton(title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(DSTypography.subtitle.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, Spacing.s3)
+                .padding(.vertical, Spacing.s2)
+                .frame(minHeight: 36)
+                .background(
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.dsSeparator.opacity(0.5), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     private func chipButton(for item: DSChipItem<ID>) -> some View {

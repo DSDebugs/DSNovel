@@ -4,6 +4,7 @@ import SwiftData
 struct AppShell: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var router = AppRouter.shared
     @State private var player = PlayerEngine.shared
@@ -28,6 +29,7 @@ struct AppShell: View {
     }
 
     var body: some View {
+        let nightDim = settings.nightDimEnabled
         ZStack(alignment: .top) {
             if !sourceStore.hasEnabledSource && sourceStore.hasLoadedOnce && !dismissedOnboarding {
                 OnboardingView(
@@ -110,6 +112,21 @@ struct AppShell: View {
                 .padding(.top, Spacing.s2)
                 .zIndex(10)
             }
+
+            if colorScheme == .dark && nightDim {
+                Color.black.opacity(0.16)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                    .zIndex(999)
+            }
+        }
+        .environment(\.dsNightDimEnabled, nightDim)
+        .environment(\.dsSettings, settings)
+        .environment(\.dsBannerCenter, bannerCenter)
+        .environment(\.dsRouter, router)
+        .tint(Color.dsAccent)
+        .sheet(isPresented: $router.isSourceImportPresented) {
+            SourceImportFlow(onClose: { router.isSourceImportPresented = false })
         }
         .fullScreenCover(isPresented: $router.isPlayerPresented) {
             PlayerScreen()
@@ -157,7 +174,10 @@ struct AppShell: View {
         case .sourceDetail(let id, let focus):
             SourceDetailView(sourceID: id, focus: focus)
         case .sourceImport:
-            SourceImportFlow(onClose: { router.popToRoot(for: router.selectedTab) })
+            SourceImportFlow(onClose: {
+                router.isSourceImportPresented = false
+                router.popToRoot(for: router.selectedTab)
+            })
         case .playbackMore:
             MorePlaybackPrefsView(settings: settings)
         case .about:

@@ -15,6 +15,7 @@ struct ChapterListView: View {
     @State private var player = PlayerEngine.shared
     @State private var showSearchField: Bool = false
     @State private var pendingDeleteSnapshot: ChapterRowSnapshot?
+    @State private var locateRequestID: Int = 0
     @FocusState private var isSearchFocused: Bool
 
     init(
@@ -56,12 +57,30 @@ struct ChapterListView: View {
         )
     }
 
+    private var activeChapterID: String? {
+        if player.currentBookID == listModel.book.id, let liveID = player.currentChapter?.id {
+            return liveID
+        }
+        return currentChapterID
+    }
+
+    private var activeIsPlaying: Bool {
+        if player.currentBookID == listModel.book.id {
+            return player.state == .playing
+        }
+        return isPlaying
+    }
+
     var body: some View {
         let _ = downloadManager.stateVersion
-        let livePosMs: Int? = nil
+        let liveChapterID = activeChapterID
+        let livePosMs: Int? = (player.currentBookID == listModel.book.id && liveChapterID != nil)
+            ? max(0, Int(player.clock.currentTimeSec * 1000))
+            : nil
         let snapshots = listModel.visibleSnapshots(
             from: browserModel,
-            isPlaying: isPlaying,
+            currentChapterIDOverride: liveChapterID,
+            isPlaying: activeIsPlaying,
             currentPlayingPositionMs: livePosMs
         )
         let downloadedCount = downloadManager.summariesByBookID[listModel.book.id]?.completedCount ?? 0
@@ -69,7 +88,7 @@ struct ChapterListView: View {
         DSSheetScaffold(title: "章节目录（共 \(chapters.count) 章）", onClose: onClose) {
             ScrollViewReader { proxy in
                 VStack(spacing: 0) {
-                    controlBar(proxy: proxy, downloadedCount: downloadedCount)
+                    controlBar(downloadedCount: downloadedCount)
 
                     if showSearchField {
                         DSSearchField(
@@ -128,7 +147,7 @@ struct ChapterListView: View {
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
-                            locateCurrentChapter(proxy: proxy)
+                            prepareLocateCurrentChapter()
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "location.fill")
@@ -158,14 +177,12 @@ struct ChapterListView: View {
                 } message: {
                     Text("删除后将释放本地空间，再次收听该章需联网或重新下载。")
                 }
-                .onAppear {
-                    listModel.reloadDownloadMap()
-                    if let currentChapterID {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                            withAnimation(Motion.snappy) {
-                                proxy.scrollTo(currentChapterID, anchor: .center)
-                            }
-                        }
+                .task(id: locateRequestID) {
+                    guard let targetID = activeChapterID else { return }
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    withAnimation(Motion.snappy) {
+                        proxy.scrollTo(targetID, anchor: .center)
                     }
                 }
             }
@@ -176,7 +193,7 @@ struct ChapterListView: View {
     }
 
     @ViewBuilder
-    private func controlBar(proxy: ScrollViewProxy, downloadedCount: Int) -> some View {
+    private func controlBar(downloadedCount: Int) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Spacing.s2) {
                 Button {
@@ -278,20 +295,16 @@ struct ChapterListView: View {
         }
     }
 
-    private func locateCurrentChapter(proxy: ScrollViewProxy) {
-        guard let currentChapterID else { return }
+    private func prepareLocateCurrentChapter() {
+        guard let targetID = activeChapterID else { return }
         DSHapticPolicy.fire(.selection)
         browserModel.chapterSearchKeyword = ""
         listModel.onlyDownloadedFilter = false
-        if let segIdx = PlayerChapterListModel.segmentIndex(for: currentChapterID, in: chapters, pageSize: 100),
+        if let segIdx = PlayerChapterListModel.segmentIndex(for: targetID, in: chapters, pageSize: 100),
            browserModel.segments.indices.contains(segIdx) {
             browserModel.selectedSegmentIndex = segIdx
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-            withAnimation(Motion.snappy) {
-                proxy.scrollTo(currentChapterID, anchor: .center)
-            }
-        }
+        locateRequestID &+= 1
     }
 
     private func accessibilityDownloadDescription(for snap: ChapterRowSnapshot) -> String {

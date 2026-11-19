@@ -37,16 +37,17 @@ enum LibraryCardMapper {
             if effectiveTotalChapters > 0 && effectiveChapterIndex > 0 {
                 return min(max(Double(effectiveChapterIndex) / Double(effectiveTotalChapters), 0.02), 1.0)
             }
-            if isThisBookActive && player.clock.currentTimeSec > 0 {
+            if isThisBookActive {
                 return 0.1
             }
             return book.lastPositionMs > 0 ? 0.1 : 0.0
         }()
 
+        // 注意：不在此处读取 player.clock，避免播放期间导致书架/历史页每秒全量重绘；
+        // 正在播放书目的实时时间由叶子视图按需订阅 player.clock 刷新。
         let baseProgressText: String = {
             if isThisBookActive, let curChap = player.currentChapter {
-                let timeStr = player.clock.formattedCurrent
-                return "\(curChap.title) · \(timeStr)"
+                return curChap.title
             }
             return book.episodeAndTimeProgressText
         }()
@@ -171,5 +172,15 @@ enum LibraryCardMapper {
 
     static func filterShelfBooks(_ books: [Book], selectedIDs: Set<String>) -> [Book] {
         books.filter { selectedIDs.contains($0.id) }
+    }
+
+    /// 截取从当前播放进度之后的未听章节（1-based lastChapterIndex 映射为 0-based 切片起点）
+    static func unreadChapters(from chapters: [ChapterDTO], lastChapterIndex: Int) -> [ChapterDTO] {
+        guard !chapters.isEmpty else { return [] }
+        let startIndex = max(0, min(lastChapterIndex, chapters.count))
+        if startIndex >= chapters.count {
+            return []
+        }
+        return Array(chapters[startIndex...])
     }
 }
