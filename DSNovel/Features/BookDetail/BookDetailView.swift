@@ -16,6 +16,8 @@ struct BookDetailView: View {
     @State private var pendingDeleteSnapshot: ChapterRowSnapshot?
     @State private var showClearAllDownloadsConfirm = false
     @State private var ambientColor: Color = .dsSurfaceBase
+    /// 头部滚出屏幕后，导航栏才显示书名（避免与头部大标题重复）
+    @State private var showNavTitle = false
 
     init(book: BookRef, preferDownloaded: Bool = false) {
         self._detailModel = State(
@@ -100,12 +102,7 @@ struct BookDetailView: View {
                         requiresLogin: currentSource?.requiresLogin ?? false,
                         isLoggedIn: currentSource?.loggedIn ?? true,
                         totalChapters: max(detailModel.chapters.count, detailModel.currentBookRef.chapterCount),
-                        downloadedCount: dlCount,
                         statusText: detailModel.statusText,
-                        onTapDownloadedBadge: {
-                            DSHapticPolicy.fire(.selection)
-                            detailModel.isShowingDownloadedOnly = true
-                        },
                         onTapLogin: {
                             AuthCoordinator.shared.presentLogin(forSourceID: detailModel.currentBookRef.sourceID)
                         },
@@ -119,7 +116,9 @@ struct BookDetailView: View {
                         isPlayingThisBook: isPlayingThisBook,
                         isEnginePlaying: isPlayingThisBook && player.state == .playing,
                         hasProgress: isPlayingThisBook || (savedBook?.lastChapterIndex ?? 0) > 0,
-                        activeChapterTitle: activeChapterTitle,
+                        activeChapterTitle: activeChapterTitle.map {
+                            BookTitleFormatter.stripBookPrefix(from: $0, bookTitle: detailModel.currentBookRef.title)
+                        },
                         downloadedCount: dlCount,
                         downloadedBytesText: dlCount > 0 ? dlBytesText : nil,
                         activeDownloadCount: activeDLCount,
@@ -162,16 +161,24 @@ struct BookDetailView: View {
                 .padding(.vertical, Spacing.s3)
                 .background(alignment: .top) {
                     LinearGradient(
-                        colors: [ambientColor.opacity(0.32), Color.dsSurfaceBase],
+                        colors: [ambientColor.opacity(0.26), ambientColor.opacity(0.10), Color.dsSurfaceBase.opacity(0)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                    .frame(height: 320)
+                    .frame(height: 420)
+                    .ignoresSafeArea(edges: .top)
+                }
+            }
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                geo.contentOffset.y + geo.contentInsets.top > 140
+            } action: { _, newValue in
+                if showNavTitle != newValue {
+                    withAnimation(Motion.quick) { showNavTitle = newValue }
                 }
             }
         }
         .background(Color.dsSurfaceBase)
-        .navigationTitle(detailModel.currentBookRef.title)
+        .navigationTitle(showNavTitle ? BookTitleFormatter.split(detailModel.currentBookRef.title).main : "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { detailToolbar(downloadedCount: dlCount) }
         .sheet(isPresented: $showRangeDownloadSheet) {
@@ -292,7 +299,7 @@ struct BookDetailView: View {
             Text(detailModel.cleanedIntro)
                 .font(DSTypography.subtitle)
                 .foregroundStyle(.secondary)
-                .lineLimit(isIntroExpanded ? nil : 3)
+                .lineLimit(isIntroExpanded ? nil : 2)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: Spacing.s2) {
                 Button {
@@ -325,12 +332,7 @@ struct BookDetailView: View {
                 }
             }
         }
-        .padding(Spacing.s3)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                .fill(Color.dsSurfaceGrouped.opacity(0.55))
-        )
         .padding(.horizontal, Spacing.pageHorizontal)
     }
 

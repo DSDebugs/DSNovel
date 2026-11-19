@@ -23,6 +23,8 @@ struct DSCover: View {
     let title: String
     let side: CGFloat
     let badges: [DSCoverBadge]
+    let showsBorder: Bool
+    let showsSoftShadow: Bool
     private let onImageLoaded: ((UIImage) -> Void)?
 
     @State private var loadedImage: UIImage?
@@ -34,12 +36,16 @@ struct DSCover: View {
         title: String,
         side: CGFloat = 96,
         badges: [DSCoverBadge] = [],
+        showsBorder: Bool = true,
+        showsSoftShadow: Bool = false,
         onImageLoaded: ((UIImage) -> Void)? = nil
     ) {
         self.url = url
         self.title = title
         self.side = side
         self.badges = badges
+        self.showsBorder = showsBorder
+        self.showsSoftShadow = showsSoftShadow
         self.onImageLoaded = onImageLoaded
     }
 
@@ -64,14 +70,22 @@ struct DSCover: View {
             coverBody(image: effectiveImage)
                 .frame(width: side, height: side)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.dsSeparator.opacity(0.35), lineWidth: 0.5)
-                )
+                .overlay {
+                    if showsBorder {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(Color.dsSeparator.opacity(0.35), lineWidth: 0.5)
+                    }
+                }
 
             badgeOverlay(visibleBadges)
         }
         .frame(width: side, height: side)
+        .shadow(
+            color: showsSoftShadow ? Color.black.opacity(0.10) : .clear,
+            radius: showsSoftShadow ? 6 : 0,
+            x: 0,
+            y: showsSoftShadow ? 3 : 0
+        )
         .task(id: url) {
             if let mem = CoverImagePipeline.shared.cachedInMemory(for: url, side: side) {
                 loadedImage = mem

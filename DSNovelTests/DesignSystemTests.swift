@@ -206,4 +206,21 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertEqual(PlayerAmbientFallbackPolicy.coverScale(for: .paused, isPressed: false, reduceMotion: false), 0.86)
         XCTAssertEqual(PlayerAmbientFallbackPolicy.coverScale(for: .paused, isPressed: false, reduceMotion: true), 1.0)
     }
+
+    func testDiscoverRedesignAvatarAndCoverOptions() {
+        XCTAssertEqual(DSSourceAvatar.initialCharacter(for: "喜马拉雅"), "喜")
+        XCTAssertEqual(DSSourceAvatar.initialCharacter(for: " 番茄畅听 "), "番")
+        XCTAssertEqual(DSSourceAvatar.initialCharacter(for: ""), "源")
+
+        let defaultCover = DSCover(url: "", title: "测试书")
+        XCTAssertTrue(defaultCover.showsBorder)
+        XCTAssertFalse(defaultCover.showsSoftShadow)
+
+        let discoverCover = DSCover(url: "", title: "测试书", showsBorder: false, showsSoftShadow: true)
+        XCTAssertFalse(discoverCover.showsBorder)
+        XCTAssertTrue(discoverCover.showsSoftShadow)
+
+        let card = DSBookCard(model: BookCardModel(id: "b1", title: "测试书"), usesSoftCoverShadow: true)
+        XCTAssertTrue(card.usesSoftCoverShadow)
+    }
 }

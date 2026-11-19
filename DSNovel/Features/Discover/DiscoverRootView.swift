@@ -41,7 +41,6 @@ struct DiscoverRootView: View {
         VStack(spacing: 0) {
             DiscoverHeaderBar(
                 currentSourceName: currentSourceName,
-                sourceTwoCharBadge: DiscoverStore.twoCharBadge(for: currentSourceName),
                 searchKeyword: $discoverStore.searchKeyword,
                 isSearchActive: discoverStore.isSearchActive,
                 layoutStyle: $settings.discoverLayout,

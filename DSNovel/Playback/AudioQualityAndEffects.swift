@@ -57,19 +57,43 @@ enum AudioQualityTier: String, CaseIterable, Identifiable, Codable, Sendable {
     var badgeText: String {
         switch self {
         case .auto: return "自适应"
-        case .dataSaver: return "省流 32k"
-        case .standard: return "标准 64k"
-        case .high, .lossless: return "HQ 128k"
+        case .dataSaver: return "省流·32k"
+        case .standard: return "标准·64k"
+        case .high, .lossless: return "高清·128k"
         }
     }
 
     nonisolated func effectiveBadgeText(isOnWiFi: Bool) -> String {
         switch self {
         case .auto: return isOnWiFi ? "自适应·128k" : "自适应·64k"
-        case .dataSaver: return "省流 32k"
-        case .standard: return "标准 64k"
-        case .high, .lossless: return "HQ 128k"
+        case .dataSaver: return "省流·32k"
+        case .standard: return "标准·64k"
+        case .high, .lossless: return "高清·128k"
         }
+    }
+
+    /// 将播放器实际检测到的码率（kbps）归一并格式化为统一音质标签（如「省流·32k」「标准·64k」「高清·128k」）
+    nonisolated static func badgeText(forDetectedBitrateKbps rawKbps: Int) -> String {
+        let normalized = normalizedBitrateKbps(rawKbps)
+        let tierPrefix: String
+        if normalized <= 40 {
+            tierPrefix = "省流"
+        } else if normalized < 96 {
+            tierPrefix = "标准"
+        } else {
+            tierPrefix = "高清"
+        }
+        return "\(tierPrefix)·\(normalized)k"
+    }
+
+    nonisolated static func normalizedBitrateKbps(_ rawKbps: Int) -> Int {
+        let clamped = max(16, rawKbps)
+        let standards = [24, 32, 48, 64, 96, 128, 192, 256, 320]
+        if let nearest = standards.min(by: { abs($0 - clamped) < abs($1 - clamped) }),
+           Double(abs(nearest - clamped)) / Double(nearest) <= 0.16 {
+            return nearest
+        }
+        return clamped
     }
 
     var subtitle: String {

@@ -16,7 +16,7 @@ struct PlayerHeader: View {
 
     init(
         sourceName: String = "",
-        streamBadgeText: String = "HQ 128k",
+        streamBadgeText: String = "高清·128k",
         sleepOption: SleepTimerOption,
         sleepRemainingSec: Int,
         onDismiss: @escaping () -> Void,
@@ -71,7 +71,7 @@ struct PlayerHeader: View {
 
                 Button(action: onOpenAudioEffects) {
                     HStack(spacing: 3) {
-                        Image(systemName: streamBadgeText == "本地离线" ? "checkmark.circle.fill" : "sparkles")
+                        Image(systemName: "sparkles")
                             .font(DSTypography.caption2)
                         Text(streamBadgeText)
                             .lineLimit(1)

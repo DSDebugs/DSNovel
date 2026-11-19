@@ -84,7 +84,7 @@ struct DSActionButton: View {
 
 #Preview("Light") {
     VStack(spacing: 12) {
-        DSActionButton(title: "继续 · 精品有声推荐", icon: "play.fill", role: .primary)
+        DSActionButton(title: "继续 · 第九特区 第 99 集 暗斗变明斗 2", icon: "play.fill", role: .primary)
         DSActionButton(title: "下载章节", icon: "arrow.down.circle", role: .secondary)
     }
     .padding()

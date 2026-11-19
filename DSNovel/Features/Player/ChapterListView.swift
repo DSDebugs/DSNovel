@@ -18,7 +18,7 @@ struct ChapterListView: View {
     @FocusState private var isSearchFocused: Bool
 
     init(
-        book: BookRef? = nil,
+        book: BookRef? = PlayerEngine.shared.currentBook,
         chapters: [ChapterDTO],
         currentChapterID: String?,
         isPlaying: Bool,
@@ -93,8 +93,6 @@ struct ChapterListView: View {
                         Spacer()
                     } else {
                         List(snapshots) { snap in
-                            let accessibilityLabelText = "第 \(snap.displayIndex) 章，\(snap.chapter.title)"
-                            let accessibilityValueText = accessibilityDownloadDescription(for: snap)
                             ChapterRow(
                                 snapshot: snap,
                                 onSelect: {
@@ -118,8 +116,8 @@ struct ChapterListView: View {
                             .listRowBackground(Color.dsSurfaceCard)
                             .id(snap.id)
                             .accessibilityElement(children: .combine)
-                            .accessibilityLabel(accessibilityLabelText)
-                            .accessibilityValue(accessibilityValueText)
+                            .accessibilityLabel("第 \(snap.displayIndex) 章，\(snap.chapter.title)")
+                            .accessibilityValue(accessibilityDownloadDescription(for: snap))
                         }
                         .listStyle(.plain)
                         .scrollContentBackground(.hidden)
@@ -145,7 +143,8 @@ struct ChapterListView: View {
                     isPresented: Binding(
                         get: { pendingDeleteSnapshot != nil },
                         set: { if !$0 { pendingDeleteSnapshot = nil } }
-                    )
+                    ),
+                    titleVisibility: .visible
                 ) {
                     Button("删除离线文件", role: .destructive) {
                         if let snap = pendingDeleteSnapshot {

@@ -129,4 +129,17 @@ final class PlayerProOptimizationTests: XCTestCase {
             XCTAssertEqual(store.isBookInShelf(bookRef.id, fallbackContext: ctx), expectedInShelf)
         }
     }
+
+    func testAudioQualityBadgeFormattingAndBitrateDetection() {
+        XCTAssertEqual(AudioQualityTier.auto.effectiveBadgeText(isOnWiFi: true), "自适应·128k")
+        XCTAssertEqual(AudioQualityTier.auto.effectiveBadgeText(isOnWiFi: false), "自适应·64k")
+        XCTAssertEqual(AudioQualityTier.dataSaver.effectiveBadgeText(isOnWiFi: true), "省流·32k")
+        XCTAssertEqual(AudioQualityTier.standard.effectiveBadgeText(isOnWiFi: true), "标准·64k")
+        XCTAssertEqual(AudioQualityTier.high.effectiveBadgeText(isOnWiFi: true), "高清·128k")
+
+        XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 31), "省流·32k")
+        XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 63), "标准·64k")
+        XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 127), "高清·128k")
+        XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 192), "高清·192k")
+    }
 }

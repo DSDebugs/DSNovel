@@ -30,6 +30,8 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
     let downloadedBytes: Int64
     let isDeleting: Bool
     let downloadStatusNote: String?
+    /// 列表展示用标题（已去掉重复的书名前缀）；默认等于 chapter.title
+    let displayTitle: String
 
     init(
         chapter: ChapterDTO,
@@ -43,7 +45,8 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
         downloadState: ChapterDownloadState,
         downloadedBytes: Int64 = 0,
         isDeleting: Bool = false,
-        downloadStatusNote: String? = nil
+        downloadStatusNote: String? = nil,
+        displayTitle: String? = nil
     ) {
         self.chapter = chapter
         self.displayIndex = displayIndex
@@ -57,6 +60,7 @@ struct ChapterRowSnapshot: Identifiable, Equatable, Hashable, Sendable {
         self.downloadedBytes = downloadedBytes
         self.isDeleting = isDeleting
         self.downloadStatusNote = downloadStatusNote
+        self.displayTitle = displayTitle ?? chapter.title
     }
 
     var effectiveDurationMs: Int {
@@ -357,6 +361,8 @@ final class BookDetailModel {
         var results: [ChapterRowSnapshot] = []
         results.reserveCapacity(ordered.count)
 
+        let bookMainTitle = BookTitleFormatter.split(currentBookRef.title).main
+
         for ch in ordered {
             let itemID = "\(bookID)::\(ch.id)"
             let isDeleting = deletingIDs.contains(itemID)
@@ -431,7 +437,8 @@ final class BookDetailModel {
                     downloadState: dlState,
                     downloadedBytes: dlBytes,
                     isDeleting: isDeleting,
-                    downloadStatusNote: statusNote
+                    downloadStatusNote: statusNote,
+                    displayTitle: BookTitleFormatter.stripBookPrefix(from: ch.title, bookMainTitle: bookMainTitle)
                 )
             )
         }

@@ -63,22 +63,26 @@ struct PrimaryActions: View {
         self.onToggleShelf = onToggleShelf
     }
 
+    private static let controlHeight: CGFloat = 52
+
+    private var cleanTitle: String {
+        activeChapterTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    /// 主按钮第一行
     private var primaryTitle: String {
-        if isLoadingChapters {
-            return "正在获取章节…"
-        }
-        let cleanTitle = activeChapterTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if isPlayingThisBook {
-            if isEnginePlaying {
-                return cleanTitle.isEmpty ? "暂停播放" : "暂停 · \(cleanTitle)"
-            } else {
-                return cleanTitle.isEmpty ? "继续播放" : "继续 · \(cleanTitle)"
-            }
-        }
-        if hasProgress && !cleanTitle.isEmpty {
-            return "继续 · \(cleanTitle)"
-        }
+        if isLoadingChapters { return "正在获取章节…" }
+        if isPlayingThisBook { return isEnginePlaying ? "暂停播放" : "继续播放" }
+        if hasProgress && !cleanTitle.isEmpty { return "继续收听" }
         return "开始收听"
+    }
+
+    /// 主按钮第二行（章节名），没有就不显示
+    private var primarySubtitle: String? {
+        guard !isLoadingChapters, !cleanTitle.isEmpty else { return nil }
+        if isPlayingThisBook { return isEnginePlaying ? "正在播放 · \(cleanTitle)" : cleanTitle }
+        if hasProgress { return "上次听到 · \(cleanTitle)" }
+        return nil
     }
 
     private var primaryIcon: String {
@@ -88,16 +92,50 @@ struct PrimaryActions: View {
         return "play.fill"
     }
 
+    private var primaryButton: some View {
+        Button(action: onPrimaryPlay) {
+            HStack(spacing: Spacing.s3) {
+                ZStack {
+                    Circle().fill(Color.dsOnAccent.opacity(0.2))
+                    if isLoadingChapters {
+                        ProgressView().tint(Color.dsOnAccent)
+                    } else {
+                        Image(systemName: primaryIcon)
+                            .font(.callout.weight(.semibold))
+                    }
+                }
+                .frame(width: 34, height: 34)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(primaryTitle)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if let primarySubtitle {
+                        Text(primarySubtitle)
+                            .font(DSTypography.caption)
+                            .opacity(0.85)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Color.dsOnAccent)
+            .padding(.leading, Spacing.s2 + 1)
+            .padding(.trailing, Spacing.s4)
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.controlHeight)
+            .background(Capsule(style: .continuous).fill(Color.dsAccent))
+        }
+        .buttonStyle(.dsCard)
+        .disabled(isLoadingChapters)
+        .accessibilityLabel(primarySubtitle.map { "\(primaryTitle)，\($0)" } ?? primaryTitle)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.s2) {
             HStack(spacing: Spacing.s3) {
-                DSActionButton(
-                    title: primaryTitle,
-                    icon: primaryIcon,
-                    role: isLoadingChapters ? .loading : .primary,
-                    action: onPrimaryPlay
-                )
-                .accessibilityLabel(primaryTitle)
+                primaryButton
 
                 Menu {
                     Button {
@@ -152,7 +190,7 @@ struct PrimaryActions: View {
                         Image(systemName: downloadedCount > 0 ? "arrow.down.circle.fill" : "arrow.down.circle")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(downloadedCount > 0 ? .green : .primary)
-                            .frame(width: 44, height: 44)
+                            .frame(width: Self.controlHeight, height: Self.controlHeight)
                             .background(Circle().fill(Color.dsSurfaceGrouped))
 
                         if activeDownloadCount > 0 {
@@ -172,33 +210,9 @@ struct PrimaryActions: View {
                     systemName: inShelf ? "heart.fill" : "heart",
                     accessibilityTitle: inShelf ? "移出书架" : "加入书架",
                     isHighlighted: inShelf,
+                    size: Self.controlHeight,
                     action: onToggleShelf
                 )
-            }
-
-            if downloadedCount > 0 || activeDownloadCount > 0 {
-                HStack(spacing: Spacing.s2) {
-                    Spacer(minLength: 0)
-                    Button(action: onViewDownloadedChapters) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(DSTypography.caption2)
-                                .foregroundStyle(.green)
-                            if let downloadedBytesText, !downloadedBytesText.isEmpty, downloadedCount > 0 {
-                                Text("已下载 \(downloadedCount) 章 (\(downloadedBytesText))")
-                            } else if downloadedCount > 0 {
-                                Text("已下载 \(downloadedCount) 章")
-                            } else {
-                                Text("正在下载 \(activeDownloadCount) 章")
-                            }
-                            Image(systemName: "chevron.right")
-                                .font(DSTypography.caption2)
-                        }
-                        .font(DSTypography.numericCaption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
             }
         }
         .padding(.horizontal, Spacing.pageHorizontal)

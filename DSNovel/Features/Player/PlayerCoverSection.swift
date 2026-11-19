@@ -2,8 +2,8 @@ import SwiftUI
 import UIKit
 
 /// 播放器沉浸封面组件：
-/// - 播放态：封面立体浮起（1.0x）+ 背部双层声波光环呼吸扩散 + 右上角动态音频律动徽标；
-/// - 暂停态：封面柔和内收（0.86x）+ 背部光环收敛熄灭 + 封面中央浮现精致毛玻璃暂停徽章，一眼区分播放与暂停。
+/// - 播放态：封面立体浮起（1.0x）+ 背部双层声波光环呼吸扩散；
+/// - 暂停态：封面柔和内收（0.86x）+ 背部光环收敛熄灭，不遮挡封面主体。
 struct PlayerCoverSection: View {
     @Environment(\.dsReduceMotion) private var reduceMotion
 
@@ -103,46 +103,24 @@ struct PlayerCoverSection: View {
                     }
                 }
 
-                // 3. 专辑封面主体 + 状态角标/暂停浮层
-                ZStack {
-                    DSCover(
-                        url: coverURL,
-                        title: bookTitle.isEmpty ? "有声书" : bookTitle,
-                        side: adaptiveSide,
-                        onImageLoaded: onImageLoaded
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .strokeBorder(
-                                isPlaying ? Color.white.opacity(0.28) : Color.white.opacity(0.12),
-                                lineWidth: isPlaying ? 1.0 : 0.5
-                            )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(Color.black.opacity(isPlaying ? 0.0 : 0.26))
-                    )
-
-                    // 暂停态中央精致半透明状态徽章
-                    if !isPlaying && playbackState != .buffering {
-                        HStack(spacing: 6) {
-                            Image(systemName: "pause.fill")
-                                .font(DSTypography.caption.weight(.bold))
-                            Text("已暂停")
-                                .font(DSTypography.caption.weight(.semibold))
-                        }
-                        .foregroundStyle(.white.opacity(0.92))
-                        .padding(.horizontal, Spacing.s3)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule().fill(Color.black.opacity(0.58))
+                // 3. 专辑封面主体
+                DSCover(
+                    url: coverURL,
+                    title: bookTitle.isEmpty ? "有声书" : bookTitle,
+                    side: adaptiveSide,
+                    onImageLoaded: onImageLoaded
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(
+                            isPlaying ? Color.white.opacity(0.28) : Color.white.opacity(0.12),
+                            lineWidth: isPlaying ? 1.0 : 0.5
                         )
-                        .overlay(
-                            Capsule().strokeBorder(Color.white.opacity(0.24), lineWidth: 0.6)
-                        )
-                        .transition(.scale(scale: 0.88).combined(with: .opacity))
-                    }
-                }
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(Color.black.opacity(isPlaying ? 0.0 : 0.26))
+                )
                 .shadow(
                     color: isPlaying ? Color.black.opacity(0.52) : Color.black.opacity(0.30),
                     radius: isPlaying ? 26 : 14,

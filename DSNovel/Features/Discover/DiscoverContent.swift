@@ -99,6 +99,7 @@ struct DiscoverContent: View {
                             DSBookCard(
                                 model: model,
                                 side: side,
+                                usesSoftCoverShadow: true,
                                 onAction: { onSelectBook(ref) }
                             )
                         }

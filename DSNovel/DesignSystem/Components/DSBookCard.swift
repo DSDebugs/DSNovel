@@ -74,6 +74,7 @@ struct DSBookCard: View {
     let side: CGFloat
     let isEditing: Bool
     let isSelected: Bool
+    let usesSoftCoverShadow: Bool
     private let onAction: () -> Void
     private let onNarratorTap: ((String) -> Void)?
 
@@ -82,6 +83,7 @@ struct DSBookCard: View {
         side: CGFloat = 108,
         isEditing: Bool = false,
         isSelected: Bool = false,
+        usesSoftCoverShadow: Bool = false,
         onAction: @escaping () -> Void = {},
         onNarratorTap: ((String) -> Void)? = nil
     ) {
@@ -89,6 +91,7 @@ struct DSBookCard: View {
         self.side = side
         self.isEditing = isEditing
         self.isSelected = isSelected
+        self.usesSoftCoverShadow = usesSoftCoverShadow
         self.onAction = onAction
         self.onNarratorTap = onNarratorTap
     }
@@ -102,7 +105,9 @@ struct DSBookCard: View {
                             url: model.coverURL,
                             title: model.title,
                             side: side,
-                            badges: model.badges
+                            badges: model.badges,
+                            showsBorder: !usesSoftCoverShadow,
+                            showsSoftShadow: usesSoftCoverShadow
                         )
 
                         if isEditing {
@@ -126,8 +131,7 @@ struct DSBookCard: View {
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
-                        .frame(width: side)
-                        .frame(minHeight: 34, alignment: .topLeading)
+                        .frame(width: side, minHeight: 34, alignment: .topLeading)
                 }
                 .contentShape(Rectangle())
             }

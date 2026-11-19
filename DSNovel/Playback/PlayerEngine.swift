@@ -157,6 +157,7 @@ final class PlayerEngine {
 
     private(set) var bufferedRange: Double = 0
     private(set) var isPlayingLocalFile: Bool = false
+    private(set) var detectedAudioBitrateKbps: Int?
     var useFakeBackend: Bool = false
 
     var isBuffering: Bool {
@@ -192,14 +193,15 @@ final class PlayerEngine {
         return .fixedSingleBitrate
     }
 
-    /// 顶栏音质/离线状态徽标文案
+    /// 顶栏音质徽标文案（统一展示当前播放音频的实际音质，不再显示「音源原画」或「本地离线」）
     var streamStatusBadgeText: String {
         switch currentAudioQualitySupportMode {
-        case .localOffline:
-            return "本地离线"
-        case .fixedSingleBitrate:
-            return "音源原画"
         case .multiBitrate:
+            return audioQualityTier.effectiveBadgeText(isOnWiFi: DownloadManager.shared.isOnWiFi)
+        case .fixedSingleBitrate, .localOffline:
+            if let kbps = detectedAudioBitrateKbps, kbps > 0 {
+                return AudioQualityTier.badgeText(forDetectedBitrateKbps: kbps)
+            }
             return audioQualityTier.effectiveBadgeText(isOnWiFi: DownloadManager.shared.isOnWiFi)
         }
     }
@@ -507,6 +509,7 @@ final class PlayerEngine {
         loadedItem = nil
         isCurrentItemReady = false
         isPlayingLocalFile = false
+        detectedAudioBitrateKbps = nil
         bufferedRange = 0
         pendingSeekSec = startSec > 0.5 ? startSec : nil
         lastPersistedTime = startSec
@@ -812,6 +815,7 @@ final class PlayerEngine {
 
             loadedItem = item
             isPlayingLocalFile = usingLocal
+            detectedAudioBitrateKbps = nil
             observePlayerItem(item, chapter: chapter, initialPositionMs: initialPositionMs, generation: generation)
             player.replaceCurrentItem(with: item)
             applyEffectiveAudioSettings()
@@ -843,6 +847,32 @@ final class PlayerEngine {
                 await loadAndPlay(chapter: chapter, initialPositionMs: initialPositionMs, generation: generation)
             } else {
                 state = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    /// 异步读取当前 AVPlayerItem 音轨实际码率（支持固定单码率流与本地离线音频）
+    private func inspectActualAudioBitrate(for item: AVPlayerItem, generation: UInt64) {
+        Task { [weak self] in
+            var measuredBps: Double = 0
+            if let tracks = try? await item.asset.loadTracks(withMediaType: .audio),
+               let firstTrack = tracks.first,
+               let dataRate = try? await firstTrack.load(.estimatedDataRate),
+               dataRate.isFinite, dataRate > 0 {
+                measuredBps = Double(dataRate)
+            }
+            if measuredBps <= 0, let lastEvent = item.accessLog()?.events.last {
+                if lastEvent.indicatedBitrate.isFinite && lastEvent.indicatedBitrate > 0 {
+                    measuredBps = lastEvent.indicatedBitrate
+                } else if lastEvent.observedBitrate.isFinite && lastEvent.observedBitrate > 0 {
+                    measuredBps = lastEvent.observedBitrate
+                }
+            }
+            let kbps = Int((measuredBps / 1000.0).rounded())
+            guard kbps > 0 else { return }
+            await MainActor.run { [weak self] in
+                guard let self, generation == self.playbackGeneration else { return }
+                self.detectedAudioBitrateKbps = kbps
             }
         }
     }
@@ -889,6 +919,7 @@ final class PlayerEngine {
                         self.clock.durationSec = itemDurationSec
                     }
                     self.applyEffectiveAudioSettings()
+                    self.inspectActualAudioBitrate(for: loaded, generation: generation)
                     self.schedulePrecache(generation: generation)
                     if let seekSec = self.pendingSeekSec, seekSec > 0 {
                         self.clock.currentTimeSec = seekSec

@@ -2,7 +2,6 @@ import SwiftUI
 
 struct DiscoverHeaderBar: View {
     let currentSourceName: String
-    let sourceTwoCharBadge: String
     @Binding var searchKeyword: String
     let isSearchActive: Bool
     @Binding var layoutStyle: DiscoverLayoutStyle
@@ -21,7 +20,6 @@ struct DiscoverHeaderBar: View {
 
     init(
         currentSourceName: String,
-        sourceTwoCharBadge: String,
         searchKeyword: Binding<String>,
         isSearchActive: Bool,
         layoutStyle: Binding<DiscoverLayoutStyle>,
@@ -38,7 +36,6 @@ struct DiscoverHeaderBar: View {
         onSelectTab: @escaping (Int) -> Void
     ) {
         self.currentSourceName = currentSourceName
-        self.sourceTwoCharBadge = sourceTwoCharBadge
         self._searchKeyword = searchKeyword
         self.isSearchActive = isSearchActive
         self._layoutStyle = layoutStyle
@@ -67,12 +64,7 @@ struct DiscoverHeaderBar: View {
         VStack(spacing: 6) {
             HStack(spacing: 10) {
                 Button(action: onOpenSourcePicker) {
-                    Text(sourceTwoCharBadge)
-                        .font(DSTypography.caption.weight(.bold))
-                        .foregroundStyle(Color.dsAccent)
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(Color.dsAccent.opacity(0.12)))
-                        .overlay(Circle().strokeBorder(Color.dsAccent.opacity(0.65), lineWidth: 1.5))
+                    DSSourceAvatar(name: currentSourceName, size: 38)
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Circle())
                 }
@@ -123,6 +115,8 @@ struct DiscoverHeaderBar: View {
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Circle())
                 }
+                .tint(.primary)
+                .buttonStyle(.plain)
                 .accessibilityLabel("切换视图")
                 .accessibilityIdentifier("discover.layoutSwitcher")
             }
@@ -161,11 +155,13 @@ struct DiscoverHeaderBar: View {
                         Image(systemName: "chevron.down")
                             .font(DSTypography.caption2.weight(.semibold))
                     }
-                    .foregroundStyle(Color.dsOnAccent)
+                    .foregroundStyle(Color.dsAccent)
                     .padding(.horizontal, Spacing.s3)
                     .frame(height: 32)
-                    .background(Capsule().fill(Color.dsAccent))
+                    .background(Capsule().fill(Color.dsAccent.opacity(0.14)))
                 }
+                .tint(Color.dsAccent)
+                .buttonStyle(.plain)
                 .padding(.leading, Spacing.pageHorizontal)
 
                 Divider()
@@ -177,7 +173,8 @@ struct DiscoverHeaderBar: View {
                         get: { selectedTabIndex },
                         set: { onSelectTab($0) }
                     ),
-                    isCompact: true
+                    isCompact: true,
+                    leadingPadding: Spacing.s1
                 )
             }
         } else if sectionChips.count > 1 {

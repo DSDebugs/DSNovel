@@ -37,10 +37,14 @@ struct DSSourceAvatar: View {
         self.size = size
     }
 
-    private var initialText: String {
+    static func initialCharacter(for name: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let first = trimmed.first else { return "源" }
         return String(first)
+    }
+
+    private var initialText: String {
+        Self.initialCharacter(for: name)
     }
 
     var body: some View {

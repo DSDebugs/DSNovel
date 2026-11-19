@@ -20,6 +20,7 @@ struct DSChipBar<ID: Hashable>: View {
     let items: [DSChipItem<ID>]
     @Binding var selection: ID
     let isCompact: Bool
+    let leadingPadding: CGFloat
     private let trailingActionTitle: String?
     private let onTrailingAction: (() -> Void)?
 
@@ -27,12 +28,14 @@ struct DSChipBar<ID: Hashable>: View {
         items: [DSChipItem<ID>],
         selection: Binding<ID>,
         isCompact: Bool = false,
+        leadingPadding: CGFloat = Spacing.pageHorizontal,
         trailingActionTitle: String? = nil,
         onTrailingAction: (() -> Void)? = nil
     ) {
         self.items = items
         self._selection = selection
         self.isCompact = isCompact
+        self.leadingPadding = leadingPadding
         self.trailingActionTitle = trailingActionTitle
         self.onTrailingAction = onTrailingAction
     }
@@ -75,7 +78,8 @@ struct DSChipBar<ID: Hashable>: View {
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, Spacing.pageHorizontal)
+                    .padding(.leading, leadingPadding)
+                    .padding(.trailing, Spacing.pageHorizontal)
                 }
             }
         }

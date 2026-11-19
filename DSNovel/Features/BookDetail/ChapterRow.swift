@@ -41,7 +41,7 @@ struct ChapterRow: View, Equatable {
         HStack(spacing: Spacing.s3) {
             Button(action: onSelect) {
                 HStack(spacing: Spacing.s3) {
-                    ZStack {
+                    ZStack(alignment: .leading) {
                         if snapshot.isCurrentPlayingChapter {
                             DSEqualizer(isPlaying: snapshot.isEnginePlaying)
                         } else if snapshot.isFinished {
@@ -51,17 +51,17 @@ struct ChapterRow: View, Equatable {
                         } else {
                             Text(verbatim: "\(snapshot.displayIndex)")
                                 .font(DSTypography.numericCaption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.tertiary)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.72)
                         }
                     }
-                    .frame(minWidth: 34)
+                    .frame(width: Self.indexColumnWidth, alignment: .leading)
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: Spacing.s1) {
-                            Text(snapshot.chapter.title)
-                                .font(DSTypography.body.weight(snapshot.isCurrentPlayingChapter ? .semibold : .regular))
+                            Text(snapshot.displayTitle)
+                                .font(Font.callout.weight(snapshot.isCurrentPlayingChapter ? .semibold : .regular))
                                 .foregroundStyle(
                                     snapshot.isCurrentPlayingChapter
                                         ? Color.dsAccent
@@ -90,21 +90,37 @@ struct ChapterRow: View, Equatable {
 
             Button(action: onDownloadAction) {
                 downloadStatusIcon
-                    .frame(width: 44, height: 44)
+                    .frame(width: 40, height: 40)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(snapshot.isDeleting)
             .accessibilityLabel(downloadButtonAccessibilityLabel)
         }
-        .padding(.horizontal, Spacing.pageHorizontal)
-        .padding(.vertical, 11)
-        .background(
-            snapshot.isCurrentPlayingChapter
-                ? Color.dsAccent.opacity(0.08)
-                : Color.clear
-        )
+        .padding(.leading, Spacing.pageHorizontal)
+        .padding(.trailing, Spacing.s2)
+        .padding(.vertical, Spacing.s2)
+        .frame(minHeight: 58)
+        .background {
+            // 当前播放行：内缩圆角高亮，而不是通栏色块
+            if snapshot.isCurrentPlayingChapter {
+                RoundedRectangle(cornerRadius: Radius.input, style: .continuous)
+                    .fill(Color.dsAccent.opacity(0.08))
+                    .padding(.horizontal, Spacing.s2)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            // 细分隔线，从标题左缘开始，不穿过序号列
+            if !snapshot.isCurrentPlayingChapter {
+                Rectangle()
+                    .fill(Color.dsSeparator.opacity(0.5))
+                    .frame(height: 0.5)
+                    .padding(.leading, Spacing.pageHorizontal + Self.indexColumnWidth + Spacing.s3)
+            }
+        }
     }
+
+    private static let indexColumnWidth: CGFloat = 30
 
     @ViewBuilder
     private func staticSubtitleRow(text: String) -> some View {
@@ -153,8 +169,8 @@ struct ChapterRow: View, Equatable {
             switch snapshot.downloadState {
             case .notDownloaded:
                 Image(systemName: "arrow.down.circle")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+                    .font(.title3)
+                    .foregroundStyle(.tertiary)
             case .downloading(let p):
                 DSProgress(value: p, style: .ring(size: 20, lineWidth: 2.2))
             case .completed:

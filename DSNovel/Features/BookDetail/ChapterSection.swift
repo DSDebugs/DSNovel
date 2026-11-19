@@ -99,8 +99,6 @@ struct ChapterSection: View {
 
             if isShowingDownloadedOnly {
                 downloadedStatusBanners
-            } else if downloadedCount > 0 && searchKeyword.isEmpty {
-                prioritizedDownloadedQuickBanner
             }
 
             if snapshots.isEmpty {
@@ -183,7 +181,7 @@ struct ChapterSection: View {
                 .font(DSTypography.sectionHeader)
                 .foregroundStyle(.primary)
 
-            Text(isShowingDownloadedOnly ? "共 \(downloadedCount) 章" : "共 \(totalCount) 章")
+            Text(isShowingDownloadedOnly ? "\(downloadedCount) 章" : "\(totalCount) 章")
                 .font(DSTypography.numericFootnote)
                 .foregroundStyle(.secondary)
 
@@ -193,15 +191,11 @@ struct ChapterSection: View {
                 DSHapticPolicy.fire(.selection)
                 isAscending.toggle()
             } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.up.arrow.down")
-                    Text(isAscending ? "正序" : "倒序")
-                }
-                .font(DSTypography.caption.weight(.medium))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, Spacing.s2)
-                .frame(height: 32)
-                .background(Capsule().fill(Color.dsSurfaceGrouped))
+                Image(systemName: "arrow.up.arrow.down")
+                    .font(DSTypography.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(Color.dsSurfaceGrouped))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("切换正序倒序，当前为\(isAscending ? "正序" : "倒序")")
@@ -216,7 +210,7 @@ struct ChapterSection: View {
                 Image(systemName: "magnifyingglass")
                     .font(DSTypography.caption.weight(.semibold))
                     .foregroundStyle(showInlineSearch ? Color.dsAccent : .primary)
-                    .frame(width: 34, height: 32)
+                    .frame(width: 34, height: 34)
                     .background(
                         Circle().fill(showInlineSearch ? Color.dsAccent.opacity(0.15) : Color.dsSurfaceGrouped)
                     )
@@ -231,8 +225,8 @@ struct ChapterSection: View {
                 }
                 .font(DSTypography.caption.weight(.semibold))
                 .foregroundStyle(Color.dsAccent)
-                .padding(.horizontal, Spacing.s2)
-                .frame(height: 32)
+                .padding(.horizontal, Spacing.s3)
+                .frame(height: 34)
                 .background(Capsule().fill(Color.dsAccent.opacity(0.14)))
             }
             .buttonStyle(.plain)
@@ -244,125 +238,80 @@ struct ChapterSection: View {
     // MARK: - 2. 「已下载章节」与「全部章节分段」双模切换栏
 
     private var modeAndSegmentControlRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.s2) {
-                // 选项 1：已下载章节（优先首项入口，再次点击关闭回到已选的全部章节）
-                Button {
-                    DSHapticPolicy.fire(.selection)
-                    withAnimation(Motion.snappy) {
-                        isShowingDownloadedOnly.toggle()
+        HStack(spacing: Spacing.s3) {
+            modeSegmentedControl
+
+            // 区间菜单只在「全部」模式下出现；「已下载」模式下换成清空入口
+            if !isShowingDownloadedOnly, segments.count > 1 {
+                BookChapterSegmentMenu(
+                    segments: segments,
+                    selectedSegmentIndex: selectedSegmentIndex,
+                    onSelectSegment: { idx in
+                        DSHapticPolicy.fire(.selection)
+                        withAnimation(Motion.snappy) {
+                            selectedSegmentIndex = idx
+                        }
                     }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: isShowingDownloadedOnly ? "checkmark.circle.fill" : "arrow.down.circle")
-                            .font(DSTypography.caption)
-                        Text(downloadedCount > 0 ? "已下载章节 · \(downloadedCount)" : "已下载章节")
-                            .font(DSTypography.caption.weight(.semibold))
+                )
+                .equatable()
+            }
+
+            if isShowingDownloadedOnly && downloadedCount > 0 {
+                Button(role: .destructive, action: onClearAllDownloads) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash")
+                        Text("清空已下")
                     }
-                    .foregroundStyle(isShowingDownloadedOnly ? Color.dsOnAccent : .primary)
+                    .font(DSTypography.caption.weight(.medium))
+                    .foregroundStyle(.red)
                     .padding(.horizontal, Spacing.s3)
-                    .padding(.vertical, 7)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(isShowingDownloadedOnly ? Color.dsAccent : Color.dsSurfaceGrouped)
-                    )
+                    .frame(height: 34)
+                    .background(Capsule().fill(Color.red.opacity(0.12)))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("已下载章节，共 \(downloadedCount) 章")
-
-                // 选项 2：全部章节与百章区间菜单（Equatable 隔离，防止播放时闪烁）
-                if segments.count > 1 {
-                    BookChapterSegmentMenu(
-                        segments: segments,
-                        selectedSegmentIndex: selectedSegmentIndex,
-                        isShowingDownloadedOnly: isShowingDownloadedOnly,
-                        downloadedCount: downloadedCount,
-                        onSelectDownloadedOnly: {
-                            DSHapticPolicy.fire(.selection)
-                            withAnimation(Motion.snappy) {
-                                isShowingDownloadedOnly = true
-                            }
-                        },
-                        onSelectSegment: { idx in
-                            DSHapticPolicy.fire(.selection)
-                            withAnimation(Motion.snappy) {
-                                isShowingDownloadedOnly = false
-                                selectedSegmentIndex = idx
-                            }
-                        }
-                    )
-                    .equatable()
-                } else {
-                    Button {
-                        DSHapticPolicy.fire(.selection)
-                        isShowingDownloadedOnly = false
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "list.bullet")
-                                .font(DSTypography.caption)
-                            Text("全部章节 · \(totalCount)")
-                                .font(DSTypography.numericCaption.weight(.semibold))
-                        }
-                        .foregroundStyle(!isShowingDownloadedOnly ? Color.dsOnAccent : .primary)
-                        .padding(.horizontal, Spacing.s3)
-                        .padding(.vertical, 7)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(!isShowingDownloadedOnly ? Color.dsAccent : Color.dsSurfaceGrouped)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if isShowingDownloadedOnly && downloadedCount > 0 {
-                    Button(role: .destructive, action: onClearAllDownloads) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "trash")
-                            Text("清空已下")
-                        }
-                        .font(DSTypography.caption.weight(.medium))
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, Spacing.s3)
-                        .padding(.vertical, 7)
-                        .background(Capsule().fill(Color.red.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                }
             }
-            .padding(.horizontal, Spacing.pageHorizontal)
+
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, Spacing.pageHorizontal)
     }
 
-    // MARK: - 3. 优先展示已下载章节提示条与状态反馈横幅
-
-    @ViewBuilder
-    private var prioritizedDownloadedQuickBanner: some View {
-        Button {
-            DSHapticPolicy.fire(.selection)
-            isShowingDownloadedOnly = true
-        } label: {
-            HStack(spacing: Spacing.s2) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("本书已有 \(downloadedCount) 章离线音频（\(downloadedBytesText)），点击优先展示已下载章节")
-                    .font(DSTypography.caption.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Text("查看 ›")
-                    .font(DSTypography.caption.weight(.semibold))
-                    .foregroundStyle(Color.dsAccent)
+    /// 「全部 | 已下载」分段控件：只表达筛选模式，区间另由菜单负责
+    private var modeSegmentedControl: some View {
+        HStack(spacing: 0) {
+            modeSegment(title: "全部", isSelected: !isShowingDownloadedOnly) {
+                isShowingDownloadedOnly = false
             }
-            .padding(.horizontal, Spacing.s3)
-            .padding(.vertical, Spacing.s2)
-            .background(
-                RoundedRectangle(cornerRadius: Radius.input, style: .continuous)
-                    .fill(Color.green.opacity(0.10))
-            )
-            .padding(.horizontal, Spacing.pageHorizontal)
+            modeSegment(
+                title: downloadedCount > 0 ? "已下载 \(downloadedCount)" : "已下载",
+                isSelected: isShowingDownloadedOnly
+            ) {
+                isShowingDownloadedOnly = true
+            }
+            .accessibilityLabel("已下载章节，共 \(downloadedCount) 章")
+        }
+        .padding(3)
+        .background(Capsule(style: .continuous).fill(Color.dsSurfaceGrouped))
+    }
+
+    private func modeSegment(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            guard !isSelected else { return }
+            DSHapticPolicy.fire(.selection)
+            withAnimation(Motion.snappy) { action() }
+        } label: {
+            Text(verbatim: title)
+                .font(DSTypography.numericCaption.weight(.semibold))
+                .foregroundStyle(isSelected ? Color.dsOnAccent : .primary)
+                .padding(.horizontal, Spacing.s4)
+                .frame(height: 28)
+                .background(Capsule(style: .continuous).fill(isSelected ? Color.dsAccent : Color.clear))
+                .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
     }
+
+    // MARK: - 3. 优先展示已下载章节提示条与状态反馈横幅
 
     @ViewBuilder
     private var downloadedStatusBanners: some View {
@@ -478,38 +427,22 @@ struct ChapterSection: View {
 private struct BookChapterSegmentMenu: View, Equatable {
     let segments: [ChapterSegmentItem]
     let selectedSegmentIndex: Int
-    let isShowingDownloadedOnly: Bool
-    let downloadedCount: Int
-    let onSelectDownloadedOnly: () -> Void
     let onSelectSegment: (Int) -> Void
 
     static func == (lhs: BookChapterSegmentMenu, rhs: BookChapterSegmentMenu) -> Bool {
         lhs.segments == rhs.segments
             && lhs.selectedSegmentIndex == rhs.selectedSegmentIndex
-            && lhs.isShowingDownloadedOnly == rhs.isShowingDownloadedOnly
-            && lhs.downloadedCount == rhs.downloadedCount
     }
 
     var body: some View {
         Menu {
-            Button(action: onSelectDownloadedOnly) {
-                HStack {
-                    Text("已下载章节（\(downloadedCount) 章）")
-                    if isShowingDownloadedOnly {
-                        Image(systemName: "checkmark")
-                    }
-                }
-            }
-
-            Divider()
-
             ForEach(Array(segments.enumerated()), id: \.offset) { idx, seg in
                 Button {
                     onSelectSegment(idx)
                 } label: {
                     HStack {
                         Text("第 \(seg.label) 章")
-                        if !isShowingDownloadedOnly && idx == selectedSegmentIndex {
+                        if idx == selectedSegmentIndex {
                             Image(systemName: "checkmark")
                         }
                     }
@@ -520,20 +453,15 @@ private struct BookChapterSegmentMenu: View, Equatable {
                 ? segments[selectedSegmentIndex].label
                 : "1–100"
             HStack(spacing: 4) {
-                Image(systemName: "list.number")
-                    .font(DSTypography.caption)
-                Text(isShowingDownloadedOnly ? "全部章节 (\(segLabel))" : "全部 · 第 \(segLabel) 章")
+                Text("第 \(segLabel) 章")
                     .font(DSTypography.numericCaption.weight(.semibold))
                 Image(systemName: "chevron.down")
-                    .font(DSTypography.caption2)
+                    .font(DSTypography.caption2.weight(.semibold))
             }
-            .foregroundStyle(!isShowingDownloadedOnly ? Color.dsOnAccent : .primary)
+            .foregroundStyle(.primary)
             .padding(.horizontal, Spacing.s3)
-            .padding(.vertical, 7)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(!isShowingDownloadedOnly ? Color.dsAccent : Color.dsSurfaceGrouped)
-            )
+            .frame(height: 34)
+            .background(Capsule(style: .continuous).fill(Color.dsSurfaceGrouped))
         }
         .accessibilityLabel("切换章节区间")
     }
