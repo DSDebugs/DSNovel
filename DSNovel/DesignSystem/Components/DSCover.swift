@@ -18,7 +18,6 @@ enum DSCoverBadge: Equatable, Hashable, Sendable {
 }
 
 struct DSCover: View {
-    @Environment(\.dsReduceMotion) private var reduceMotion
     let url: String
     let title: String
     let side: CGFloat
@@ -29,7 +28,6 @@ struct DSCover: View {
 
     @State private var loadedImage: UIImage?
     @State private var loadedURL: String = ""
-    @State private var animateAppearance = false
 
     init(
         url: String,
@@ -95,17 +93,14 @@ struct DSCover: View {
             }
             if loadedURL != url {
                 loadedImage = nil
-                animateAppearance = false
             }
             if let fetched = await CoverImagePipeline.shared.image(
                 for: url,
                 targetSize: CGSize(width: side, height: side)
             ) {
+                guard !Task.isCancelled else { return }
                 loadedImage = fetched
                 loadedURL = url
-                withAnimation(Motion.resolve(.easeOut(duration: 0.25), reduce: reduceMotion)) {
-                    animateAppearance = true
-                }
                 onImageLoaded?(fetched)
             }
         }

@@ -21,8 +21,3 @@ enum DSSpacing {
     static let xl: CGFloat = Spacing.s6
 }
 
-enum DominantColorExtractor {
-    static func extractPrimaryColor(from image: UIImage, cacheKey: String) -> Color {
-        CoverAmbientColor.color(from: image, cacheKey: cacheKey)
-    }
-}

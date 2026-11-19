@@ -15,7 +15,14 @@ import SwiftData
 ///   不改动 JS 运行时与插件协议。
 enum BundledSourceSeeder {
     /// 换了内置书源包内容时，把版本号 +1 即可让老用户重新安装一次
-    private static let seededKey = "bundled.sources.seeded.ShunAudiobookPro.v4"
+    ///
+    /// v5（包内 5.6.5）：**移除番茄畅听源**（fanqie.js）。原因：该源内容实为
+    /// 听友/云图/喜马多平台聚合壳，且其"番茄官方分类"入口产出的书无法打开；
+    /// 番茄相关需求改由「喜马拉雅内置解析」承担。升级到 v5 后：
+    /// - installPackage 会整体清空并重建包目录 → 旧 fanqie.js 从磁盘移除；
+    /// - 本文件的 applyInstalledMetas 会删除本包中已不再提供的书源记录（含番茄）；
+    /// - 若「当前发现书源」指向被移除的源，会自动回退到第一个可用发现源。
+    private static let seededKey = "bundled.sources.seeded.ShunAudiobookPro.v5"
     private static let resourceName = "ShunAudiobookPro-v5.6"
     private static let resourceExt = "zip"
 
@@ -113,7 +120,9 @@ enum BundledSourceSeeder {
         // 内置包升级后，移除本包下已不再提供的旧源记录（例如从内置源中剔除的书源），
         // 避免书源管理里残留无法路由/调用的幽灵条目。只清理同 packageID，绝不误伤用户自导入的源。
         let validIDs = Set(metas.map(\.id))
+        var removedStaleIDs = Set<String>()
         for stale in existingPlugins where stale.packageID == preview.packageID && !validIDs.contains(stale.id) {
+            removedStaleIDs.insert(stale.id)
             modelContext.delete(stale)
         }
 
@@ -121,8 +130,8 @@ enum BundledSourceSeeder {
 
         let settings = AppSettingsStore.shared
         let currentDiscover = settings.currentDiscoverSourceID
-        // 当前发现源为空、或指向已被移除的旧源时，回退到第一个可用的发现源
-        if (currentDiscover.isEmpty || !validIDs.contains(currentDiscover)),
+        // M-05 修复：仅在当前发现源为空、或恰好指向本内置包已移除的旧源时回退，绝不覆盖用户自选的其他书源
+        if (currentDiscover.isEmpty || removedStaleIDs.contains(currentDiscover)),
            let firstDiscover = metas.first(where: { $0.discoverable && $0.enabledByDefault }) {
             settings.currentDiscoverSourceID = firstDiscover.id
         }

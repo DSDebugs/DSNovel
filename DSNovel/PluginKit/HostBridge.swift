@@ -409,13 +409,26 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
     (function(){if(!window.__tsClicked){window.__tsClicked=1;var b=document.querySelector('.jp-play,.aplayer-play,.aplayer-button,.vjs-play-control,#play,.play-btn,.btn-play,.playbtn');if(b){try{b.click();}catch(e){}}}var m=document.querySelector('audio,video');if(!m)return '';try{m.muted=true;m.play();}catch(e){}return m.currentSrc||m.src||'';})();
     """
 
+    private let windowStateLock = NSLock()
+    private var cachedHasWindow = true
+
+    func refreshWindowAvailability() {
+        DispatchQueue.main.async { [weak self] in
+            let available = !UIApplication.shared.connectedScenes.isEmpty
+            self?.windowStateLock.lock()
+            self?.cachedHasWindow = available
+            self?.windowStateLock.unlock()
+        }
+    }
+
+    /// P-15 修复：消除后台线程 DispatchQueue.main.sync 死锁风险，改用异步刷新的缓存状态
     var canUseWebView: Bool {
         if Thread.isMainThread { return false }
-        var hasWindow = false
-        DispatchQueue.main.sync {
-            hasWindow = !UIApplication.shared.connectedScenes.isEmpty
-        }
-        return hasWindow
+        refreshWindowAvailability()
+        windowStateLock.lock()
+        let available = cachedHasWindow
+        windowStateLock.unlock()
+        return available
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -689,14 +702,43 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
                       cacheNamespace: nil)
     }
 
-    /// 内置解析专用：pref 走 parser_pref_ 前缀、缓存走 Parser/<parserID> 命名空间、日志进解析日志缓冲
-    static func installParserNative(into ctx: JSContext, parserID: String, parserName: String) {
+    private static func errorEnvelope(_ message: String) -> String {
+        let payload: [String: Any] = ["e": message]
+        if let data = try? JSONSerialization.data(withJSONObject: payload),
+           let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        return "{\"e\":\"request blocked\"}"
+    }
+
+    /// 校验目标 URL 是否落在允许的域名白名单内（精确本域或 `.domain` 子域；H-06）
+    private static func isHostAllowed(_ urlString: String, allowedHosts: [String], extraHosts: [String] = []) -> Bool {
+        guard let host = URL(string: urlString)?.host?.lowercased(), !host.isEmpty else { return false }
+        let combined = allowedHosts + extraHosts
+        if combined.isEmpty { return false }
+        return combined.contains { raw in
+            let p = raw.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            guard !p.isEmpty else { return false }
+            return host == p || host.hasSuffix("." + p)
+        }
+    }
+
+    /// 内置解析专用：pref 走 Keychain(parser_pref_)、缓存走 Parser/<parserID>、日志进解析日志缓冲、按声明域名收敛权限（H-06）
+    static func installParserNative(
+        into ctx: JSContext,
+        parserID: String,
+        parserName: String,
+        allowedHosts: [String] = [],
+        allowNetwork: Bool = true
+    ) {
         installNative(into: ctx,
                       ownerID: parserID,
                       ownerName: parserName,
                       prefPrefix: "parser_pref_",
                       parserLogID: parserID,
-                      cacheNamespace: "Parser/\(parserID)")
+                      cacheNamespace: "Parser/\(parserID)",
+                      allowedHosts: allowedHosts,
+                      allowNetwork: allowNetwork)
     }
 
     private static func installNative(
@@ -705,12 +747,16 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
         ownerName: String,
         prefPrefix: String,
         parserLogID: String?,
-        cacheNamespace: String?
+        cacheNamespace: String?,
+        allowedHosts: [String]? = nil,
+        allowNetwork: Bool = true
     ) {
         let helper = JsHostBridge(packageID: ownerID, sourceId: ownerID, sourceName: ownerName)
         helper.prefPrefix = prefPrefix
         helper.parserLogID = parserLogID
         helper.cacheNamespace = cacheNamespace
+        let isParserMode = (parserLogID != nil)
+        let extraNetworkHosts = isParserMode ? ["raw.githubusercontent.com"] : []
 
         let nUserAgent: @convention(block) (Bool) -> String = { desktop in
             desktop ? Self.desktopUA : Self.mobileUA
@@ -719,42 +765,93 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
             Self.mobileUA
         }
         let nRequest: @convention(block) (String, JSValue) -> String = { url, opts in
-            helper.performRequest(url, optionsJson: Self.optionalString(from: opts))
+            if !allowNetwork {
+                return Self.errorEnvelope("预览校验阶段禁止网络请求")
+            }
+            if let allowedHosts, !allowedHosts.isEmpty,
+               !Self.isHostAllowed(url, allowedHosts: allowedHosts, extraHosts: extraNetworkHosts) {
+                return Self.errorEnvelope("内置解析器禁止访问未声明域名：\(url)")
+            }
+            return helper.performRequest(url, optionsJson: Self.optionalString(from: opts))
         }
         let nRequestAll: @convention(block) (String, JSValue, Int) -> String = { urlsJson, opts, concurrency in
-            helper.performRequestAll(urlsJson, optionsJson: Self.optionalString(from: opts), concurrency: concurrency)
+            if !allowNetwork {
+                return Self.errorEnvelope("预览校验阶段禁止网络请求")
+            }
+            return helper.performRequestAll(urlsJson, optionsJson: Self.optionalString(from: opts), concurrency: concurrency)
         }
         let nFinalUrl: @convention(block) (String, JSValue) -> String = { url, opts in
-            helper.performFinalUrl(url, optionsJson: Self.optionalString(from: opts))
+            if !allowNetwork {
+                return Self.errorEnvelope("预览校验阶段禁止网络请求")
+            }
+            if let allowedHosts, !allowedHosts.isEmpty,
+               !Self.isHostAllowed(url, allowedHosts: allowedHosts, extraHosts: extraNetworkHosts) {
+                return Self.errorEnvelope("内置解析器禁止访问未声明域名：\(url)")
+            }
+            return helper.performFinalUrl(url, optionsJson: Self.optionalString(from: opts))
         }
         let nStatus: @convention(block) (String, JSValue) -> String = { url, opts in
-            helper.performStatus(url, optionsJson: Self.optionalString(from: opts))
+            if !allowNetwork {
+                return Self.errorEnvelope("预览校验阶段禁止网络请求")
+            }
+            if let allowedHosts, !allowedHosts.isEmpty,
+               !Self.isHostAllowed(url, allowedHosts: allowedHosts, extraHosts: extraNetworkHosts) {
+                return Self.errorEnvelope("内置解析器禁止访问未声明域名：\(url)")
+            }
+            return helper.performStatus(url, optionsJson: Self.optionalString(from: opts))
         }
         let nFetch: @convention(block) (String, JSValue) -> String = { url, opts in
-            helper.performFetch(url, optionsJson: Self.optionalString(from: opts))
+            if !allowNetwork {
+                return Self.errorEnvelope("预览校验阶段禁止网络请求")
+            }
+            if let allowedHosts, !allowedHosts.isEmpty,
+               !Self.isHostAllowed(url, allowedHosts: allowedHosts, extraHosts: extraNetworkHosts) {
+                return Self.errorEnvelope("内置解析器禁止访问未声明域名：\(url)")
+            }
+            return helper.performFetch(url, optionsJson: Self.optionalString(from: opts))
         }
         let nParseHtml: @convention(block) (String, JSValue) -> JsElement = { html, baseVal in
             let base = Self.optionalString(from: baseVal) ?? ""
             return JsElement.parse(html: html, baseURL: base)
         }
         let nRender: @convention(block) (String, JSValue, JSValue) -> String = { url, opts, parseFn in
-            helper.performRender(url, optionsJson: Self.optionalString(from: opts), parseFn: parseFn)
+            if !allowNetwork {
+                return Self.errorEnvelope("预览校验阶段禁止网络请求")
+            }
+            return helper.performRender(url, optionsJson: Self.optionalString(from: opts), parseFn: parseFn)
         }
         let nSniff: @convention(block) (String, JSValue, JSValue) -> String = { url, opts, validateFn in
-            helper.performSniff(url, optionsJson: Self.optionalString(from: opts), validateFn: validateFn)
+            if !allowNetwork {
+                return Self.errorEnvelope("预览校验阶段禁止网络请求")
+            }
+            return helper.performSniff(url, optionsJson: Self.optionalString(from: opts), validateFn: validateFn)
         }
         let nCookies: @convention(block) (String) -> String = { url in
-            helper.cookies(url)
+            if !allowNetwork { return "" }
+            if let allowedHosts, !allowedHosts.isEmpty,
+               !Self.isHostAllowed(url, allowedHosts: allowedHosts) {
+                return ""
+            }
+            return helper.cookies(url)
         }
         let nGetPref: @convention(block) (String) -> Any = { fullKey in
-            if let val = UserDefaults.standard.string(forKey: "\(prefPrefix)\(fullKey)") {
+            let storageKey = "\(prefPrefix)\(fullKey)"
+            if prefPrefix == "parser_pref_" {
+                return BuiltinParserKeychain.string(forKey: storageKey) ?? NSNull()
+            }
+            if let val = UserDefaults.standard.string(forKey: storageKey) {
                 return val
             }
             return NSNull()
         }
         let nSetPref: @convention(block) (String, JSValue) -> Void = { fullKey, val in
             let storageKey = "\(prefPrefix)\(fullKey)"
-            if let s = Self.optionalString(from: val) {
+            let strVal = Self.optionalString(from: val)
+            if prefPrefix == "parser_pref_" {
+                BuiltinParserKeychain.set(strVal, forKey: storageKey)
+                return
+            }
+            if let s = strVal {
                 UserDefaults.standard.set(s, forKey: storageKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: storageKey)
@@ -768,7 +865,8 @@ final class HeadlessWebViewService: NSObject, WKNavigationDelegate, WKScriptMess
         }
         let nProgress: @convention(block) (String, JSValue) -> Void = { _, _ in }
         let nSleep: @convention(block) (Int) -> Any = { ms in
-            let clamped = min(max(ms, 0), 5000)
+            let maxMs = isParserMode ? 500 : 5000
+            let clamped = min(max(ms, 0), maxMs)
             if clamped > 0 {
                 Thread.sleep(forTimeInterval: Double(clamped) / 1000.0)
             }

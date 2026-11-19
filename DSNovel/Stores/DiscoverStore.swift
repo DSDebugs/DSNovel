@@ -302,11 +302,12 @@ final class DiscoverStore {
         guard !isLoadingInitial, !isLoadingMore,
               let nextURL = nextPageBySlot[slot], !nextURL.isEmpty else { return }
         let items = booksBySlot[slot] ?? []
-        if let currentItemID,
+        if let currentItemID, !currentItemID.isEmpty,
            let idx = items.firstIndex(where: { $0.id == currentItemID }),
            idx < max(0, items.count - 6) {
             return
         }
+        let gen = loadGeneration
         isLoadingMore = true
         loadMoreFailed = false
         let nextPageNum = (currentPageNumBySlot[slot] ?? 1) + 1
@@ -317,16 +318,27 @@ final class DiscoverStore {
             } else {
                 page = try await PluginRuntime.shared.discoverList(sourceID: slot.sourceID, tabURL: nextURL)
             }
+            guard !Task.isCancelled, loadGeneration == gen, currentSlotKey == slot else {
+                isLoadingMore = false
+                return
+            }
             var merged = booksBySlot[slot] ?? []
+            let oldCount = merged.count
             let existingIDs = Set(merged.map(\.id))
             for b in page.books where !existingIDs.contains(b.id) {
                 merged.append(b)
             }
             booksBySlot[slot] = merged
-            nextPageBySlot[slot] = page.nextPageURL
+            // 若远端返回空页或全重复页无增量，收敛 nextPageURL 防止空转卡死
+            let hasNewBooks = merged.count > oldCount
+            nextPageBySlot[slot] = hasNewBooks ? page.nextPageURL : nil
             currentPageNumBySlot[slot] = nextPageNum
             isLoadingMore = false
         } catch {
+            guard loadGeneration == gen, currentSlotKey == slot else {
+                isLoadingMore = false
+                return
+            }
             isLoadingMore = false
             loadMoreFailed = true
         }

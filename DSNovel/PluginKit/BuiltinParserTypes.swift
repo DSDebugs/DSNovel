@@ -3,7 +3,7 @@ import Foundation
 // MARK: - 内置解析：类型定义
 //
 // 「内置解析」是书源之上的**旁路层**：它不注册书源、不参与搜索/发现/健康检查，
-// 只在「书源自身拿不到音频地址（VIP/付费章节）」时被调用，用于解析可播放/可下载的音频直链。
+// 固定策略为「解析器优先 → 失败回落官方通道 → 都失败即提示可操作原因」。
 // 绑定关系：host 匹配优先、sourceID 兜底（见 BuiltinParserRuntime.parser(forSourceID:sourceURL:)）。
 
 /// 解析器声明的目标书源（脚本里 `targets: { hosts: [...], sourceIDs: [...] }`）
@@ -19,6 +19,9 @@ struct BuiltinParserTargets: Codable, Hashable, Sendable {
     }
 
     /// 是否命中指定书源（host 优先 + sourceID 兜底）
+    ///
+    /// 修复 H-05 / P1-04：严格校验域名边界（仅精确匹配本域或 `.pattern` 子域），
+    /// 防止 `evilximalaya.com` 等后缀欺骗域名误命中。
     func matches(sourceID: String, sourceURL: String) -> Bool {
         if !sourceIDs.isEmpty, sourceIDs.contains(sourceID) {
             return true
@@ -28,15 +31,14 @@ struct BuiltinParserTargets: Codable, Hashable, Sendable {
             return false
         }
         return hosts.contains { pattern in
-            let p = pattern.lowercased()
+            let p = pattern.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
             if p.isEmpty { return false }
-            if p == host { return true }
-            return host.hasSuffix("." + p) || host.hasSuffix(p)
+            return host == p || host.hasSuffix("." + p)
         }
     }
 }
 
-/// 解析器可暴露给 UI 的配置项（值统一存 UserDefaults：parser_pref_<parserID>.<key>）
+/// 解析器可暴露给 UI 的配置项（值统一存 Keychain：parser_pref_<parserID>.<key>）
 struct BuiltinParserConfigItem: Codable, Hashable, Sendable {
     var key: String
     var title: String
@@ -53,6 +55,21 @@ struct BuiltinParserConfigItem: Codable, Hashable, Sendable {
         self.kind = kind
         self.options = options
     }
+
+    enum CodingKeys: String, CodingKey {
+        case key, title, defaultValue, kind, options
+    }
+
+    /// 修复 L-01：旧版 meta.json 缺少 options / kind 等字段时优雅兜底，不导致解析器静默消失
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedKey = try c.decode(String.self, forKey: .key)
+        self.key = decodedKey
+        self.title = try c.decodeIfPresent(String.self, forKey: .title) ?? decodedKey
+        self.defaultValue = try c.decodeIfPresent(String.self, forKey: .defaultValue) ?? ""
+        self.kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "text"
+        self.options = try c.decodeIfPresent([String].self, forKey: .options) ?? []
+    }
 }
 
 /// 脚本 `__metaParser()` 返回的解析器元数据
@@ -66,6 +83,11 @@ struct BuiltinParserMeta: Hashable, Sendable {
     var supportsPlayback: Bool
     var supportsDownload: Bool
     var requiresCookie: Bool
+    /// 脚本声明的音质档位（语义档位 id，如 auto/saver/standard/high/lossless）
+    ///
+    /// 由脚本 `registerBuiltinParser({ qualities: [...] })` 声明，经 prelude 透出。
+    /// 老脚本不声明时为空集合，能力判定会退回按书源能力判断。
+    var qualities: Set<String> = []
     var config: [BuiltinParserConfigItem]
     var methods: Set<String>
 
@@ -106,24 +128,6 @@ struct BuiltinParserStatus: Hashable, Sendable {
     var vipExpireAt: String
 
     static let unknown = BuiltinParserStatus(ok: false, message: "尚未检测", latencyMs: 0, nickname: "", vipExpireAt: "")
-}
-
-/// 解析器调用策略（宿主级设置，默认 fallback）
-enum BuiltinParserStrategy: String, CaseIterable, Sendable {
-    /// 官方书源接口优先，仅在 VIP/受限错误时回退到内置解析（默认）
-    case fallback
-    /// 一律优先走内置解析，失败再回落官方接口
-    case always
-    /// 关闭（保留脚本，仅调试用）
-    case never
-
-    var title: String {
-        switch self {
-        case .fallback: return "官方接口优先（推荐）"
-        case .always: return "内置解析优先"
-        case .never: return "关闭"
-        }
-    }
 }
 
 /// 内置解析相关错误
@@ -172,6 +176,27 @@ enum BuiltinParserError: LocalizedError, Equatable, Sendable {
         if case .rateLimited = self { return true }
         if case .rejected(let reason, _) = self, reason == "rate_limited" { return true }
         return false
+    }
+
+    /// 负缓存时长（秒）：M-07 修复，对确定性失败写入短期负缓存避免重复打接口
+    var negativeCacheTTL: TimeInterval? {
+        switch self {
+        case .rateLimited:
+            return 60
+        case .rejected(let reason, _):
+            switch reason {
+            case "rate_limited", "no_cookie":
+                return 60
+            case "not_vip":
+                return 180
+            case "bad_track":
+                return 300
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
     }
 }
 

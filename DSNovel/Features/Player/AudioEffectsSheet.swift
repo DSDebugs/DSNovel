@@ -122,10 +122,17 @@ struct AudioEffectsSheet: View {
         }
     }
 
+    /// D2=a：全局 4 档；当前书源/章节可能走「内置解析」时，多出一档「无损 · 最高音质」
+    private var tierOptions: [AudioQualityTier] {
+        let parserUsable = player.currentChapterParserDeclaresLossless
+            || player.currentChapterHasBuiltinParser
+            || QualityPolicy.sourceHasMultipleBitrates(sourceID: player.currentBook?.sourceID ?? "")
+        return QualityPolicy.visibleTiers(parserAvailable: parserUsable)
+    }
+
     private var qualityTierCard: some View {
         let mode = player.currentAudioQualitySupportMode
-        return VStack(alignment: .leading, spacing: Spacing.s3) {
-            HStack {
+        return VStack(alignment: .leading, spacing: Spacing.s3) {            HStack {
                 Label("在线播放与下载音质", systemImage: "waveform.badge.magnifyingglass")
                     .font(DSTypography.cardTitle)
                     .foregroundStyle(.primary)
@@ -143,7 +150,7 @@ struct AudioEffectsSheet: View {
             }
 
             VStack(spacing: Spacing.s2) {
-                ForEach(AudioQualityTier.visibleTiers) { tier in
+                ForEach(tierOptions) { tier in
                     let isSelected = (player.audioQualityTier.normalizedForSelection == tier)
                     Button {
                         guard player.audioQualityTier.normalizedForSelection != tier else { return }

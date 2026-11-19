@@ -226,6 +226,7 @@ struct DiscoverRootView: View {
             books: books,
             shelfBookIDs: libraryStore.shelfBookIDs,
             layoutStyle: settings.discoverLayout,
+            canLoadMore: isPaged ? discoverStore.canLoadMore : false,
             isLoadingMore: isPaged ? discoverStore.isLoadingMore : false,
             loadMoreFailed: isPaged ? discoverStore.loadMoreFailed : false,
             onRefresh: {

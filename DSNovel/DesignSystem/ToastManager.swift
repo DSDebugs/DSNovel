@@ -21,20 +21,3 @@ final class ToastManager {
     }
 }
 
-struct ToastOverlayView: View {
-    let message: String?
-
-    init(message: String?) {
-        self.message = message
-    }
-
-    var body: some View {
-        if let item = BannerCenter.shared.currentBanner {
-            DSBanner(
-                item: item,
-                onUndo: { BannerCenter.shared.triggerUndo() },
-                onDismiss: { BannerCenter.shared.dismissCurrent() }
-            )
-        }
-    }
-}

@@ -4,6 +4,7 @@ struct DiscoverContent: View {
     let books: [BookRef]
     let shelfBookIDs: Set<String>
     let layoutStyle: DiscoverLayoutStyle
+    let canLoadMore: Bool
     let isLoadingMore: Bool
     let loadMoreFailed: Bool
     private let onRefresh: (() async -> Void)?
@@ -19,6 +20,7 @@ struct DiscoverContent: View {
         books: [BookRef],
         shelfBookIDs: Set<String>,
         layoutStyle: DiscoverLayoutStyle,
+        canLoadMore: Bool = false,
         isLoadingMore: Bool,
         loadMoreFailed: Bool,
         localScrollAnchor: Binding<String?> = .constant(nil),
@@ -32,6 +34,7 @@ struct DiscoverContent: View {
         self.books = books
         self.shelfBookIDs = shelfBookIDs
         self.layoutStyle = layoutStyle
+        self.canLoadMore = canLoadMore
         self.isLoadingMore = isLoadingMore
         self.loadMoreFailed = loadMoreFailed
         _ = localScrollAnchor
@@ -66,20 +69,19 @@ struct DiscoverContent: View {
         }
     }
 
-    private var triggerBookID: String? {
-        guard !books.isEmpty else { return nil }
-        let idx = max(0, books.count - 6)
-        return books[idx].id
+    private var tailTriggerThreshold: Int {
+        max(0, books.count - 6)
     }
 
     var body: some View {
         let _ = DiscoverRenderCounter.shared.recordContent()
         let side = computedCoverSide
         let rowSpacing = layoutStyle == .largeCard ? Spacing.largeCardRowSpacing : Spacing.gridRowSpacing
+        let threshold = tailTriggerThreshold
 
         ScrollView {
             LazyVGrid(columns: columns, spacing: rowSpacing) {
-                ForEach(books) { ref in
+                ForEach(Array(books.enumerated()), id: \.element.id) { index, ref in
                     let inShelf = shelfBookIDs.contains(ref.id)
                     let model = BookCardModel(
                         id: ref.id,
@@ -104,9 +106,8 @@ struct DiscoverContent: View {
                             )
                         }
                     }
-                    .id(ref.id)
                     .onAppear {
-                        if ref.id == triggerBookID {
+                        if canLoadMore && !isLoadingMore && !loadMoreFailed && index >= threshold {
                             onReachLoadMoreTrigger(ref.id)
                         }
                     }
@@ -129,16 +130,9 @@ struct DiscoverContent: View {
             .padding(.horizontal, Spacing.pageHorizontal)
             .padding(.top, Spacing.s2)
 
-            if isLoadingMore {
-                DSSkeleton(mode: .list(rows: 2))
-                    .padding(.vertical, Spacing.s3)
-            } else if loadMoreFailed {
-                Button("加载失败，点按重试", action: onRetryLoadMore)
-                    .font(DSTypography.cardTitle)
-                    .foregroundStyle(Color.dsAccent)
-                    .padding(.vertical, Spacing.s4)
-            }
+            bottomLoadMoreFooter
         }
+        .contentMargins(.bottom, DSBottomBar.totalHeight + Spacing.s4, for: .scrollContent)
         .refreshable {
             await onRefresh?()
         }
@@ -149,5 +143,43 @@ struct DiscoverContent: View {
                 containerWidth = newWidth
             }
         }
+    }
+
+    @ViewBuilder
+    private var bottomLoadMoreFooter: some View {
+        Group {
+            if isLoadingMore {
+                HStack(spacing: Spacing.s2) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在加载更多…")
+                        .font(DSTypography.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if loadMoreFailed {
+                Button(action: onRetryLoadMore) {
+                    Text("加载失败，点按重试")
+                        .font(DSTypography.caption.weight(.semibold))
+                        .foregroundStyle(Color.dsAccent)
+                        .padding(.horizontal, Spacing.s4)
+                        .padding(.vertical, Spacing.s2)
+                        .background(Capsule().fill(Color.dsAccent.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+            } else if canLoadMore {
+                // 底部兜底哨兵：快速甩滑越过尾部 6 项时仍保证触底继续加载
+                Color.clear
+                    .onAppear {
+                        onReachLoadMoreTrigger(books.last?.id ?? "")
+                    }
+            } else if !books.isEmpty {
+                Text("已加载全部")
+                    .font(DSTypography.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 48)
+        .padding(.top, Spacing.s2)
     }
 }

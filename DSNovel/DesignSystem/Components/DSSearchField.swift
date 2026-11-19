@@ -61,11 +61,11 @@ struct DSSearchField: View {
                     .fill(Color.dsSurfaceGrouped)
             )
             .contentShape(Rectangle())
-            .onTapGesture {
+            .simultaneousGesture(TapGesture().onEnded {
                 if !isFocused {
                     isFocused = true
                 }
-            }
+            })
 
             if isFocused || !text.isEmpty {
                 Button("取消") {

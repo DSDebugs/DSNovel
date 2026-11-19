@@ -89,10 +89,10 @@ enum UserFacingError {
                 return .needLogin(sourceName: sourceName)
             case .needVerify:
                 return .needVerify
-            case .vipRequired, .builtinParserMissing:
+            case .vipRequired, .builtinParserMissing, .builtinParserFailed:
+                // A3：解析失败也走「VIP 章节」态 —— 该态带"去查看内置解析"的跳转按钮，
+                // 用户可在解析器面板里点「查看日志」看到失败原因，比塞进通用错误文案更可行动。
                 return .vipChapter
-            case .builtinParserFailed(_, let reason):
-                return .error(detail: reason.isEmpty ? "VIP 章节解析失败" : reason)
             case .timeout:
                 return .error(detail: "请求超时 (timeout)")
             case .network(let msg):

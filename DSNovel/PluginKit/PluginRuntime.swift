@@ -98,15 +98,6 @@ struct PluginImportPreview: Identifiable, Sendable {
     var extractedFiles: [String: Data]
 }
 
-protocol BookSource: Sendable {
-    var sourceID: String { get }
-    var sourceName: String { get }
-    func search(keyword: String, page: Int) async throws -> DiscoverPageDTO
-    func discoverSections() async throws -> [DiscoverSectionDTO]
-    func discoverList(tabURL: String) async throws -> DiscoverPageDTO
-    func bookDetail(bookURL: String) async throws -> BookDetailDTO
-    func resolvePlayURL(episodeURL: String) async throws -> PlayStreamInfo
-}
 
 /// 线程安全的插件包 JSContext 池：每个 JSContext 拥有独立 JSVirtualMachine，严格保证同一 JSContext 绝不被多线程并发调用
 final class PackageContextPool: @unchecked Sendable {
@@ -944,99 +935,92 @@ actor PluginRuntime {
 
     /// 播放/下载统一解析入口（推荐调用点：PlayerEngine / DownloadManager）
     ///
-    /// 决策链（策略默认 fallback）：
-    ///  0. always：优先内置解析，失败静默回落书源接口
-    ///  1. 书源自身的 audio()/audioHeaders()（免费章节、或已登录会员账号通常在这一步就成功）
-    ///  2. 若书源抛出「需要会员/购买」类错误 → 回退内置解析
-    ///  3. 未安装匹配解析器 → .builtinParserMissing（UI 唯一提示出口：去导入）
-    ///  4. 解析器也失败 → .builtinParserFailed（UI：去查内置解析）
-    func resolvePlayStream(sourceID: String, episodeURL: String, forDownload: Bool = false) async throws -> PlayStreamInfo {
-        let qualityCode = await MainActor.run {
-            let tier = AppSettingsStore.shared.audioQualityTier.normalizedForSelection
-            return tier.parserQualityCode(isOnWiFi: DownloadManager.shared.isOnWiFi)
+    /// 链路（已定：**固定策略，界面不再提供"解析策略"设置**）：
+    ///  0. 命中已启用的内置解析器 → **解析器优先**（音质档由 `QualityPolicy` 算好后作为参数传入，不再写配置）
+    ///  1. 解析器失败（**任何失败**）→ 回落官方书源通道（两链各取各的音质码）
+    ///  2. 官方通道失败：
+    ///       - VIP 类错误且**没有**可用解析器 → `.builtinParserMissing`（唯一提示出口：去编辑脚本）
+    ///       - VIP 类错误且**有**解析器（两边都不行）→ `.builtinParserFailed`（去查看解析日志）
+    ///       - 其它错误（needLogin / needVerify / network / timeout…）原样抛出
+    ///
+    /// 每个分支都写一条决策日志，便于用「查看日志」回答"为什么走了/没走内置解析"。
+    func resolvePlayStream(
+        sourceID: String,
+        episodeURL: String,
+        forDownload: Bool = false,
+        tier: AudioQualityTier? = nil
+    ) async throws -> PlayStreamInfo {
+        let context = await MainActor.run {
+            (
+                tier ?? AppSettingsStore.shared.audioQualityTier.normalizedForSelection,
+                DownloadManager.shared.isOnWiFi
+            )
         }
+        let resolvedTier = context.0
+        let isOnWiFi = context.1
+
         let route = try? ensureRoute(for: sourceID)
         let sourceURL = route?.meta.url ?? ""
         let parser = await BuiltinParserRuntime.shared.parser(forSourceID: sourceID, sourceURL: sourceURL)
-        if let parser {
-            await BuiltinParserRuntime.shared.setConfigValue(parserID: parser.id, key: "quality", value: qualityCode)
-        }
-        let strategy: BuiltinParserStrategy = if let parser {
-            await BuiltinParserRuntime.shared.strategy(for: parser.id)
-        } else {
-            .never
-        }
 
-        // ① always：内置解析优先（明确拒绝错误如 not_vip / rate_limited 直接透传）
-        if let parser, strategy == .always {
+        // ① 解析器优先
+        var lastParserError: String?
+        if let parser {
+            let parserCode = QualityPolicy.code(for: resolvedTier, chain: .builtinParser, isOnWiFi: isOnWiFi)
+            var note = "档位 \(resolvedTier.title) → 解析器码 \(parserCode)"
+            if QualityPolicy.didFallback(resolvedTier, chain: .builtinParser) {
+                note += "（该档位解析器链不原生支持，已回落）"
+            }
+            BuiltinParserLogStore.shared.append(parser.id, "尝试内置解析：\(note)\(forDownload ? " · 下载" : "")")
             do {
                 let stream = try await BuiltinParserRuntime.shared.resolve(
                     parser: parser,
                     sourceID: sourceID,
                     episodeURL: episodeURL,
-                    forDownload: forDownload
+                    forDownload: forDownload,
+                    qualityCode: parserCode
                 )
                 return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
-            } catch let parserError as BuiltinParserError {
-                if case .rejected = parserError {
-                    throw PluginError.builtinParserFailed(
-                        sourceID: sourceID,
-                        reason: parserError.errorDescription ?? "未知原因"
-                    )
-                }
-            } catch {}
+            } catch {
+                let reason = Self.describe(error)
+                lastParserError = reason
+                BuiltinParserLogStore.shared.append(
+                    parser.id,
+                    "内置解析未命中，回落官方通道：\(reason)"
+                )
+            }
         }
 
+        // ② 官方书源通道
+        let bookCode = QualityPolicy.code(for: resolvedTier, chain: .bookSource, isOnWiFi: isOnWiFi)
         do {
-            return try await resolvePlayURL(sourceID: sourceID, episodeURL: episodeURL, qualityCode: qualityCode)
+            return try await resolvePlayURL(sourceID: sourceID, episodeURL: episodeURL, qualityCode: bookCode)
         } catch let error as PluginError {
             switch error {
             case .vipRequired:
-                guard let parser, strategy != .never else {
+                if parser == nil {
                     throw PluginError.builtinParserMissing(sourceID: sourceID)
                 }
-                do {
-                    let stream = try await BuiltinParserRuntime.shared.resolve(
-                        parser: parser,
-                        sourceID: sourceID,
-                        episodeURL: episodeURL,
-                        forDownload: forDownload
-                    )
-                    return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
-                } catch let parserError as BuiltinParserError {
-                    throw PluginError.builtinParserFailed(
-                        sourceID: sourceID,
-                        reason: parserError.errorDescription ?? "未知原因"
-                    )
+                let reason = lastParserError ?? "内置解析与官方通道都未能取得可用地址"
+                if let parser {
+                    BuiltinParserLogStore.shared.append(parser.id, "回落官方通道仍受 VIP 限制，透传失败原因：\(reason)")
                 }
-
-            case .needLogin:
-                // 书源自认知未登录：若装了解析器仍先尝试一次（解析器有自己的 Cookie 来源），
-                // 若明确被解析器拒绝（如 not_vip / rate_limited）则透传真实原因，否则引导登录
-                if let parser, strategy != .never {
-                    do {
-                        let stream = try await BuiltinParserRuntime.shared.resolve(
-                            parser: parser,
-                            sourceID: sourceID,
-                            episodeURL: episodeURL,
-                            forDownload: forDownload
-                        )
-                        return Self.fillDefaultHeaders(stream, episodeURL: episodeURL)
-                    } catch let parserError as BuiltinParserError {
-                        if case .rejected = parserError {
-                            throw PluginError.builtinParserFailed(
-                                sourceID: sourceID,
-                                reason: parserError.errorDescription ?? "未知原因"
-                            )
-                        }
-                    } catch {}
-                }
-                throw error
-
+                throw PluginError.builtinParserFailed(sourceID: sourceID, reason: reason)
             default:
                 throw error
             }
         }
+    }
+
+    /// 把解析器/脚本抛出的错误转成一句可读原因（写入决策日志用）
+    nonisolated private static func describe(_ error: Error) -> String {
+        if let e = error as? BuiltinParserError {
+            return e.errorDescription ?? "\(e)"
+        }
+        if let e = error as? LocalizedError, let d = e.errorDescription {
+            return d
+        }
+        return "\(error)"
     }
 
     /// 补齐内置解析返回流缺失的 User-Agent 与跨子域 Cookie（脚本已给出则不覆盖）

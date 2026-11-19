@@ -326,6 +326,8 @@ final class DownloadManager {
         isDiskInsufficient = false
 
         let initialState = (AppSettingsStore.shared.wifiOnlyDownload && !isOnWiFi) ? "waitingWiFi" : "queued"
+        // E3：入队时快照"用户此刻选择的音质档"，下载按它执行（不在执行时读全局档，避免排队期间漂移）
+        let tierSnapshot = AppSettingsStore.shared.audioQualityTier.normalizedForSelection.rawValue
         var added = 0
         for ch in chapters {
             let itemID = "\(book.id)::\(ch.id)"
@@ -338,12 +340,14 @@ final class DownloadManager {
                 if existing.state == "failed" || existing.state == "paused" {
                     existing.state = initialState
                     existing.retryCount = 0
+                    existing.qualityTierSnapshot = tierSnapshot
                     added += 1
                 } else if existing.state == "completed" && !verifyFileExists(localPath: existing.localPath) {
                     existing.localPath = ""
                     existing.bytes = 0
                     existing.state = initialState
                     existing.retryCount = 0
+                    existing.qualityTierSnapshot = tierSnapshot
                     added += 1
                 }
                 continue
@@ -356,7 +360,8 @@ final class DownloadManager {
                 chapterTitle: ch.title,
                 sourceID: book.sourceID,
                 kind: kind,
-                state: initialState
+                state: initialState,
+                qualityTierSnapshot: tierSnapshot
             )
             ctx.insert(record)
             added += 1
@@ -722,10 +727,13 @@ final class DownloadManager {
         if let custom = customStreamResolver {
             return try await custom(item)
         }
+        // E3：按"入队时快照的档位"下载；老记录/预缓存没有快照时回落到当前全局档位（tier: nil）
+        let snapshotTier = AudioQualityTier(rawValue: item.qualityTierSnapshot)?.normalizedForSelection
         return try await PluginRuntime.shared.resolvePlayStream(
             sourceID: item.sourceID,
             episodeURL: item.chapterID,
-            forDownload: true
+            forDownload: true,
+            tier: snapshotTier
         )
     }
 

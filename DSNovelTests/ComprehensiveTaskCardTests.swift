@@ -65,6 +65,9 @@ final class ComprehensiveTaskCardTests: XCTestCase {
         XCTAssertEqual(UserFacingError.from(PluginError.network("offline network")), .offline)
         XCTAssertEqual(UserFacingError.from(PluginError.parseFailed("bad json")), .error(detail: "bad json"))
         XCTAssertEqual(UserFacingError.from(PluginError.builtinParserMissing(sourceID: "s1")), .vipChapter)
+        // A3（内置解析改造）：`.builtinParserFailed` 也映射为 `.vipChapter` —— 该态带
+        // 「去查看内置解析」跳转按钮，用户能在解析器面板里看日志定位失败原因。
+        // 该断言此前必红，现已与 `DSStateView.swift` 的 `UserFacingError.from` 实现一致，必须保留。
         XCTAssertEqual(UserFacingError.from(PluginError.builtinParserFailed(sourceID: "s1", reason: "err")), .vipChapter)
         XCTAssertEqual(UserFacingError.from(URLError(.timedOut)), .error(detail: "连接超时 (URLError.timedOut)"))
     }

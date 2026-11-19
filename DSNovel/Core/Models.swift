@@ -233,6 +233,11 @@ final class DownloadItem {
     var bytes: Int64
     var retryCount: Int
     var createdAt: Date
+    /// 入队时的音质档位快照（`AudioQualityTier.rawValue`）
+    ///
+    /// E3：下载按"用户点下载时选择的档位"执行，避免排队到移动网络后档位漂移；
+    /// 空串表示未快照（老记录 / 预缓存），此时回落到当前全局档位。
+    var qualityTierSnapshot: String = ""
 
     init(
         id: String,
@@ -246,7 +251,8 @@ final class DownloadItem {
         localPath: String = "",
         bytes: Int64 = 0,
         retryCount: Int = 0,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        qualityTierSnapshot: String = ""
     ) {
         self.id = id
         self.bookID = bookID
@@ -260,6 +266,7 @@ final class DownloadItem {
         self.bytes = bytes
         self.retryCount = retryCount
         self.createdAt = createdAt
+        self.qualityTierSnapshot = qualityTierSnapshot
     }
 }
 

@@ -18,14 +18,28 @@ final class PlayerProOptimizationTests: XCTestCase {
         XCTAssertEqual(PlayerSpeedFormatter.format(3.0), "3.0x")
     }
 
-    // MARK: - 2. 验证五档音质编码映射、5 段 AVAudioUnitEQ 构建与 150%–200% 响度增强计算（ISS-03）
+    // MARK: - 2. 验证音质档位 → 两条链的码映射（QualityPolicy）、5 段 AVAudioUnitEQ 构建与 150%–200% 响度增强计算（ISS-03）
 
+    /// `AudioQualityTier` 上原有的「档位 → 单一质量码」方法已随「内置解析改造」整体删除：
+    /// 档位不再自己产出「一条」码，而是由 `QualityPolicy` 按**当前链**分别换算（书源链 / 解析器链）。
     func testAudioQualityTierAndEQPipelineConfiguration() {
-        XCTAssertEqual(AudioQualityTier.auto.parserQualityCode(isOnWiFi: true), "M4A_128")
-        XCTAssertEqual(AudioQualityTier.auto.parserQualityCode(isOnWiFi: false), "M4A_64")
-        XCTAssertEqual(AudioQualityTier.dataSaver.parserQualityCode(isOnWiFi: true), "M4A_24")
-        XCTAssertEqual(AudioQualityTier.standard.parserQualityCode(isOnWiFi: true), "M4A_64")
-        XCTAssertEqual(AudioQualityTier.high.parserQualityCode(isOnWiFi: false), "M4A_128")
+        // 书源链（喜马书源 common.js 官方 playUrlList 的 type 名）：M4A_24 / M4A_64 / M4A_128
+        XCTAssertEqual(QualityPolicy.code(for: .auto, chain: .bookSource, isOnWiFi: true), "M4A_128")
+        XCTAssertEqual(QualityPolicy.code(for: .auto, chain: .bookSource, isOnWiFi: false), "M4A_64")
+        XCTAssertEqual(QualityPolicy.code(for: .dataSaver, chain: .bookSource, isOnWiFi: true), "M4A_24")
+        XCTAssertEqual(QualityPolicy.code(for: .standard, chain: .bookSource, isOnWiFi: true), "M4A_64")
+        XCTAssertEqual(QualityPolicy.code(for: .high, chain: .bookSource, isOnWiFi: false), "M4A_128")
+        // 书源链不支持「无损·最高音质」→ 回落 `.high`，因此两个网络类型都得到高清码
+        XCTAssertEqual(QualityPolicy.code(for: .losslessHQ, chain: .bookSource, isOnWiFi: true), "M4A_128")
+        XCTAssertEqual(QualityPolicy.code(for: .losslessHQ, chain: .bookSource, isOnWiFi: false), "M4A_128")
+
+        // 解析器链（内置解析脚本 v1.2 的语义档位码）
+        XCTAssertEqual(QualityPolicy.code(for: .auto, chain: .builtinParser, isOnWiFi: true), "auto")
+        XCTAssertEqual(QualityPolicy.code(for: .auto, chain: .builtinParser, isOnWiFi: false), "auto")
+        XCTAssertEqual(QualityPolicy.code(for: .dataSaver, chain: .builtinParser, isOnWiFi: true), "saver")
+        XCTAssertEqual(QualityPolicy.code(for: .standard, chain: .builtinParser, isOnWiFi: false), "standard")
+        XCTAssertEqual(QualityPolicy.code(for: .high, chain: .builtinParser, isOnWiFi: true), "high")
+        XCTAssertEqual(QualityPolicy.code(for: .losslessHQ, chain: .builtinParser, isOnWiFi: false), "lossless")
 
         let clearBands = AudioEffectPreset.clearVoice.defaultBandsDb
         XCTAssertEqual(clearBands.count, 5)
@@ -44,6 +58,37 @@ final class PlayerProOptimizationTests: XCTestCase {
         XCTAssertTrue(boosted.isBoosted)
         XCTAssertEqual(boosted.playerVolume, 1.0, accuracy: 0.01)
         XCTAssertGreaterThan(boosted.mixGain, 1.5)
+    }
+
+    // MARK: - 2b. 验证「无损 · 最高音质」的展示语义与旧存档值 lossless 的折叠（内置解析改造）
+
+    /// `losslessHQ` 是本次改造新增的第 5 档（仅解析器参与时可见）；
+    /// `lossless` 保留为旧存档兼容值，继续折叠到 `.high`（选择/展示/缓冲三处口径一致）。
+    func testLosslessHQPresentationAndLegacyLosslessFolding() {
+        XCTAssertEqual(AudioQualityTier.losslessHQ.rawValue, "losslessHQ")
+        XCTAssertEqual(AudioQualityTier.losslessHQ.title, "无损 · 最高音质")
+        XCTAssertEqual(AudioQualityTier.losslessHQ.badgeText, "无损·最高")
+        XCTAssertEqual(AudioQualityTier.losslessHQ.effectiveBadgeText(isOnWiFi: true), "无损·最高")
+        XCTAssertEqual(AudioQualityTier.losslessHQ.effectiveBadgeText(isOnWiFi: false), "无损·最高")
+        XCTAssertEqual(AudioQualityTier.losslessHQ.preferredForwardBufferDuration, 24.0, accuracy: 0.001)
+        XCTAssertTrue(AudioQualityTier.losslessHQ.subtitle.contains("权限"),
+                      "无损档说明应提示需要账号权限，实际：\(AudioQualityTier.losslessHQ.subtitle)")
+
+        // 旧存档值 lossless：仍折叠为 .high，不出现在可选档位里
+        XCTAssertEqual(AudioQualityTier.lossless.normalizedForSelection, .high)
+        XCTAssertEqual(AudioQualityTier.lossless.rawValue, "lossless")
+        XCTAssertEqual(AudioQualityTier.lossless.title, AudioQualityTier.high.title)
+        XCTAssertEqual(AudioQualityTier.lossless.badgeText, AudioQualityTier.high.badgeText)
+        XCTAssertEqual(AudioQualityTier.lossless.preferredForwardBufferDuration, 24.0, accuracy: 0.001)
+        XCTAssertFalse(AudioQualityTier.visibleTiers.contains(.lossless))
+        XCTAssertFalse(AudioQualityTier.visibleTiers.contains(.losslessHQ),
+                       "无损档只在解析器参与解析时才可见，不进全局默认档位表")
+
+        // 无损档在两条链上的原生/回落口径
+        XCTAssertFalse(QualityPolicy.isNative(.losslessHQ, chain: .bookSource))
+        XCTAssertTrue(QualityPolicy.isNative(.losslessHQ, chain: .builtinParser))
+        XCTAssertTrue(QualityPolicy.didFallback(.losslessHQ, chain: .bookSource))
+        XCTAssertFalse(QualityPolicy.didFallback(.losslessHQ, chain: .builtinParser))
     }
 
     // MARK: - 3. 验证“本章结束 / N 章后”睡眠定时按当前倍速动态折算预计剩余时间（ISS-12）
@@ -130,16 +175,22 @@ final class PlayerProOptimizationTests: XCTestCase {
         }
     }
 
+    /// 徽标与实测码率文案：语义不随「内置解析改造」变化（仍是名义档位 + 实测码率归一）
     func testAudioQualityBadgeFormattingAndBitrateDetection() {
         XCTAssertEqual(AudioQualityTier.auto.effectiveBadgeText(isOnWiFi: true), "自适应·128k")
         XCTAssertEqual(AudioQualityTier.auto.effectiveBadgeText(isOnWiFi: false), "自适应·64k")
         XCTAssertEqual(AudioQualityTier.dataSaver.effectiveBadgeText(isOnWiFi: true), "省流·32k")
         XCTAssertEqual(AudioQualityTier.standard.effectiveBadgeText(isOnWiFi: true), "标准·64k")
         XCTAssertEqual(AudioQualityTier.high.effectiveBadgeText(isOnWiFi: true), "高清·128k")
+        // 旧值 lossless 与新增 losslessHQ 的徽标口径
+        XCTAssertEqual(AudioQualityTier.lossless.effectiveBadgeText(isOnWiFi: true), "高清·128k")
+        XCTAssertEqual(AudioQualityTier.losslessHQ.effectiveBadgeText(isOnWiFi: true), "无损·最高")
 
         XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 31), "省流·32k")
         XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 63), "标准·64k")
         XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 127), "高清·128k")
         XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 192), "高清·192k")
+        XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 320), "无损·320k")
+        XCTAssertEqual(AudioQualityTier.badgeText(forDetectedBitrateKbps: 900), "无损·900k")
     }
 }

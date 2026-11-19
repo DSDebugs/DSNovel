@@ -36,7 +36,10 @@ check_grep_rule() {
       echo "[FAIL] ${rule} -> ${line}"
       TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
     fi
-  done < <(grep -rnE --include="*.swift" "$pattern" "${existing_paths[@]}" || true)
+  # 忽略注释行：规则本意是约束**代码**，不应因为注释/文档示例（如「第1集」出现在注释里）而失败。
+  # 例外情况（确有必要的）走 rules_allowlist.txt。
+  done < <(grep -rnE --include="*.swift" "$pattern" "${existing_paths[@]}" 2>/dev/null \
+            | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|///|\*|/\*)' || true)
 }
 
 # 1. no-availability-ios
@@ -76,8 +79,8 @@ while IFS= read -r view_file; do
       echo "[FAIL] no-body-collection-ops -> ${view_file}:${line}"
       TOUCHED_VIOLATIONS=$((TOUCHED_VIOLATIONS + 1))
     fi
-  done < <(grep -nE "\.filter\(|\.sorted\(|Dictionary\(grouping:" "$view_file" || true)
-done < <(find DSNovel/Features DSNovel/App -type f \( -name "*View.swift" -o -name "AppShell.swift" \) 2>/dev/null || true)
+  done < <(grep -nE "\.filter\(|\.filter[[:space:]]*\{|\.sorted\(|\.sorted[[:space:]]*\{|Dictionary\(grouping:" "$view_file" | grep -vE '^[0-9]+:[[:space:]]*(//|///|\*|/\*)' || true)
+done < <(find DSNovel/Features DSNovel/App -type f \( -name "*View.swift" -o -name "*Section.swift" -o -name "AppShell.swift" \) 2>/dev/null || true)
 
 # 9. no-ontapgesture-nav
 check_grep_rule "no-ontapgesture-nav" "onTapGesture" "DSNovel/Features" "DSNovel/DesignSystem/Components"

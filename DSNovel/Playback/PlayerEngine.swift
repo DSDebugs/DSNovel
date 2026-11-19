@@ -192,6 +192,9 @@ final class PlayerEngine {
     }
 
     /// 当前章节音质可调能力分级（区分多码率 / 固定单码率 / 本地离线）
+    ///
+    /// 能力判定集中在 `QualityPolicy`（T4）：内置包 v5.6.5 起只有喜马拉雅具备原生多码率；
+    /// 后续应改为读取书源声明的 `qualities` 能力，而不是在各处堆 sourceID。
     var currentAudioQualitySupportMode: AudioQualitySupportMode {
         if isPlayingLocalFile {
             return .localOffline
@@ -199,28 +202,23 @@ final class PlayerEngine {
         guard let book = currentBook else {
             return .fixedSingleBitrate
         }
-        if book.sourceID == "6e2b9c4d8a1f4d37b5c0e73a9f1d2b64" {
-            return .multiBitrate
-        }
-        if book.sourceID == "fanqie_changting_pro_v56",
-           let url = currentChapter?.url,
-           url.hasPrefix("fq://xmly_track/") || url.hasPrefix("fq://free_xmly/") {
-            return .multiBitrate
-        }
-        return .fixedSingleBitrate
+        return QualityPolicy.sourceHasMultipleBitrates(sourceID: book.sourceID) ? .multiBitrate : .fixedSingleBitrate
     }
 
-    /// 顶栏音质徽标文案（统一展示当前播放音频的实际音质，不再显示「音源原画」或「本地离线」）
+    /// 当前章节是否有「内置解析」参与（决定面板是否显示"无损·最高音质"档；D2=a）
+    var currentChapterHasBuiltinParser: Bool {
+        builtinParserResolved
+    }
+
+    /// 顶栏音质徽标文案
+    ///
+    /// E2：多码率源也优先显示**实测码率**（若已测出），这样用户能直接看出档位是否真的生效；
+    /// 未测出时才回落到名义档位文案。
     var streamStatusBadgeText: String {
-        switch currentAudioQualitySupportMode {
-        case .multiBitrate:
-            return audioQualityTier.effectiveBadgeText(isOnWiFi: DownloadManager.shared.isOnWiFi)
-        case .fixedSingleBitrate, .localOffline:
-            if let kbps = detectedAudioBitrateKbps, kbps > 0 {
-                return AudioQualityTier.badgeText(forDetectedBitrateKbps: kbps)
-            }
-            return audioQualityTier.effectiveBadgeText(isOnWiFi: DownloadManager.shared.isOnWiFi)
+        if let kbps = detectedAudioBitrateKbps, kbps > 0 {
+            return AudioQualityTier.badgeText(forDetectedBitrateKbps: kbps)
         }
+        return audioQualityTier.effectiveBadgeText(isOnWiFi: DownloadManager.shared.isOnWiFi)
     }
 
     var canPlayPreviousChapter: Bool {
@@ -331,11 +329,11 @@ final class PlayerEngine {
             item.preferredForwardBufferDuration = normalized.preferredForwardBufferDuration
         }
         let shouldReload = reloadCurrent && currentAudioQualitySupportMode == .multiBitrate
-        let code = normalized.parserQualityCode(isOnWiFi: DownloadManager.shared.isOnWiFi)
         Task {
+            // T3：音质档不再写入解析器配置（避免静默覆写用户设置），只作废已缓存的直链，
+            // 以便下一章按新档位重新解析。
             let parsers = await BuiltinParserRuntime.shared.installedParsers()
             for p in parsers {
-                await BuiltinParserRuntime.shared.setConfigValue(parserID: p.id, key: "quality", value: code)
                 await BuiltinParserRuntime.shared.invalidateCache(parserID: p.id, episodeURL: nil)
             }
             if shouldReload {
@@ -527,6 +525,10 @@ final class PlayerEngine {
     private var bypassLocalChapterID: String?
     /// 当前章节地址是否由「内置解析」给出（用于直链过期后的强制重解析）
     private var builtinParserResolved = false
+    /// ② 能力声明驱动 UI：当前书源已安装的内置解析器是否声明了 lossless 能力
+    private(set) var currentChapterParserDeclaresLossless: Bool = false
+    /// P-05：记录已触发章尾预解析的下一章 URL，避免重复请求
+    private var preResolvedNextChapterURL: String?
     var modelContext: ModelContext?
 
     init() {
@@ -902,12 +904,14 @@ final class PlayerEngine {
                 usingLocal = true
                 bufferedRange = 1.0
             } else {
-                let qualityCode = audioQualityTier.parserQualityCode(isOnWiFi: DownloadManager.shared.isOnWiFi)
-                let parsers = await BuiltinParserRuntime.shared.installedParsers()
-                for p in parsers {
-                    await BuiltinParserRuntime.shared.setConfigValue(parserID: p.id, key: "quality", value: qualityCode)
-                }
-                let stream = try await PluginRuntime.shared.resolvePlayStream(sourceID: book.sourceID, episodeURL: chapter.url)
+                // 音质档由 QualityPolicy 在解析入口内部换算成"当前链"的码（T3：不再写解析器配置），
+                // 这里只需把用户档位透传下去。
+                let stream = try await PluginRuntime.shared.resolvePlayStream(
+                    sourceID: book.sourceID,
+                    episodeURL: chapter.url,
+                    forDownload: false,
+                    tier: audioQualityTier
+                )
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 guard let remote = JsHostBridge.makeRequestURL(from: stream.url, relativeTo: chapter.url) else {
                     throw PluginError.parseFailed("无效的音频 URL")
@@ -916,6 +920,11 @@ final class PlayerEngine {
                 headers = stream.headers
                 streamKind = stream.kind
                 builtinParserResolved = stream.resolvedBy == BuiltinParserRuntime.resolverTag
+                if let matchedParser = await BuiltinParserRuntime.shared.parser(forSourceID: book.sourceID, sourceURL: book.url) {
+                    currentChapterParserDeclaresLossless = QualityPolicy.parserDeclaresLossless(matchedParser.meta.qualities)
+                } else {
+                    currentChapterParserDeclaresLossless = false
+                }
             }
 
             guard !Task.isCancelled, generation == playbackGeneration else { return }
@@ -1147,6 +1156,28 @@ final class PlayerEngine {
         try? session.setActive(true)
     }
 
+    /// P-05：播放接近章尾时低优先级预热下一章解析缓存，切章时近零等待
+    private func preResolveNextChapterIfNeeded() {
+        guard let book = currentBook,
+              let cur = currentChapter,
+              let idx = chapters.firstIndex(where: { $0.id == cur.id }),
+              idx + 1 < chapters.count else { return }
+        let next = chapters[idx + 1]
+        guard next.url != preResolvedNextChapterURL else { return }
+        preResolvedNextChapterURL = next.url
+        let sourceID = book.sourceID
+        let nextURL = next.url
+        let tier = audioQualityTier
+        Task.detached(priority: .utility) {
+            _ = try? await PluginRuntime.shared.resolvePlayStream(
+                sourceID: sourceID,
+                episodeURL: nextURL,
+                forDownload: false,
+                tier: tier
+            )
+        }
+    }
+
     private func observePeriodicTime() {
         let interval = CMTime(seconds: 1.0, preferredTimescale: 600)
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
@@ -1161,6 +1192,10 @@ final class PlayerEngine {
                 let dur = item.duration.seconds
                 if dur.isFinite && dur > 0 {
                     self.clock.durationSec = dur
+                    // P-05：章尾剩余 <= 60s 时后台低优先级预解析下一章直链，降低切章等待
+                    if dur > 30, (dur - sec) <= 60 {
+                        self.preResolveNextChapterIfNeeded()
+                    }
                     if BookSkipConfig.shouldTriggerOutroSkip(
                         positionSec: sec,
                         durationSec: dur,

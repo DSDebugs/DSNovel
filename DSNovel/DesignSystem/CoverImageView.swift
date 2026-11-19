@@ -14,7 +14,10 @@ struct URLSessionCoverImageFetcher: CoverImageDataFetching {
     }
 }
 
-/// 高性能封面图片管线（T0-06）：内存 NSCache（上限 80 MB）+ 磁盘缓存（上限 200 MB，超出淘汰至 70%，30 秒节流）+ 同 URL 并发请求合并 + ImageIO 后台降采样
+/// 高性能封面图片管线（T0-06 + v2.8 滚动性能优化）：
+/// - 内存 NSCache（上限 80 MB，直接用 url_pixelMax 作键，消除主线程 SHA256 开销）
+/// - 磁盘缓存（上限 200 MB，超出淘汰至 70%，30 秒节流，后台卸载不阻塞 Actor）
+/// - 同 URL 并发请求合并 + 最多 8 路并发下载限流 + 快速取消不可见卡片
 actor CoverImagePipeline {
     static let shared = CoverImagePipeline()
 
@@ -30,6 +33,9 @@ actor CoverImagePipeline {
     private var inflightTasks: [String: Task<Data?, Never>] = [:]
     private var lastEvictionTime: TimeInterval = 0
     private let evictionThrottleInterval: TimeInterval
+    private let maxConcurrentDownloads: Int = 8
+    private var activeDownloads: Int = 0
+    private var downloadWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         diskDirectory: URL? = nil,
@@ -53,12 +59,14 @@ actor CoverImagePipeline {
         memoryCache.object(forKey: key as NSString)
     }
 
+    nonisolated static func memoryCacheKey(for url: String, side: CGFloat, scale: CGFloat) -> String {
+        let pixelMax = Int(max(side, 80) * scale)
+        return "\(url)_\(pixelMax)"
+    }
+
     nonisolated func cachedInMemory(for url: String, side: CGFloat = 96, scale: CGFloat = 3.0) -> UIImage? {
         guard !url.isEmpty else { return nil }
-        let pixelMax = Int(max(side, 80) * scale)
-        let digest = SHA256.hash(data: Data(url.utf8))
-        let urlHash = digest.map { String(format: "%02x", $0) }.joined()
-        let cacheKey = "\(urlHash)_\(pixelMax)"
+        let cacheKey = Self.memoryCacheKey(for: url, side: side, scale: scale)
         return memoryCache.object(forKey: cacheKey as NSString)
     }
 
@@ -66,24 +74,55 @@ actor CoverImagePipeline {
         await loadImage(url: url, headers: [:], targetPointSize: targetSize)
     }
 
+    private func acquireDownloadSlot() async {
+        if activeDownloads < maxConcurrentDownloads {
+            activeDownloads += 1
+            return
+        }
+        await withCheckedContinuation { cont in
+            downloadWaiters.append(cont)
+        }
+        activeDownloads += 1
+    }
+
+    private func releaseDownloadSlot() {
+        activeDownloads = max(0, activeDownloads - 1)
+        if !downloadWaiters.isEmpty {
+            let next = downloadWaiters.removeFirst()
+            next.resume()
+        }
+    }
+
     func loadImage(url: String, headers: [String: String] = [:], targetPointSize: CGSize, scale: CGFloat = 3.0) async -> UIImage? {
         guard !url.isEmpty, let requestURL = URL(string: url) else { return nil }
-        let pixelMax = Int(max(targetPointSize.width, targetPointSize.height, 80) * scale)
-        let urlHash = sha256Hex(url)
-        let cacheKey = "\(urlHash)_\(pixelMax)"
+        let maxSide = max(targetPointSize.width, targetPointSize.height)
+        let pixelMax = Int(max(maxSide, 80) * scale)
+        let cacheKey = Self.memoryCacheKey(for: url, side: maxSide, scale: scale)
 
         if let mem = memoryCache.object(forKey: cacheKey as NSString) {
             return mem
         }
+        if Task.isCancelled { return nil }
 
+        let urlHash = sha256Hex(url)
         let diskURL = diskDirectory.appendingPathComponent(urlHash + ".img")
-        if FileManager.default.fileExists(atPath: diskURL.path),
-           let data = try? Data(contentsOf: diskURL),
-           let downsampled = Self.downsample(data: data, maxDimensionInPixels: pixelMax) {
+
+        // 磁盘读取与降采样卸载到后台线程，不阻塞 Actor 队列
+        let diskImage: UIImage? = await Task.detached(priority: .utility) {
+            guard !Task.isCancelled,
+                  FileManager.default.fileExists(atPath: diskURL.path),
+                  let data = try? Data(contentsOf: diskURL),
+                  let downsampled = CoverImagePipeline.downsample(data: data, maxDimensionInPixels: pixelMax) else {
+                return nil
+            }
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: diskURL.path)
-            let cost = Int(downsampled.size.width * downsampled.size.height * 4)
-            memoryCache.setObject(downsampled, forKey: cacheKey as NSString, cost: cost)
             return downsampled
+        }.value
+
+        if let diskImage {
+            let cost = Int(diskImage.size.width * diskImage.size.height * 4)
+            memoryCache.setObject(diskImage, forKey: cacheKey as NSString, cost: cost)
+            return diskImage
         }
 
         if Task.isCancelled { return nil }
@@ -94,8 +133,14 @@ actor CoverImagePipeline {
         } else {
             let fetcherRef = self.fetcher
             let targetDiskURL = diskURL
-            let newTask = Task<Data?, Never> {
-                var request = URLRequest(url: requestURL, timeoutInterval: 12)
+            let newTask = Task<Data?, Never> { [weak self] in
+                guard let self else { return nil }
+                await self.acquireDownloadSlot()
+                defer {
+                    Task { await self.releaseDownloadSlot() }
+                }
+                if Task.isCancelled { return nil }
+                var request = URLRequest(url: requestURL, timeoutInterval: 10)
                 for (k, v) in headers {
                     request.setValue(v, forHTTPHeaderField: k)
                 }
@@ -124,10 +169,16 @@ actor CoverImagePipeline {
         let rawData = await task.value
         inflightTasks[url] = nil
 
+        if Task.isCancelled { return nil }
         guard let data = rawData else { return nil }
-        evictDiskCacheIfNeeded()
+        evictDiskCacheIfNeeded(force: false)
 
-        if let downsampled = Self.downsample(data: data, maxDimensionInPixels: pixelMax) {
+        let downsampled: UIImage? = await Task.detached(priority: .utility) {
+            guard !Task.isCancelled else { return nil }
+            return CoverImagePipeline.downsample(data: data, maxDimensionInPixels: pixelMax)
+        }.value
+
+        if let downsampled {
             let cost = Int(downsampled.size.width * downsampled.size.height * 4)
             memoryCache.setObject(downsampled, forKey: cacheKey as NSString, cost: cost)
             return downsampled
@@ -140,6 +191,18 @@ actor CoverImagePipeline {
         guard force || (now - lastEvictionTime >= evictionThrottleInterval) else { return }
         lastEvictionTime = now
 
+        let dir = self.diskDirectory
+        let limit = self.maxDiskBytes
+        if force {
+            Self.performDiskEviction(in: dir, maxDiskBytes: limit)
+        } else {
+            Task.detached(priority: .background) {
+                CoverImagePipeline.performDiskEviction(in: dir, maxDiskBytes: limit)
+            }
+        }
+    }
+
+    nonisolated private static func performDiskEviction(in diskDirectory: URL, maxDiskBytes: Int) {
         let fm = FileManager.default
         guard let urls = try? fm.contentsOfDirectory(
             at: diskDirectory,
@@ -246,9 +309,10 @@ struct CoverImageView: View, Equatable {
         DSCover(
             url: url,
             title: title,
-            side: min(width, height),
-            badges: [],
+            side: max(width, height),
             onImageLoaded: onImageLoaded
         )
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }

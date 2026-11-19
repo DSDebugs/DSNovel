@@ -71,7 +71,7 @@ function parserError(reason, message) {
   return err;
 }
 
-// ---------- host 封装（与书源 prelude 同构，前缀命名空间由宿主区分） ----------
+// ---------- host 封装（最小权限暴露面，D-09 / H-06） ----------
 
 function __makeParserHost(j) {
   function un(s) {
@@ -86,7 +86,6 @@ function __makeParserHost(j) {
     return r.v;
   }
   function opt(o) { return o ? JSON.stringify(o) : null; }
-  function fn(o, name) { return o && typeof o[name] === 'function' ? o[name] : null; }
   function s(v) { return v === null || v === undefined ? null : String(v); }
 
   return {
@@ -94,20 +93,13 @@ function __makeParserHost(j) {
     userAgent: function (desktop) { return j.userAgent(!!desktop); },
     webViewUA: function () { return j.webViewUA ? String(j.webViewUA() || '') : ''; },
     getString: function (url, o) { return un(j.request(String(url), opt(o))); },
-    getHtml: function (url, o) { return j.parseHtml(un(j.request(String(url), opt(o))), String(url)); },
     getJson: function (url, o) { return parseJson(un(j.request(String(url), opt(o)))); },
-    getStrings: function (urls, o, concurrency) { return un(j.requestAll(JSON.stringify(urls), opt(o), concurrency || 3)); },
-    finalUrl: function (url, o) { return un(j.finalUrl(String(url), opt(o))); },
-    fetch: function (url, o) { return un(j.fetch(String(url), opt(o))); },
-    status: function (url, o) { return un(j.status(String(url), opt(o))); },
-    parseHtml: function (html, baseUrl) { return j.parseHtml(String(html), s(baseUrl)); },
     cookies: function (url) { return j.cookies(String(url)); },
     getPref: function (key, def) {
       var v = j.getPref(String(key));
-      return (v === null || v === undefined || v === '' ) ? (def === undefined ? null : def) : v;
+      return (v === null || v === undefined || v === '') ? (def === undefined ? null : def) : v;
     },
     setPref: function (key, value) { j.setPref(String(key), s(value)); },
-    toast: function (msg) { j.toast(String(msg)); },
     log: function (msg) { j.log(String(msg)); },
     sleep: function (ms) { j.sleep(Math.max(0, Math.round(ms))); },
     readCache: function (name) {
@@ -128,6 +120,21 @@ function __makeParserHost(j) {
 
 // ---------- 注册与调用契约 ----------
 
+function __validateStringArray(arr, fieldName) {
+  if (arr === undefined || arr === null) return [];
+  if (!Array.isArray(arr)) {
+    throw new Error('registerBuiltinParser：targets.' + fieldName + ' 必须为字符串数组');
+  }
+  var out = [];
+  for (var i = 0; i < arr.length; i++) {
+    if (typeof arr[i] !== 'string' || !arr[i].trim()) {
+      throw new Error('registerBuiltinParser：targets.' + fieldName + ' 必须为非空字符串数组');
+    }
+    out.push(arr[i].trim());
+  }
+  return out;
+}
+
 function registerBuiltinParser(parser) {
   if (!parser || !parser.id || !parser.name) {
     throw new Error('registerBuiltinParser：缺少 id 或 name');
@@ -135,8 +142,17 @@ function registerBuiltinParser(parser) {
   if (typeof parser.resolveAudio !== 'function') {
     throw new Error('registerBuiltinParser：必须实现 resolveAudio(request)');
   }
-  if (!parser.targets || ((parser.targets.hosts || []).length === 0 && (parser.targets.sourceIDs || []).length === 0)) {
+  if (!parser.targets || typeof parser.targets !== 'object') {
     throw new Error('registerBuiltinParser：必须在 targets 中声明 hosts 或 sourceIDs');
+  }
+  var hosts = __validateStringArray(parser.targets.hosts, 'hosts');
+  var sourceIDs = __validateStringArray(parser.targets.sourceIDs, 'sourceIDs');
+  if (hosts.length === 0 && sourceIDs.length === 0) {
+    throw new Error('registerBuiltinParser：必须在 targets 中声明 hosts 或 sourceIDs');
+  }
+  parser.targets = { hosts: hosts, sourceIDs: sourceIDs };
+  if (__parsers.length > 0) {
+    throw new Error('registerBuiltinParser：每个脚本仅支持注册一个内置解析器');
   }
   parser.host = __makeParserHost(__bridge.host(String(parser.id), String(parser.name)));
   parser.config = parser.config || [];
@@ -162,6 +178,8 @@ function __metaParser() {
       summary: String(p.description || p.summary || ''),
       hosts: (p.targets && p.targets.hosts) || [],
       sourceIDs: (p.targets && p.targets.sourceIDs) || [],
+      /** 解析器声明的音质档位（语义档位 id 列表，如 ['auto','saver','standard','high','lossless']） */
+      qualities: Array.isArray(p.qualities) ? p.qualities : [],
       supportsPlayback: caps.playback !== false,
       supportsDownload: caps.download !== false,
       requiresCookie: caps.needsCookie !== false,
@@ -171,7 +189,7 @@ function __metaParser() {
           title: String(c.title || c.key),
           defaultValue: String(c.defaultValue === undefined ? '' : c.defaultValue),
           kind: String(c.kind || 'text'),
-          options: c.options || []
+          options: Array.isArray(c.options) ? c.options : []
         };
       }),
       methods: methods
