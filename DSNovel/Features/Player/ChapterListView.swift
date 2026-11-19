@@ -145,8 +145,7 @@ struct ChapterListView: View {
                     isPresented: Binding(
                         get: { pendingDeleteSnapshot != nil },
                         set: { if !$0 { pendingDeleteSnapshot = nil } }
-                    ),
-                    titleVisibility: .visible
+                    )
                 ) {
                     Button("删除离线文件", role: .destructive) {
                         if let snap = pendingDeleteSnapshot {
