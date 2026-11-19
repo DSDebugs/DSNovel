@@ -156,21 +156,16 @@ struct AboutView: View {
 
     private var appHeroCard: some View {
         VStack(spacing: Spacing.s3) {
-            ZStack {
-                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.dsAccent, Color.dsAccent.opacity(0.78)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 64, height: 64)
-                Image(systemName: "headphones")
-                    .font(DSTypography.bookTitleLarge)
-                    .foregroundStyle(Color.dsOnAccent)
-            }
-            .shadow(color: Color.dsAccent.opacity(0.25), radius: 10, y: 4)
+            Image("AppIconPreview")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 64, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                        .strokeBorder(Color.dsSeparator.opacity(0.25), lineWidth: 0.5)
+                )
+                .shadow(color: Color.black.opacity(0.12), radius: 10, y: 4)
             .accessibilityHidden(true)
 
             VStack(spacing: 4) {

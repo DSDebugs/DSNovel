@@ -5,12 +5,13 @@ import UIKit
 struct SourceListView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var sourceStore = SourceStore.shared
-    @State private var isBatchMode = false
+    @State private var isOrganizing = false
     @State private var selectedIDs: Set<String> = []
     @State private var showImportSheet = false
     @State private var showGroupEditor = false
+    @State private var showMoveGroupSheet = false
+    @State private var showBatchDeleteConfirm = false
     @State private var pendingDeleteSource: PluginRecord?
-    @State private var editMode: EditMode = .inactive
 
     init() {}
 
@@ -35,6 +36,17 @@ struct SourceListView: View {
         sourceStore.groupedSections(from: sourceStore.filteredSources, includeEmptyGroups: true)
     }
 
+    private var organizeRows: [SourceOrganizeRow] {
+        sourceStore.buildOrganizeRows()
+    }
+
+    private var navigationTitleText: String {
+        if isOrganizing {
+            return selectedIDs.isEmpty ? "整理书源" : "已选 \(selectedIDs.count) 项"
+        }
+        return "书源"
+    }
+
     var body: some View {
         Group {
             if sourceStore.allSources.isEmpty {
@@ -43,65 +55,17 @@ struct SourceListView: View {
                     onPrimary: { showImportSheet = true },
                     onSecondary: nil
                 )
+            } else if isOrganizing {
+                organizeListView
             } else {
-                List {
-                    if !sourceStore.pinnedSources.isEmpty {
-                        Section("已置顶") {
-                            ForEach(sourceStore.pinnedSources) { src in
-                                rowWithActions(src, groupID: src.groupID)
-                                    .listRowBackground(Color.dsSurfaceCard)
-                            }
-                        }
-                    }
-
-                    ForEach(groupedSections) { section in
-                        Section {
-                            if section.sources.isEmpty {
-                                Text("拖动书源到此分组")
-                                    .font(DSTypography.caption)
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.vertical, Spacing.s2)
-                                    .listRowBackground(Color.dsSurfaceCard)
-                                    .dropDestination(for: String.self) { droppedIDs, _ in
-                                        sourceStore.moveSources(Set(droppedIDs), toGroupID: section.groupID)
-                                        return !droppedIDs.isEmpty
-                                    }
-                            } else {
-                                ForEach(section.sources) { src in
-                                    rowWithActions(src, groupID: section.groupID)
-                                        .listRowBackground(Color.dsSurfaceCard)
-                                }
-                                .onMove { indices, newOffset in
-                                    sourceStore.reorderSources(inGroupID: section.groupID, from: indices, to: newOffset)
-                                }
-                            }
-                        } header: {
-                            HStack {
-                                Text(section.title)
-                                Spacer()
-                                Text("\(section.sources.count)")
-                                    .font(DSTypography.numericCaption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                            .dropDestination(for: String.self) { droppedIDs, _ in
-                                sourceStore.moveSources(Set(droppedIDs), toGroupID: section.groupID)
-                                return !droppedIDs.isEmpty
-                            }
-                        }
-                    }
-                }
-                .listStyle(.insetGrouped)
-                .scrollContentBackground(.hidden)
-                .environment(\.editMode, $editMode)
+                browseListView
             }
         }
         .background(Color.dsSurfaceGrouped)
-        .navigationTitle(isBatchMode ? "已选 \(selectedIDs.count) 项" : "书源")
+        .navigationTitle(navigationTitleText)
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
-            if !sourceStore.allSources.isEmpty {
+            if !sourceStore.allSources.isEmpty && !isOrganizing {
                 DSChipBar(
                     items: filterChips,
                     selection: $sourceStore.filter
@@ -111,16 +75,24 @@ struct SourceListView: View {
             }
         }
         .searchable(text: $sourceStore.searchKeyword, prompt: "搜索书源名称或域名")
-        .toolbarVisibility(isBatchMode ? .hidden : .visible, for: .tabBar)
-        .onChange(of: isBatchMode) { _, hidden in AppRouter.shared.isBottomBarHidden = hidden }
+        .toolbarVisibility(isOrganizing ? .hidden : .visible, for: .tabBar)
+        .onChange(of: isOrganizing) { _, organizing in
+            AppRouter.shared.isBottomBarHidden = organizing
+            if organizing {
+                sourceStore.filter = .all
+                sourceStore.searchKeyword = ""
+            } else {
+                selectedIDs.removeAll()
+            }
+        }
         .toolbar {
-            if isBatchMode || editMode == .active {
+            if isOrganizing {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") {
-                        isBatchMode = false
-                        editMode = .inactive
+                        isOrganizing = false
                         selectedIDs.removeAll()
                     }
+                    .fontWeight(.semibold)
                 }
             } else {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -134,17 +106,20 @@ struct SourceListView: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("检测全部") {
+                        Button {
                             Task { await sourceStore.checkSources() }
+                        } label: {
+                            Label("检测全部", systemImage: "stethoscope")
                         }
-                        Button("调整排序") {
-                            editMode = .active
+                        Button {
+                            isOrganizing = true
+                        } label: {
+                            Label("整理书源", systemImage: "arrow.up.arrow.down")
                         }
-                        Button("批量管理") {
-                            isBatchMode = true
-                        }
-                        Button("管理分组") {
+                        Button {
                             showGroupEditor = true
+                        } label: {
+                            Label("管理分组", systemImage: "folder")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -153,26 +128,23 @@ struct SourceListView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if isBatchMode {
+            if isOrganizing {
                 BatchSelectionBar(
                     selectedCount: selectedIDs.count,
                     onEnable: {
                         sourceStore.setEnabled(true, forIDs: selectedIDs)
-                        isBatchMode = false
                         selectedIDs.removeAll()
+                        DSHapticPolicy.fire(.success)
+                        BannerCenter.shared.show("已启用选中书源", kind: .success)
                     },
                     onDisable: {
                         sourceStore.setEnabled(false, forIDs: selectedIDs)
-                        isBatchMode = false
                         selectedIDs.removeAll()
+                        DSHapticPolicy.fire(.success)
+                        BannerCenter.shared.show("已停用选中书源", kind: .info)
                     },
-                    onMoveGroup: { showGroupEditor = true },
-                    onDelete: {
-                        let ids = selectedIDs
-                        isBatchMode = false
-                        selectedIDs.removeAll()
-                        Task { await sourceStore.deleteSources(ids) }
-                    }
+                    onMoveGroup: { showMoveGroupSheet = true },
+                    onDelete: { showBatchDeleteConfirm = true }
                 )
             }
         }
@@ -181,6 +153,17 @@ struct SourceListView: View {
         }
         .sheet(isPresented: $showGroupEditor) {
             SourceGroupEditor(sourceStore: sourceStore, onClose: { showGroupEditor = false })
+        }
+        .sheet(isPresented: $showMoveGroupSheet) {
+            SourceMoveGroupSheet(
+                sourceStore: sourceStore,
+                selectedIDs: selectedIDs,
+                onMoved: { groupTitle in
+                    selectedIDs.removeAll()
+                    BannerCenter.shared.show("已移至「\(groupTitle)」", kind: .success)
+                },
+                onClose: { showMoveGroupSheet = false }
+            )
         }
         .alert(
             "删除书源",
@@ -199,34 +182,147 @@ struct SourceListView: View {
         } message: {
             Text("确认删除书源「\(pendingDeleteSource?.name ?? "")」？")
         }
+        .background {
+            Color.clear
+                .alert("删除已选书源", isPresented: $showBatchDeleteConfirm) {
+                    Button("取消", role: .cancel) {}
+                    Button("删除 \(selectedIDs.count) 个书源", role: .destructive) {
+                        let ids = selectedIDs
+                        selectedIDs.removeAll()
+                        Task {
+                            await sourceStore.deleteSources(ids)
+                            DSHapticPolicy.fire(.success)
+                            BannerCenter.shared.show("已删除 \(ids.count) 个书源", kind: .info)
+                        }
+                    }
+                } message: {
+                    Text("确认删除已选的 \(selectedIDs.count) 个书源？书架与下载记录将保留。")
+                }
+        }
         .onAppear {
             sourceStore.modelContext = modelContext
         }
+        .onDisappear {
+            if isOrganizing {
+                AppRouter.shared.isBottomBarHidden = false
+            }
+        }
     }
 
-    private func rowWithActions(_ src: PluginRecord, groupID: String?) -> some View {
+    // MARK: - 整理模式（支持按住上下拖动改顺序与跨分组 + 勾选批量操作）
+
+    private var organizeListView: some View {
+        let rows = organizeRows
+        return List {
+            Section {
+                ForEach(rows) { row in
+                    switch row {
+                    case .groupHeader(_, let title, let count):
+                        HStack {
+                            Text(title)
+                                .font(DSTypography.cardTitle)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(count)")
+                                .font(DSTypography.numericCaption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, Spacing.s2)
+                        .padding(.bottom, 2)
+                        .listRowBackground(Color.dsSurfaceGrouped)
+                        .listRowSeparator(.hidden)
+                        .moveDisabled(true)
+                        .deleteDisabled(true)
+
+                    case .source(let src):
+                        SourceRow(
+                            source: src,
+                            isChecking: sourceStore.checkingSourceIDs.contains(src.id),
+                            isBatchSelecting: true,
+                            isSelected: selectedIDs.contains(src.id),
+                            onSelect: {
+                                if selectedIDs.contains(src.id) {
+                                    selectedIDs.remove(src.id)
+                                } else {
+                                    selectedIDs.insert(src.id)
+                                }
+                                DSHapticPolicy.fire(.selection)
+                            }
+                        )
+                        .listRowBackground(Color.dsSurfaceCard)
+                        .deleteDisabled(true)
+                    }
+                }
+                .onMove { offsets, destination in
+                    sourceStore.applyOrganizeMove(rows: rows, from: offsets, to: destination)
+                    DSHapticPolicy.fire(.selection)
+                }
+            } header: {
+                Text("按住书源或右侧手柄上下拖动即可调整顺序与所属分组，点按勾选可批量操作")
+                    .font(DSTypography.caption)
+                    .foregroundStyle(.secondary)
+                    .textCase(nil)
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .environment(\.editMode, .constant(.active))
+    }
+
+    // MARK: - 日常浏览模式
+
+    private var browseListView: some View {
+        List {
+            if !sourceStore.pinnedSources.isEmpty {
+                Section("已置顶") {
+                    ForEach(sourceStore.pinnedSources) { src in
+                        browseRow(src)
+                            .listRowBackground(Color.dsSurfaceCard)
+                    }
+                }
+            }
+
+            ForEach(groupedSections) { section in
+                Section {
+                    if section.sources.isEmpty {
+                        Text("暂无书源，可在「整理书源」中拖入此分组")
+                            .font(DSTypography.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, Spacing.s2)
+                            .listRowBackground(Color.dsSurfaceCard)
+                    } else {
+                        ForEach(section.sources) { src in
+                            browseRow(src)
+                                .listRowBackground(Color.dsSurfaceCard)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text(section.title)
+                        Spacer()
+                        Text("\(section.sources.count)")
+                            .font(DSTypography.numericCaption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.bottom, DSBottomBar.totalHeight + Spacing.s4, for: .scrollContent)
+    }
+
+    private func browseRow(_ src: PluginRecord) -> some View {
         SourceRow(
             source: src,
             isChecking: sourceStore.checkingSourceIDs.contains(src.id),
-            isBatchSelecting: isBatchMode,
-            isSelected: selectedIDs.contains(src.id),
+            isBatchSelecting: false,
+            isSelected: false,
             onSelect: {
-                if isBatchMode {
-                    if selectedIDs.contains(src.id) {
-                        selectedIDs.remove(src.id)
-                    } else {
-                        selectedIDs.insert(src.id)
-                    }
-                } else {
-                    AppRouter.shared.open(.sourceDetail(id: src.id, focus: nil))
-                }
+                AppRouter.shared.open(.sourceDetail(id: src.id, focus: nil))
             }
         )
-        .draggable(src.id)
-        .dropDestination(for: String.self) { droppedIDs, _ in
-            sourceStore.moveSources(Set(droppedIDs), toGroupID: groupID)
-            return !droppedIDs.isEmpty
-        }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
                 Task { _ = await sourceStore.checkSource(src) }
@@ -256,35 +352,6 @@ struct SourceListView: View {
                 Label(src.isPinned ? "取消置顶" : "置顶", systemImage: "pin")
             }
             .tint(Color.dsAccent)
-        }
-        .contextMenu {
-            Button("检测") { Task { _ = await sourceStore.checkSource(src) } }
-            Button(src.isPinned ? "取消置顶" : "置顶") {
-                src.isPinned.toggle()
-                try? modelContext.save()
-                sourceStore.recomputeDerived()
-            }
-            if !sourceStore.groups.isEmpty {
-                Menu("移至分组") {
-                    ForEach(sourceStore.groups.sorted { $0.order < $1.order }) { grp in
-                        Button(grp.name) {
-                            sourceStore.moveSources([src.id], toGroupID: grp.id)
-                        }
-                    }
-                    Button("未分组") {
-                        sourceStore.moveSources([src.id], toGroupID: nil)
-                    }
-                }
-            }
-            Button("复制书源地址") {
-                UIPasteboard.general.string = src.siteURL
-                BannerCenter.shared.show("已复制", kind: .info)
-            }
-            if src.requiresLogin {
-                Button("登录") { AuthCoordinator.shared.presentLogin(forSourceID: src.id) }
-            }
-            Divider()
-            Button("删除", role: .destructive) { pendingDeleteSource = src }
         }
     }
 }

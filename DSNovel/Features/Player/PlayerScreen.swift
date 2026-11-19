@@ -28,8 +28,6 @@ struct PlayerScreen: View {
     @State private var isBookFavorited: Bool = false
     @State private var heartBounceCount: Int = 0
     @State private var downloadBounceCount: Int = 0
-    @State private var chapterSwitchHint: String?
-    @State private var hintDismissTask: Task<Void, Never>?
     @GestureState private var dragOffset: CGFloat = 0
 
     init() {
@@ -71,22 +69,6 @@ struct PlayerScreen: View {
         isBookFavorited = libraryStore.isBookInShelf(player.currentBookID, fallbackContext: modelContext)
     }
 
-    private func triggerChapterSwitchHint(_ text: String) {
-        hintDismissTask?.cancel()
-        withAnimation(Motion.resolve(Motion.snappy, reduce: reduceMotion)) {
-            chapterSwitchHint = text
-        }
-        hintDismissTask = Task {
-            try? await Task.sleep(for: .milliseconds(900))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                withAnimation(Motion.resolve(Motion.quick, reduce: reduceMotion)) {
-                    chapterSwitchHint = nil
-                }
-            }
-        }
-    }
-
     var body: some View {
         ZStack {
             PlayerAmbientBackground(
@@ -114,7 +96,6 @@ struct PlayerScreen: View {
                     bookID: player.currentBookID,
                     ambientColor: ambientColor,
                     playbackState: player.state,
-                    chapterSwitchHint: chapterSwitchHint,
                     onDoubleTapPlayPause: {
                         DSHapticPolicy.fire(.playPause)
                         player.togglePlayPause()
@@ -177,7 +158,6 @@ struct PlayerScreen: View {
                         canPlayNext: player.nextChapterAvailability != .none,
                         onPreviousChapter: {
                             DSHapticPolicy.fire(.chapterSwitch)
-                            triggerChapterSwitchHint("上一章")
                             player.playPreviousChapter()
                         },
                         onSkipBackward: { player.skipBackward(15) },
@@ -188,7 +168,6 @@ struct PlayerScreen: View {
                         onSkipForward: { player.skipForward(30) },
                         onNextChapter: {
                             DSHapticPolicy.fire(.chapterSwitch)
-                            triggerChapterSwitchHint("下一章")
                             player.playNextChapter()
                         }
                     )

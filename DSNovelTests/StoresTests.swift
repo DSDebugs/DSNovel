@@ -384,4 +384,43 @@ final class StoresTests: XCTestCase {
         XCTAssertEqual(searchStore.hotBooksSourceName, "喜马拉雅")
         XCTAssertEqual(searchStore.hotBooks[0].author, "头陀渊讲故事")
     }
+
+    @MainActor
+    func testSourceStoreOrganizeCrossGroupDragAndGroupCRUD() throws {
+        let container = try TestContainer.make()
+        let ctx = container.mainContext
+        let store = SourceStore()
+        store.modelContext = ctx
+
+        let g1 = try XCTUnwrap(store.createGroup(named: "主力听书"))
+        let g2 = try XCTUnwrap(store.createGroup(named: "精品有声"))
+        XCTAssertNil(store.createGroup(named: "主力听书")) // 重名拦截
+
+        let p1 = PluginRecord(id: "p1", packageID: "pkg", name: "番茄畅听", version: "1.0", isEnabled: true, discoverable: true, groupID: g1.id, order: 0)
+        let p2 = PluginRecord(id: "p2", packageID: "pkg", name: "喜马拉雅", version: "1.0", isEnabled: true, discoverable: true, groupID: g1.id, order: 1)
+        let p3 = PluginRecord(id: "p3", packageID: "pkg", name: "云图有声", version: "1.0", isEnabled: true, discoverable: true, groupID: g2.id, order: 0)
+        ctx.insert(p1); ctx.insert(p2); ctx.insert(p3)
+        try ctx.save()
+        store.refreshNow()
+
+        // 跨分组拖动：将云图有声（索引 4）拖到主力听书首位（索引 1）
+        let rows = store.buildOrganizeRows()
+        XCTAssertEqual(rows.count, 6) // g1Header, p1, p2, g2Header, p3, ungroupedHeader
+        store.applyOrganizeMove(rows: rows, from: IndexSet(integer: 4), to: 1)
+        XCTAssertEqual(p3.groupID, g1.id)
+        XCTAssertEqual(p3.order, 0)
+        XCTAssertEqual(store.discoverableSources.map(\.id), ["p3", "p1", "p2"])
+
+        // 分组重命名与顺序调整
+        XCTAssertTrue(store.renameGroup(g2, to: "精选有声"))
+        XCTAssertEqual(g2.name, "精选有声")
+        store.reorderGroups(from: IndexSet(integer: 1), to: 0)
+        XCTAssertEqual(store.sortedGroups.map(\.id), [g2.id, g1.id])
+
+        // 删除分组后组内书源 groupID 应清空为 nil
+        store.deleteGroup(g1)
+        XCTAssertNil(p1.groupID)
+        XCTAssertNil(p2.groupID)
+        XCTAssertNil(p3.groupID)
+    }
 }

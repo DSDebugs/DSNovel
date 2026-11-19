@@ -3,7 +3,7 @@ import UIKit
 
 /// 播放器沉浸封面组件：
 /// - 播放态：封面立体浮起（1.0x）+ 背部双层声波光环呼吸扩散；
-/// - 暂停态：封面柔和内收（0.86x）+ 背部光环收敛熄灭，不遮挡封面主体。
+/// - 暂停态：封面柔和内收（0.86x）+ 背部光环收敛熄灭，封面主体保持纯净无任何文字或浮层遮挡。
 struct PlayerCoverSection: View {
     @Environment(\.dsReduceMotion) private var reduceMotion
 
@@ -12,7 +12,6 @@ struct PlayerCoverSection: View {
     let bookID: String?
     let ambientColor: Color
     let playbackState: PlaybackState
-    let chapterSwitchHint: String?
     private let onDoubleTapPlayPause: () -> Void
     private let onImageLoaded: (UIImage) -> Void
 
@@ -22,7 +21,6 @@ struct PlayerCoverSection: View {
         bookID: String?,
         ambientColor: Color = .dsAccent,
         playbackState: PlaybackState,
-        chapterSwitchHint: String? = nil,
         onDoubleTapPlayPause: @escaping () -> Void,
         onImageLoaded: @escaping (UIImage) -> Void
     ) {
@@ -31,7 +29,6 @@ struct PlayerCoverSection: View {
         self.bookID = bookID
         self.ambientColor = ambientColor
         self.playbackState = playbackState
-        self.chapterSwitchHint = chapterSwitchHint
         self.onDoubleTapPlayPause = onDoubleTapPlayPause
         self.onImageLoaded = onImageLoaded
     }
@@ -103,7 +100,7 @@ struct PlayerCoverSection: View {
                     }
                 }
 
-                // 3. 专辑封面主体
+                // 3. 专辑封面主体（纯净无任何浮层提示）
                 DSCover(
                     url: coverURL,
                     title: bookTitle.isEmpty ? "有声书" : bookTitle,
@@ -140,25 +137,6 @@ struct PlayerCoverSection: View {
                     }
                 )
                 .accessibilityLabel("专辑封面，双击播放或暂停")
-
-                if let hint = chapterSwitchHint, !hint.isEmpty {
-                    HStack(spacing: Spacing.s2) {
-                        Image(systemName: hint.contains("上一章") ? "backward.end.fill" : "forward.end.fill")
-                            .font(DSTypography.caption.weight(.bold))
-                        Text(hint)
-                            .font(DSTypography.cardTitle)
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, Spacing.s4)
-                    .padding(.vertical, Spacing.s2)
-                    .background(
-                        Capsule().fill(Color.black.opacity(0.68))
-                    )
-                    .overlay(
-                        Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
-                    )
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

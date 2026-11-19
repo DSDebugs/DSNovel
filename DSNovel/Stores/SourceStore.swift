@@ -10,6 +10,20 @@ struct GroupedSourceSection: Identifiable {
     let sources: [PluginRecord]
 }
 
+enum SourceOrganizeRow: Identifiable {
+    case groupHeader(groupID: String?, title: String, count: Int)
+    case source(PluginRecord)
+
+    var id: String {
+        switch self {
+        case .groupHeader(let gid, _, _):
+            return "header::\(gid ?? "__ungrouped__")"
+        case .source(let src):
+            return "source::\(src.id)"
+        }
+    }
+}
+
 enum SourceDisplayStatus: String, CaseIterable, Equatable, Sendable {
     case disabled
     case unavailable
@@ -178,11 +192,35 @@ final class SourceStore {
         recomputeDerived()
     }
 
-    func recomputeDerived() {
-        let sortedAll = allSources.sorted { a, b in
-            if a.searchPriorityScore != b.searchPriorityScore {
-                return a.searchPriorityScore < b.searchPriorityScore
+    var sortedGroups: [PluginGroup] {
+        groups.sorted { a, b in
+            if a.order != b.order { return a.order < b.order }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+    }
+
+    func memberCount(forGroupID groupID: String?) -> Int {
+        let validGroupIDs = Set(groups.map(\.id))
+        return allSources.filter { src in
+            if let groupID {
+                return src.groupID == groupID
+            } else {
+                guard let gid = src.groupID, !gid.isEmpty else { return true }
+                return !validGroupIDs.contains(gid)
             }
+        }.count
+    }
+
+    func recomputeDerived() {
+        let groupRankByID: [String: Int] = Dictionary(
+            uniqueKeysWithValues: sortedGroups.enumerated().map { ($0.element.id, $0.offset) }
+        )
+        let ungroupedRank = groupRankByID.count
+        let sortedAll = allSources.sorted { a, b in
+            let rankA = a.groupID.flatMap { groupRankByID[$0] } ?? ungroupedRank
+            let rankB = b.groupID.flatMap { groupRankByID[$0] } ?? ungroupedRank
+            if rankA != rankB { return rankA < rankB }
+            if a.order != b.order { return a.order < b.order }
             return a.name.localizedStandardCompare(b.name) == .orderedAscending
         }
 
@@ -349,6 +387,134 @@ final class SourceStore {
             item.groupID = groupID
             item.order = idx
         }
+        try? modelContext?.save()
+        refreshNow()
+    }
+
+    /// 构建整理模式下的扁平可拖拽列表（包含所有分组标题及末尾「未分组」，支持同组调序与跨分组拖动）
+    func buildOrganizeRows() -> [SourceOrganizeRow] {
+        let orderedGroups = sortedGroups
+        let validGroupIDs = Set(orderedGroups.map(\.id))
+        var rows: [SourceOrganizeRow] = []
+
+        for group in orderedGroups {
+            let members = allSources
+                .filter { $0.groupID == group.id }
+                .sorted { a, b in
+                    if a.order != b.order { return a.order < b.order }
+                    return a.name.localizedStandardCompare(b.name) == .orderedAscending
+                }
+            rows.append(.groupHeader(groupID: group.id, title: group.name, count: members.count))
+            for src in members {
+                rows.append(.source(src))
+            }
+        }
+
+        let ungrouped = allSources
+            .filter { src in
+                guard let gid = src.groupID, !gid.isEmpty else { return true }
+                return !validGroupIDs.contains(gid)
+            }
+            .sorted { a, b in
+                if a.order != b.order { return a.order < b.order }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
+
+        rows.append(.groupHeader(
+            groupID: nil,
+            title: orderedGroups.isEmpty ? "全部书源" : "未分组",
+            count: ungrouped.count
+        ))
+        for src in ungrouped {
+            rows.append(.source(src))
+        }
+        return rows
+    }
+
+    /// 处理整理模式下的扁平拖拽移动（自动同步跨分组 groupID 与组内 order）
+    func applyOrganizeMove(rows currentRows: [SourceOrganizeRow], from offsets: IndexSet, to destination: Int) {
+        guard !currentRows.isEmpty else { return }
+        var updated = currentRows
+        let moving = offsets.map { updated[$0] }
+        // 仅允许移动书源行
+        guard moving.allSatisfy({ if case .source = $0 { return true } else { return false } }) else { return }
+
+        for idx in offsets.sorted(by: >) {
+            updated.remove(at: idx)
+        }
+        let adjustedDest = destination - offsets.filter { $0 < destination }.count
+        // 若拖到首个分组标题之上，自动落到首个分组标题下方首位
+        let minAllowedIndex = (updated.first.map { if case .groupHeader = $0 { return 1 } else { return 0 } }) ?? 0
+        let clampedDest = max(minAllowedIndex, min(adjustedDest, updated.count))
+        updated.insert(contentsOf: moving, at: clampedDest)
+
+        var activeGroupID: String? = nil
+        var orderInGroup = 0
+        for row in updated {
+            switch row {
+            case .groupHeader(let gid, _, _):
+                activeGroupID = gid
+                orderInGroup = 0
+            case .source(let src):
+                src.groupID = activeGroupID
+                src.order = orderInGroup
+                orderInGroup += 1
+            }
+        }
+        try? modelContext?.save()
+        refreshNow()
+    }
+
+    @discardableResult
+    func createGroup(named rawName: String) -> PluginGroup? {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard !groups.contains(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) else {
+            return nil
+        }
+        let nextOrder = (sortedGroups.last?.order ?? -1) + 1
+        let group = PluginGroup(name: trimmed, order: nextOrder)
+        modelContext?.insert(group)
+        try? modelContext?.save()
+        refreshNow()
+        return group
+    }
+
+    @discardableResult
+    func renameGroup(_ group: PluginGroup, to rawName: String) -> Bool {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let duplicate = groups.contains { $0.id != group.id && $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
+        guard !duplicate else { return false }
+        group.name = trimmed
+        try? modelContext?.save()
+        refreshNow()
+        return true
+    }
+
+    func reorderGroups(from offsets: IndexSet, to destination: Int) {
+        var ordered = sortedGroups
+        guard !ordered.isEmpty else { return }
+        let moving = offsets.map { ordered[$0] }
+        for idx in offsets.sorted(by: >) {
+            ordered.remove(at: idx)
+        }
+        let adjustedDest = destination - offsets.filter { $0 < destination }.count
+        let clampedDest = max(0, min(adjustedDest, ordered.count))
+        ordered.insert(contentsOf: moving, at: clampedDest)
+        for (idx, grp) in ordered.enumerated() {
+            grp.order = idx
+        }
+        try? modelContext?.save()
+        refreshNow()
+    }
+
+    func deleteGroup(_ group: PluginGroup) {
+        let targetID = group.id
+        for src in allSources where src.groupID == targetID {
+            src.groupID = nil
+        }
+        modelContext?.delete(group)
         try? modelContext?.save()
         refreshNow()
     }

@@ -96,8 +96,12 @@ struct DSBookCard: View {
         self.onNarratorTap = onNarratorTap
     }
 
+    private var isLargeCard: Bool {
+        side >= 145
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.s2) {
+        VStack(alignment: .leading, spacing: Spacing.s1) {
             Button(action: onAction) {
                 VStack(alignment: .leading, spacing: Spacing.s2) {
                     ZStack(alignment: .topLeading) {
@@ -127,12 +131,12 @@ struct DSBookCard: View {
                     }
 
                     Text(model.title)
-                        .font(.footnote.weight(.medium))
+                        .font(isLargeCard ? DSTypography.cardTitle : .footnote.weight(.medium))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
-                        .frame(width: side)
-                        .frame(minHeight: 34, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: side, alignment: .leading)
                 }
                 .contentShape(Rectangle())
             }
@@ -152,19 +156,20 @@ struct DSBookCard: View {
                         Text(model.author)
                             .lineLimit(1)
                     }
-                    .font(DSTypography.caption2.monospacedDigit())
+                    .font(isLargeCard ? DSTypography.numericCaption : DSTypography.caption2.monospacedDigit())
                     .foregroundStyle(Color.dsAccent)
                     .frame(width: side, alignment: .leading)
                 }
                 .buttonStyle(.plain)
             } else {
                 Text(model.progressSubtitle.isEmpty ? model.author : model.progressSubtitle)
-                    .font(DSTypography.caption2.monospacedDigit())
+                    .font(isLargeCard ? DSTypography.numericCaption : DSTypography.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .frame(width: side, alignment: .leading)
             }
         }
+        .frame(width: side, alignment: .topLeading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(model.accessibilitySummary)
     }

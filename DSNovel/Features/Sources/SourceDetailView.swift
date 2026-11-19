@@ -70,6 +70,19 @@ struct SourceDetailView: View {
             }
 
             Section("启用与能力") {
+                Picker("所属分组", selection: Binding<String>(
+                    get: { src.groupID ?? "" },
+                    set: { newVal in
+                        let targetGroupID = newVal.isEmpty ? nil : newVal
+                        sourceStore.moveSources([src.id], toGroupID: targetGroupID)
+                    }
+                )) {
+                    Text("未分组").tag("")
+                    ForEach(sourceStore.sortedGroups) { grp in
+                        Text(grp.name).tag(grp.id)
+                    }
+                }
+
                 Toggle("启用书源", isOn: Binding(
                     get: { src.isEnabled },
                     set: {

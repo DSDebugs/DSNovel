@@ -67,52 +67,56 @@ struct DSBookRow: View {
                 }
                 .buttonStyle(.plain)
 
-                if !authorLine.isEmpty {
-                    HStack(spacing: 4) {
-                        if !model.author.isEmpty && !isEditing {
-                            Button {
-                                if let onNarratorTap {
-                                    onNarratorTap(model.author)
-                                } else {
-                                    AppRouter.shared.searchByNarrator(model.author)
-                                }
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "mic.fill")
-                                        .font(DSTypography.caption2)
-                                    Text(model.author)
-                                        .lineLimit(1)
-                                }
-                                .font(DSTypography.subtitle)
-                                .foregroundStyle(Color.dsAccent)
+                if !model.author.isEmpty {
+                    if !isEditing {
+                        Button {
+                            if let onNarratorTap {
+                                onNarratorTap(model.author)
+                            } else {
+                                AppRouter.shared.searchByNarrator(model.author)
                             }
-                            .buttonStyle(.plain)
-                        } else if !model.author.isEmpty {
-                            Text(model.author)
-                                .font(DSTypography.subtitle)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "mic.fill")
+                                    .font(DSTypography.caption2)
+                                Text(model.author)
+                                    .lineLimit(1)
+                            }
+                            .font(DSTypography.subtitle)
+                            .foregroundStyle(Color.dsAccent)
                         }
-
-                        if !model.sourceName.isEmpty {
-                            Text(model.author.isEmpty ? model.sourceName : "· \(model.sourceName)")
-                                .font(DSTypography.subtitle)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(model.author)
+                            .font(DSTypography.subtitle)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
 
-                if showProgressLine {
-                    Button(action: onSelect) {
-                        Text(model.progressSubtitle)
-                            .font(DSTypography.numericCaption)
-                            .foregroundStyle(model.isPlaying ? Color.dsAccent : .secondary)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
+                if !model.sourceName.isEmpty || showProgressLine {
+                    HStack(spacing: Spacing.s2) {
+                        if !model.sourceName.isEmpty {
+                            DSSourceBadge(
+                                name: model.sourceName,
+                                latencyMs: nil,
+                                showHealthAndLatency: false
+                            )
+                            .layoutPriority(1)
+                        }
+
+                        if showProgressLine {
+                            Button(action: onSelect) {
+                                Text(model.progressSubtitle)
+                                    .font(DSTypography.numericCaption)
+                                    .foregroundStyle(model.isPlaying ? Color.dsAccent : .secondary)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
