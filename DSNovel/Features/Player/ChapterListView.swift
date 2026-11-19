@@ -93,6 +93,8 @@ struct ChapterListView: View {
                         Spacer()
                     } else {
                         List(snapshots) { snap in
+                            let accessibilityLabelText = "第 \(snap.displayIndex) 章，\(snap.chapter.title)"
+                            let accessibilityValueText = accessibilityDownloadDescription(for: snap)
                             ChapterRow(
                                 snapshot: snap,
                                 onSelect: {
@@ -116,8 +118,8 @@ struct ChapterListView: View {
                             .listRowBackground(Color.dsSurfaceCard)
                             .id(snap.id)
                             .accessibilityElement(children: .combine)
-                            .accessibilityLabel("第 \(snap.displayIndex) 章，\(snap.chapter.title)")
-                            .accessibilityValue(accessibilityDownloadDescription(for: snap))
+                            .accessibilityLabel(accessibilityLabelText)
+                            .accessibilityValue(accessibilityValueText)
                         }
                         .listStyle(.plain)
                         .scrollContentBackground(.hidden)
