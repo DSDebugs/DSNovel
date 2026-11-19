@@ -65,6 +65,7 @@ struct DSNovelApp: App {
                         LibraryStore.shared.modelContext = context
                         SourceStore.shared.modelContext = context
                         ChapterProgressCache.shared.migrateLegacyIfNeeded(context: context)
+                        PerBookSkipMigration.runIfNeeded(context: context)
 
                         #if DEBUG
                         if launch.isUITestMode {

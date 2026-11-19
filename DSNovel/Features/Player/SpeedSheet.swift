@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SpeedSheet: View {
     let player: PlayerEngine
-    @State private var rememberPerBook: Bool = AppSettingsStore.shared.rememberBookVolume
     @State private var alsoSetDefault: Bool = false
     private let onClose: () -> Void
 
@@ -19,7 +18,7 @@ struct SpeedSheet: View {
         if abs(clamped - old) > 0.001 {
             DSHapticPolicy.fire(clamped >= old ? .speedIncrease : .speedDecrease)
         }
-        player.setSpeed(clamped, persist: rememberPerBook, alsoSetDefault: alsoSetDefault)
+        player.setSpeed(clamped, persist: true, alsoSetDefault: alsoSetDefault)
     }
 
     var body: some View {
@@ -104,21 +103,16 @@ struct SpeedSheet: View {
                     }
                     .padding(.horizontal, Spacing.pageHorizontal)
 
-                    VStack(spacing: Spacing.s3) {
-                        Toggle("仅记住本书倍速", isOn: $rememberPerBook)
-                            .onChange(of: rememberPerBook) { _, newValue in
-                                AppSettingsStore.shared.rememberBookVolume = newValue
-                                if newValue {
-                                    player.saveBookAudioSettings()
-                                }
-                            }
-
-                        Toggle("同时设为全局默认倍速", isOn: $alsoSetDefault)
+                    VStack(alignment: .leading, spacing: Spacing.s2) {
+                        Toggle("同时设为新书默认倍速", isOn: $alsoSetDefault)
                             .onChange(of: alsoSetDefault) { _, newValue in
                                 if newValue {
                                     AppSettingsStore.shared.defaultSpeed = player.speed
                                 }
                             }
+                        Text("每本书会自动记住当前倍速；开启此项后，新书首次播放也将使用该倍速。")
+                            .font(DSTypography.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(Spacing.s4)
                     .background(
@@ -132,6 +126,6 @@ struct SpeedSheet: View {
             .background(Color.dsSurfaceGrouped)
         }
         .preferredColorScheme(.dark)
-        .presentationDetents([.height(400), .medium])
+        .presentationDetents([.height(380), .medium])
     }
 }

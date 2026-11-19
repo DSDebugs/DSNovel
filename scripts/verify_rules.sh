@@ -129,6 +129,9 @@ done < <(find DSNovel/Features -type f -name "*.swift" 2>/dev/null || true)
 check_grep_rule "discover-no-cell-scroll-anchor" "recordScrollAnchor" "DSNovel/Features/Discover/DiscoverContent.swift"
 check_grep_rule "discover-no-body-set-map" "Set\([^)]*\.map\(" "DSNovel/Features/Discover/DiscoverRootView.swift"
 
+# 17. no-global-skip-defaults (v2.6 per-book skip)
+check_grep_rule "no-global-skip-defaults" "defaultSkipIntroSec|defaultSkipOutroSec|skipSettings|SkipSettingsDetailView" "DSNovel/Features" "DSNovel/App" "DSNovel/Playback"
+
 if [[ $TOUCHED_VIOLATIONS -gt 0 ]]; then
   echo "verify_rules.sh failed with ${TOUCHED_VIOLATIONS} violation(s)."
   exit 1

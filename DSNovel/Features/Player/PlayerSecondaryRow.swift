@@ -22,8 +22,7 @@ struct PlayerSecondaryRow: View {
         onOpenSpeed: @escaping () -> Void,
         onOpenAudioEffects: @escaping () -> Void = {},
         onOpenSleep: @escaping () -> Void,
-        onOpenChapters: @escaping () -> Void,
-        onOpenMore: @escaping () -> Void = {}
+        onOpenChapters: @escaping () -> Void
     ) {
         self.speed = speed
         self.effectPreset = effectPreset

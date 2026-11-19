@@ -74,6 +74,18 @@ enum PlaybackState: Equatable {
 /// - KVO 实时监听 status / timeControlStatus / loadedTimeRanges（缓冲进度）
 /// - 五档音质切换（联动 BuiltinParserRuntime）、六种音效预设、5 段人声 EQ 与 0–200% 响度增强
 /// - 动态倍速折算睡眠定时、锁屏封面与章节序号、音频中断自动续播与耳机拔出保护
+struct PlayerInlineFeedback: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let message: String
+    let canUndoIntroSkip: Bool
+
+    init(id: UUID = UUID(), message: String, canUndoIntroSkip: Bool = false) {
+        self.id = id
+        self.message = message
+        self.canUndoIntroSkip = canUndoIntroSkip
+    }
+}
+
 @MainActor
 @Observable
 final class PlayerEngine {
@@ -108,8 +120,13 @@ final class PlayerEngine {
         }
     }
 
-    var skipIntroSec: Int = 0
-    var skipOutroSec: Int = 0
+    private(set) var bookSkip: BookSkipConfig = .unset
+    var skipIntroSec: Int { bookSkip.effectiveIntroSec }
+    var skipOutroSec: Int { bookSkip.effectiveOutroSec }
+    private(set) var inlineFeedback: PlayerInlineFeedback?
+    @ObservationIgnored private var inlineFeedbackTask: Task<Void, Never>?
+    @ObservationIgnored private var outroTriggeredForCurrentChapter: Bool = false
+    @ObservationIgnored private var outroSuppressedForCurrentChapter: Bool = false
 
     // 音质与音效状态（§3.2）
     private(set) var audioQualityTier: AudioQualityTier = AppSettingsStore.shared.audioQualityTier
@@ -333,6 +350,71 @@ final class PlayerEngine {
         applyEffectiveAudioSettings()
     }
 
+    func syncGlobalAudioPreferencesFromSettings() {
+        let settings = AppSettingsStore.shared
+        audioQualityTier = settings.audioQualityTier.normalizedForSelection
+        audioEffectPreset = settings.audioEffectPreset
+        customEQBandsDb = settings.customEQBandsDb
+        audioBoostDB = settings.audioBoostDB
+        audioBalance = settings.audioBalance
+        if let item = player.currentItem {
+            item.preferredForwardBufferDuration = audioQualityTier.preferredForwardBufferDuration
+        }
+        applyEffectiveAudioSettings()
+    }
+
+    func showInlineToast(_ message: String, canUndoIntroSkip: Bool = false, durationSec: Double = 4.0) {
+        inlineFeedbackTask?.cancel()
+        let feedback = PlayerInlineFeedback(message: message, canUndoIntroSkip: canUndoIntroSkip)
+        inlineFeedback = feedback
+        inlineFeedbackTask = Task { [weak self] in
+            let ns = UInt64(max(0.5, durationSec) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: ns)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.inlineFeedback?.id == feedback.id else { return }
+                self.inlineFeedback = nil
+            }
+        }
+    }
+
+    func undoIntroSkipForCurrentChapter() {
+        inlineFeedbackTask?.cancel()
+        inlineFeedback = nil
+        seek(to: 0)
+    }
+
+    @discardableResult
+    func updateBookSkip(_ newConfig: BookSkipConfig) -> Bool {
+        let normalized = newConfig.normalized
+        let previous = bookSkip
+        bookSkip = normalized
+
+        // 若当前播放位置已落入新设片尾区间，对当前章抑制自动跳过，避免刚调大就立刻切章（B7④）
+        let dur = clock.durationSec
+        let pos = clock.currentTimeSec
+        let outro = Double(normalized.effectiveOutroSec)
+        if outro > 0, dur.isFinite, dur > 0, pos >= dur - outro {
+            outroSuppressedForCurrentChapter = true
+        }
+
+        guard let ctx = modelContext, let book = currentBook else {
+            return true
+        }
+        do {
+            let saved = ensureBookRow(for: book, in: ctx)
+            saved.skipEnabled = normalized.enabled
+            saved.skipIntroSec = normalized.introSec
+            saved.skipOutroSec = normalized.outroSec
+            try ctx.save()
+            return true
+        } catch {
+            bookSkip = previous
+            showInlineToast("保存失败", durationSec: 3.0)
+            return false
+        }
+    }
+
     func updateCustomEQBand(index: Int, gainDb: Double) {
         guard (0..<5).contains(index) else { return }
         var bands = customEQBandsDb.count == 5 ? customEQBandsDb : [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -474,10 +556,15 @@ final class PlayerEngine {
         hasRetriedCurrentChapter = false
 
         loadBookPreferences(for: book.id)
-        let startSec = initialPositionMs > 0
-            ? Double(initialPositionMs) / 1000.0
-            : Double(max(0, skipIntroSec))
+        let startSec = BookSkipConfig.startPositionSec(
+            initialPositionMs: initialPositionMs,
+            duration: startChapter.hintDurationSec,
+            config: bookSkip
+        )
         detachCurrentItem(startSec: startSec)
+        if initialPositionMs <= 0 && startSec > 0 {
+            showInlineToast("已跳过片头 \(Int(startSec.rounded())) 秒", canUndoIntroSkip: true, durationSec: 4.0)
+        }
         clock.currentTimeSec = startSec
         clock.durationSec = startChapter.hintDurationSec
         persistProgressNow(positionMsOverride: Int(startSec * 1000))
@@ -510,6 +597,8 @@ final class PlayerEngine {
         isCurrentItemReady = false
         isPlayingLocalFile = false
         detectedAudioBitrateKbps = nil
+        outroTriggeredForCurrentChapter = false
+        outroSuppressedForCurrentChapter = false
         bufferedRange = 0
         pendingSeekSec = startSec > 0.5 ? startSec : nil
         lastPersistedTime = startSec
@@ -570,6 +659,11 @@ final class PlayerEngine {
 
     func seek(to seconds: Double) {
         let clamped = max(0, seconds)
+        let dur = clock.durationSec
+        let outro = Double(bookSkip.effectiveOutroSec)
+        if outro > 0, dur.isFinite, dur > 0, clamped >= dur - outro {
+            outroSuppressedForCurrentChapter = true
+        }
         clock.currentTimeSec = clamped
         guard isCurrentItemReady, let item = player.currentItem, item.status == .readyToPlay else {
             pendingSeekSec = clamped
@@ -611,11 +705,18 @@ final class PlayerEngine {
         currentChapter = nextCh
         lastPluginError = nil
         hasRetriedCurrentChapter = false
-        let startSec = Double(max(0, skipIntroSec))
+        let startSec = BookSkipConfig.startPositionSec(
+            initialPositionMs: 0,
+            duration: nextCh.hintDurationSec,
+            config: bookSkip
+        )
         detachCurrentItem(startSec: startSec)
+        if startSec > 0 {
+            showInlineToast("已跳过片头 \(Int(startSec.rounded())) 秒", canUndoIntroSkip: true, durationSec: 4.0)
+        }
         clock.currentTimeSec = startSec
         clock.durationSec = nextCh.hintDurationSec
-        persistProgressNow(positionMsOverride: max(0, skipIntroSec * 1000))
+        persistProgressNow(positionMsOverride: max(0, Int(startSec * 1000)))
         updateRemoteCommandStates()
 
         loadTask = Task {
@@ -638,11 +739,18 @@ final class PlayerEngine {
         currentChapter = prevCh
         lastPluginError = nil
         hasRetriedCurrentChapter = false
-        let startSec = Double(max(0, skipIntroSec))
+        let startSec = BookSkipConfig.startPositionSec(
+            initialPositionMs: 0,
+            duration: prevCh.hintDurationSec,
+            config: bookSkip
+        )
         detachCurrentItem(startSec: startSec)
+        if startSec > 0 {
+            showInlineToast("已跳过片头 \(Int(startSec.rounded())) 秒", canUndoIntroSkip: true, durationSec: 4.0)
+        }
         clock.currentTimeSec = startSec
         clock.durationSec = prevCh.hintDurationSec
-        persistProgressNow(positionMsOverride: max(0, skipIntroSec * 1000))
+        persistProgressNow(positionMsOverride: max(0, Int(startSec * 1000)))
         updateRemoteCommandStates()
 
         loadTask = Task {
@@ -769,9 +877,11 @@ final class PlayerEngine {
 
     private func loadAndPlay(chapter: ChapterDTO, initialPositionMs: Int, generation: UInt64) async {
         guard let book = currentBook, generation == playbackGeneration else { return }
-        let startSec = initialPositionMs > 0
-            ? Double(initialPositionMs) / 1000.0
-            : Double(max(0, skipIntroSec))
+        let startSec = BookSkipConfig.startPositionSec(
+            initialPositionMs: initialPositionMs,
+            duration: chapter.hintDurationSec,
+            config: bookSkip
+        )
         detachCurrentItem(startSec: startSec)
 
         state = .buffering
@@ -1051,9 +1161,19 @@ final class PlayerEngine {
                 let dur = item.duration.seconds
                 if dur.isFinite && dur > 0 {
                     self.clock.durationSec = dur
-                    if self.skipOutroSec > 0,
-                       dur > Double(self.skipOutroSec) + 1,
-                       sec >= dur - Double(self.skipOutroSec) {
+                    if BookSkipConfig.shouldTriggerOutroSkip(
+                        positionSec: sec,
+                        durationSec: dur,
+                        config: self.bookSkip,
+                        hasTriggered: self.outroTriggeredForCurrentChapter,
+                        isSuppressed: self.outroSuppressedForCurrentChapter
+                    ) {
+                        self.outroTriggeredForCurrentChapter = true
+                        if self.nextChapterAvailability == .none {
+                            self.showInlineToast("已是最后一章", durationSec: 3.0)
+                        } else {
+                            self.showInlineToast("已跳过片尾，正在播放下一章", durationSec: 3.0)
+                        }
                         self.handleChapterFinished()
                         return
                     }
@@ -1204,35 +1324,63 @@ final class PlayerEngine {
 
         guard let ctx = modelContext else {
             speed = settings.defaultSpeed
-            skipIntroSec = settings.defaultSkipIntroSec
-            skipOutroSec = settings.defaultSkipOutroSec
+            bookSkip = .unset
             bookVolume = 1.0
             return
         }
         let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
         if let saved = try? ctx.fetch(descriptor).first {
             speed = saved.speed > 0 ? saved.speed : settings.defaultSpeed
-            skipIntroSec = saved.skipIntroSec >= 0 ? saved.skipIntroSec : settings.defaultSkipIntroSec
-            skipOutroSec = saved.skipOutroSec >= 0 ? saved.skipOutroSec : settings.defaultSkipOutroSec
+            bookSkip = BookSkipConfig(
+                enabled: saved.skipEnabled,
+                introSec: saved.skipIntroSec,
+                outroSec: saved.skipOutroSec
+            ).normalized
             bookVolume = settings.rememberBookVolume ? min(max(saved.volume, 0.0), 2.0) : 1.0
         } else {
             speed = settings.defaultSpeed
-            skipIntroSec = settings.defaultSkipIntroSec
-            skipOutroSec = settings.defaultSkipOutroSec
+            bookSkip = .unset
             bookVolume = 1.0
         }
     }
 
-    func saveBookAudioSettings() {
-        guard let ctx = modelContext, let bookID = currentBook?.id else { return }
+    private func ensureBookRow(for book: BookRef, in ctx: ModelContext) -> Book {
+        let bookID = book.id
         let descriptor = FetchDescriptor<Book>(predicate: #Predicate<Book> { $0.id == bookID })
-        if let saved = try? ctx.fetch(descriptor).first {
-            saved.speed = speed
-            saved.volume = bookVolume
-            saved.skipIntroSec = skipIntroSec
-            saved.skipOutroSec = skipOutroSec
-            try? ctx.save()
+        if let existing = try? ctx.fetch(descriptor).first {
+            return existing
         }
+        let historyBook = Book(
+            id: book.id,
+            sourceID: book.sourceID,
+            bookURL: book.bookURL,
+            title: book.title,
+            author: book.author,
+            cover: book.cover,
+            intro: book.intro,
+            inShelf: false,
+            addedAt: .now,
+            totalChapters: chapterQueue.count,
+            lastPlayedAt: .now,
+            volume: bookVolume,
+            skipEnabled: bookSkip.enabled,
+            skipIntroSec: bookSkip.introSec,
+            skipOutroSec: bookSkip.outroSec,
+            speed: speed
+        )
+        ctx.insert(historyBook)
+        return historyBook
+    }
+
+    func saveBookAudioSettings() {
+        guard let ctx = modelContext, let book = currentBook else { return }
+        let saved = ensureBookRow(for: book, in: ctx)
+        saved.speed = speed
+        saved.volume = bookVolume
+        saved.skipEnabled = bookSkip.enabled
+        saved.skipIntroSec = bookSkip.introSec
+        saved.skipOutroSec = bookSkip.outroSec
+        try? ctx.save()
     }
 
     func persistProgressNow(positionMsOverride: Int? = nil) {
@@ -1282,8 +1430,9 @@ final class PlayerEngine {
                 lastPositionMs: posMs,
                 lastPlayedAt: .now,
                 volume: bookVolume,
-                skipIntroSec: skipIntroSec,
-                skipOutroSec: skipOutroSec,
+                skipEnabled: bookSkip.enabled,
+                skipIntroSec: bookSkip.introSec,
+                skipOutroSec: bookSkip.outroSec,
                 speed: speed
             )
             ctx.insert(historyBook)

@@ -141,7 +141,8 @@ struct SourceDetailView: View {
                 }
             }
         }
-        .confirmationDialog("确认退出该书源账号并清除登录凭证？", isPresented: $showLogoutConfirm, titleVisibility: .visible) {
+        .alert("退出书源账号", isPresented: $showLogoutConfirm) {
+            Button("取消", role: .cancel) {}
             Button("退出登录", role: .destructive) {
                 Task {
                     await sourceStore.logoutSource(src)
@@ -149,26 +150,28 @@ struct SourceDetailView: View {
                     BannerCenter.shared.show("已退出登录", kind: .info)
                 }
             }
-            Button("取消", role: .cancel) {}
+        } message: {
+            Text("确认退出该书源账号并清除登录凭证？")
         }
-        .confirmationDialog(
-            "删除「\(src.name)」时，是否同时移除该书源下的书架与下载条目？",
-            isPresented: $showDeleteDialog,
-            titleVisibility: .visible
-        ) {
-            Button("仅删除书源（保留书架与下载）", role: .destructive) {
-                Task {
-                    await sourceStore.deleteSources([src.id], alsoRemoveShelfAndDownloads: false)
-                    dismiss()
+        .background {
+            Color.clear
+                .alert("删除书源「\(src.name)」", isPresented: $showDeleteDialog) {
+                    Button("仅删除书源（保留书架与下载）", role: .destructive) {
+                        Task {
+                            await sourceStore.deleteSources([src.id], alsoRemoveShelfAndDownloads: false)
+                            dismiss()
+                        }
+                    }
+                    Button("同时移除书架与下载", role: .destructive) {
+                        Task {
+                            await sourceStore.deleteSources([src.id], alsoRemoveShelfAndDownloads: true)
+                            dismiss()
+                        }
+                    }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("请选择删除该书源时对关联书架与离线下载的处理方式。")
                 }
-            }
-            Button("同时移除该书源的书架与下载", role: .destructive) {
-                Task {
-                    await sourceStore.deleteSources([src.id], alsoRemoveShelfAndDownloads: true)
-                    dismiss()
-                }
-            }
-            Button("取消", role: .cancel) {}
         }
         .onAppear {
             if focus == .builtinParser || AppRouter.shared.consumePendingParserFocus() == src.id {

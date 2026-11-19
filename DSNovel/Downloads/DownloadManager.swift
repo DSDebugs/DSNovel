@@ -110,6 +110,9 @@ final class DownloadManager {
     }
 
     private(set) var stateVersion: Int = 0
+    /// 缓存的存储占用统计（避免在 SwiftUI body 中直接执行 SwiftData fetch）
+    private(set) var cachedManualDownloadedBytes: Int64 = 0
+    private(set) var cachedTemporaryCacheBytes: Int64? = nil
     private(set) var summariesByBookID: [String: DownloadSummary] = [:]
     private(set) var snapshotsByBookID: [String: [String: DownloadItemSnapshot]] = [:]
     private(set) var itemProgress: [String: Double] = [:]
@@ -260,6 +263,7 @@ final class DownloadManager {
         }
         summariesByBookID = map
         snapshotsByBookID = snapMap
+        cachedManualDownloadedBytes = summariesByBookID.values.reduce(0) { $0 + $1.totalBytes }
         stateVersion &+= 1
         if self === DownloadManager.shared {
             LibraryStore.shared.recomputeDerived()
@@ -606,9 +610,19 @@ final class DownloadManager {
 
     func clearTemporaryCaches() {
         clearPrecacheOnly()
+        cachedTemporaryCacheBytes = 0
         Task {
             await CoverImagePipeline.shared.clearCache()
+            await refreshCachedStorageMetrics()
         }
+    }
+
+    func refreshCachedStorageMetrics() async {
+        let manual = totalManualDownloadedBytes()
+        let precache = totalPrecacheAndTempBytes()
+        let coverBytes = await CoverImagePipeline.shared.diskUsageBytes()
+        cachedManualDownloadedBytes = manual
+        cachedTemporaryCacheBytes = precache + coverBytes
     }
 
     @discardableResult

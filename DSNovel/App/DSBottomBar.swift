@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct DSBottomBar: View {
+    /// 悬浮底栏总占位高度（60pt 胶囊 + 4pt 底部留白），供列表底部安全避让引用
+    static let totalHeight: CGFloat = 64
+
     @Binding var selectedTab: ShellTab
     let libraryBadge: Int
     let meBadge: Int

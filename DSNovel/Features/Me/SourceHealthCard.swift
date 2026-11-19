@@ -44,37 +44,51 @@ struct SourceHealthCard: View {
             )
         } else {
             VStack(spacing: 0) {
-                HStack {
+                HStack(spacing: Spacing.s3) {
                     Button(action: onOpenSourceList) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(summary.availableCount) / \(summary.enabledCount) 可用")
-                                .font(DSTypography.sectionHeader.monospacedDigit())
-                                .foregroundStyle(.primary)
-                                .contentTransition(.numericText())
-                            Text("\(summary.needAuthCount) 个需登录（可选） · \(summary.unavailableCount) 个异常")
-                                .font(DSTypography.numericFootnote)
-                                .foregroundStyle(.secondary)
+                        HStack(spacing: Spacing.s2) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(summary.availableCount) / \(summary.enabledCount) 可用")
+                                    .font(DSTypography.sectionHeader.monospacedDigit())
+                                    .foregroundStyle(.primary)
+                                    .contentTransition(.numericText())
+                                Text("\(summary.needAuthCount) 个需登录（可选） · \(summary.unavailableCount) 个异常")
+                                    .font(DSTypography.numericFootnote)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                                .font(DSTypography.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("书源状态：\(summary.availableCount) 个可用，共 \(summary.enabledCount) 个已启用，点击管理书源")
 
                     Button(action: onCheckAll) {
-                        if isChecking {
-                            ProgressView()
-                                .frame(width: 44, height: 44)
-                        } else {
-                            Text("检测全部")
-                                .font(DSTypography.caption.weight(.semibold))
-                                .foregroundStyle(Color.dsAccent)
-                                .padding(.horizontal, Spacing.s3)
-                                .padding(.vertical, Spacing.s2)
-                                .background(Capsule().fill(Color.dsSurfaceGrouped))
+                        HStack(spacing: 6) {
+                            if isChecking {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("检测中")
+                            } else {
+                                Text("检测全部")
+                            }
                         }
+                        .font(DSTypography.caption.weight(.semibold))
+                        .foregroundStyle(isChecking ? .secondary : Color.dsAccent)
+                        .padding(.horizontal, Spacing.s3)
+                        .frame(minWidth: 86, minHeight: 44)
+                        .background(Capsule().fill(Color.dsSurfaceGrouped))
+                        .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                     .disabled(isChecking)
+                    .accessibilityLabel(isChecking ? "正在检测全部书源" : "检测全部书源")
                 }
                 .padding(Spacing.s4)
 

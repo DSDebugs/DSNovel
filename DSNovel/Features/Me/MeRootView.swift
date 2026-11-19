@@ -10,7 +10,19 @@ struct MeRootView: View {
 
     init() {}
 
+    private func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
+    }
+
+    private var clearCacheConfirmButtonTitle: String {
+        if let bytes = downloadManager.cachedTemporaryCacheBytes, bytes > 0 {
+            return "清理 \(formatBytes(bytes))"
+        }
+        return "清理缓存"
+    }
+
     var body: some View {
+        let _ = settings.nightDimEnabled
         List {
             Section {
                 SourceHealthCard(
@@ -20,7 +32,12 @@ struct MeRootView: View {
                     onCheckAll: {
                         Task {
                             await sourceStore.checkSources()
-                            DSHapticPolicy.fire(.success)
+                            let s = sourceStore.healthSummary
+                            DSHapticPolicy.fire(s.unavailableCount > 0 ? .warning : .success)
+                            BannerCenter.shared.show(
+                                "检测完成：可用 \(s.availableCount) · 需登录 \(s.needAuthCount) · 异常 \(s.unavailableCount)",
+                                kind: s.unavailableCount > 0 ? .warning : .success
+                            )
                         }
                     },
                     onHandleAttention: {
@@ -36,15 +53,21 @@ struct MeRootView: View {
                 .listRowBackground(Color.clear)
             }
 
-            Section("播放") {
+            Section {
                 PlaybackPrefsView(settings: settings)
+            } header: {
+                Text("听书")
+            } footer: {
+                Text("默认倍速仅用于首次播放的新书；每本书会自动记住自己的倍速。跳过片头片尾请在播放页「更多」中按书单独设置。")
+                    .font(DSTypography.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("下载与存储") {
                 StoragePrefsView(
                     settings: settings,
-                    manualBytes: downloadManager.totalManualDownloadedBytes(),
-                    tempBytes: downloadManager.totalPrecacheAndTempBytes(),
+                    manualBytes: downloadManager.cachedManualDownloadedBytes,
+                    tempBytes: downloadManager.cachedTemporaryCacheBytes,
                     onOpenDownloads: { AppRouter.shared.open(.downloads) },
                     onClearTempCache: { showClearCacheConfirm = true }
                 )
@@ -55,32 +78,44 @@ struct MeRootView: View {
             }
 
             Section("关于") {
-                AboutView(onResetAll: {
-                    settings.resetAll()
-                    BannerCenter.shared.show("已重置所有偏好设置", kind: .success)
-                })
+                NavigationLink(value: Route.about) {
+                    DSSettingsRow(
+                        icon: "info.circle",
+                        title: "关于 DSNovel",
+                        valueText: AuthorInfo.appVersionDisplay,
+                        style: .value
+                    )
+                }
+                .listRowBackground(Color.dsSurfaceCard)
             }
         }
         .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
         .scrollContentBackground(.hidden)
         .background(Color.dsSurfaceGrouped)
+        .contentMargins(.top, Spacing.s2, for: .scrollContent)
+        .contentMargins(.bottom, DSBottomBar.totalHeight + Spacing.s4, for: .scrollContent)
         .navigationTitle("我的")
         .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog(
-            "确认清理预缓存音频与封面临时缓存？",
-            isPresented: $showClearCacheConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("清理临时缓存", role: .destructive) {
+        .alert("清理缓存？", isPresented: $showClearCacheConfirm) {
+            Button("取消", role: .cancel) {}
+            Button(clearCacheConfirmButtonTitle, role: .destructive) {
                 downloadManager.clearTemporaryCaches()
                 DSHapticPolicy.fire(.success)
-                BannerCenter.shared.show("已清理临时缓存", kind: .success)
+                BannerCenter.shared.show("已清理预缓存与封面缓存", kind: .success)
             }
-            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将清理预缓存音频与封面临时缓存，不影响已下载的离线章节与书架数据。")
         }
         .onAppear {
             sourceStore.modelContext = modelContext
             downloadManager.modelContext = modelContext
+            if let notice = PerBookSkipMigration.consumePendingNoticeIfNeeded() {
+                BannerCenter.shared.show(notice, kind: .info)
+            }
+        }
+        .task {
+            await downloadManager.refreshCachedStorageMetrics()
         }
     }
 }

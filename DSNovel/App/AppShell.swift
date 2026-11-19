@@ -158,8 +158,10 @@ struct AppShell: View {
             SourceDetailView(sourceID: id, focus: focus)
         case .sourceImport:
             SourceImportFlow(onClose: { router.popToRoot(for: router.selectedTab) })
-        case .skipSettings:
-            SkipSettingsDetailView(settings: settings)
+        case .playbackMore:
+            MorePlaybackPrefsView(settings: settings)
+        case .about:
+            AboutView(settings: settings)
         }
     }
 }

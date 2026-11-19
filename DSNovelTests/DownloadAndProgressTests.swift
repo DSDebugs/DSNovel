@@ -157,11 +157,13 @@ final class DownloadAndProgressTests: XCTestCase {
         store.resetAll()
 
         XCTAssertEqual(store.defaultSpeed, 1.0)
-        XCTAssertEqual(store.currentDiscoverSourceID, "")
+        XCTAssertEqual(store.currentDiscoverSourceID, "custom_src")
         XCTAssertFalse(store.nightDimEnabled)
         XCTAssertFalse(store.reduceMotionOverride)
         XCTAssertEqual(store.launchBehavior, .restorePaused)
-        XCTAssertEqual(AppSettingsStore.allResettablePropertyNames.count, 18)
+        XCTAssertEqual(store.audioQualityTier, .high)
+        XCTAssertEqual(store.audioEffectPreset, .original)
+        XCTAssertEqual(AppSettingsStore.allResettablePropertyNames.count, 21)
 
         // 验证 PlayerEngine.prepare 不进入 playing 状态
         let player = PlayerEngine.shared

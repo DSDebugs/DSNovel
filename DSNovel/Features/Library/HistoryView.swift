@@ -44,11 +44,13 @@ struct HistoryView: View {
                 .disabled(sections.isEmpty)
             }
         }
-        .confirmationDialog("确认清空全部播放历史？", isPresented: $showClearConfirm, titleVisibility: .visible) {
+        .alert("清空播放历史", isPresented: $showClearConfirm) {
+            Button("取消", role: .cancel) {}
             Button("清空播放历史", role: .destructive) {
                 libraryStore.clearAllHistory()
             }
-            Button("取消", role: .cancel) {}
+        } message: {
+            Text("确认清空全部播放历史？")
         }
     }
 

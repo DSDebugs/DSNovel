@@ -16,6 +16,7 @@ struct AirPlayRoutePickerRepresentable: UIViewRepresentable {
 
 struct MoreSheet: View {
     @Bindable var player: PlayerEngine
+    private let onOpenSkip: () -> Void
     private let onOpenAudioEffects: () -> Void
     private let onOpenDownloads: () -> Void
     private let onOpenBookDetail: () -> Void
@@ -23,12 +24,14 @@ struct MoreSheet: View {
 
     init(
         player: PlayerEngine = .shared,
+        onOpenSkip: @escaping () -> Void = {},
         onOpenAudioEffects: @escaping () -> Void = {},
         onOpenDownloads: @escaping () -> Void = {},
         onOpenBookDetail: @escaping () -> Void = {},
         onClose: @escaping () -> Void
     ) {
         self.player = player
+        self.onOpenSkip = onOpenSkip
         self.onOpenAudioEffects = onOpenAudioEffects
         self.onOpenDownloads = onOpenDownloads
         self.onOpenBookDetail = onOpenBookDetail
@@ -66,7 +69,23 @@ struct MoreSheet: View {
                     }
                 }
 
-                Section("本书音频调节") {
+                Section {
+                    Button {
+                        onClose()
+                        onOpenSkip()
+                    } label: {
+                        HStack {
+                            Label("跳过片头片尾", systemImage: "forward.frame")
+                            Spacer()
+                            Text(player.bookSkip.summaryText)
+                                .font(DSTypography.caption)
+                                .foregroundStyle(player.bookSkip.state == .on ? Color.dsAccent : .secondary)
+                            Image(systemName: "chevron.right")
+                                .font(DSTypography.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("本书音量（支持最高 200% 增强）")
@@ -76,11 +95,17 @@ struct MoreSheet: View {
                                 .font(DSTypography.numericFootnote.weight(.semibold))
                                 .foregroundStyle(player.bookVolume > 1.01 ? .orange : Color.dsAccent)
                         }
-                        Slider(value: $player.bookVolume, in: 0.0...2.0, step: 0.05)
-                            .tint(player.bookVolume > 1.01 ? .orange : Color.dsAccent)
-                            .onChange(of: player.bookVolume) { _, _ in
-                                player.saveBookAudioSettings()
+                        Slider(
+                            value: $player.bookVolume,
+                            in: 0.0...2.0,
+                            step: 0.05,
+                            onEditingChanged: { editing in
+                                if !editing {
+                                    player.saveBookAudioSettings()
+                                }
                             }
+                        )
+                        .tint(player.bookVolume > 1.01 ? .orange : Color.dsAccent)
                     }
 
                     Picker("音频通道", selection: Binding(
@@ -91,13 +116,11 @@ struct MoreSheet: View {
                             Text(mode.title).tag(mode)
                         }
                     }
-                }
-
-                Section("跳过片头与片尾") {
-                    Stepper("跳过片头：\(player.skipIntroSec) 秒", value: $player.skipIntroSec, in: 0...180, step: 5)
-                        .onChange(of: player.skipIntroSec) { _, _ in player.saveBookAudioSettings() }
-                    Stepper("跳过片尾：\(player.skipOutroSec) 秒", value: $player.skipOutroSec, in: 0...180, step: 5)
-                        .onChange(of: player.skipOutroSec) { _, _ in player.saveBookAudioSettings() }
+                } header: {
+                    Text("本书设置")
+                } footer: {
+                    Text(AppSettingsStore.shared.audioChannel.subtitle)
+                        .font(DSTypography.caption)
                 }
 
                 Section("输出与书籍信息") {
@@ -117,7 +140,7 @@ struct MoreSheet: View {
 
                     Button {
                         UIPasteboard.general.string = player.currentChapter?.title ?? ""
-                        BannerCenter.shared.show("已复制当前章节标题", kind: .info)
+                        player.showInlineToast("已复制当前章节标题")
                         onClose()
                     } label: {
                         Label("复制当前章节标题", systemImage: "doc.on.doc")

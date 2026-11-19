@@ -75,11 +75,16 @@ struct BuiltinParserSection: View {
         } message: {
             Text(errorAlertMessage ?? "")
         }
-        .confirmationDialog("确认删除该内置解析脚本？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("删除解析脚本", role: .destructive) {
-                Task { await deleteParser() }
-            }
-            Button("取消", role: .cancel) {}
+        .background {
+            Color.clear
+                .alert("删除内置解析脚本", isPresented: $showDeleteConfirm) {
+                    Button("取消", role: .cancel) {}
+                    Button("删除解析脚本", role: .destructive) {
+                        Task { await deleteParser() }
+                    }
+                } message: {
+                    Text("确认删除该内置解析脚本？")
+                }
         }
         .task {
             await refreshState()

@@ -50,7 +50,7 @@ final class AppRouter {
             return .library
         case .downloads, .downloadManager:
             return .me
-        case .sourceList, .sourceDetail, .sourceImport, .pluginManager, .skipSettings:
+        case .sourceList, .sourceDetail, .sourceImport, .pluginManager, .playbackMore, .about:
             return .me
         }
     }

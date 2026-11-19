@@ -265,7 +265,8 @@ struct DiscoverRootView: View {
             cover: ref.cover,
             intro: ref.intro,
             inShelf: true,
-            totalChapters: ref.chapterCount
+            totalChapters: ref.chapterCount,
+            speed: AppSettingsStore.shared.defaultSpeed
         )
         modelContext.insert(b)
         try? modelContext.save()

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 enum PlayerActiveSheet: String, Identifiable {
     case speed
@@ -7,6 +8,7 @@ enum PlayerActiveSheet: String, Identifiable {
     case sleep
     case chapters
     case downloads
+    case skip
     case more
 
     var id: String { rawValue }
@@ -122,6 +124,12 @@ struct PlayerScreen: View {
                     }
                 )
 
+                if let feedback = player.inlineFeedback {
+                    inlineFeedbackPill(feedback)
+                        .padding(.top, Spacing.s2)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+                }
+
                 Spacer(minLength: Spacing.s3)
 
                 if case .failed = player.state {
@@ -202,17 +210,26 @@ struct PlayerScreen: View {
             }
             .offset(y: max(0, dragOffset))
             .animation(Motion.resolve(Motion.follow, reduce: reduceMotion), value: dragOffset)
+            .animation(Motion.resolve(Motion.snappy, reduce: reduceMotion), value: player.inlineFeedback?.id)
         }
         .environment(\.colorScheme, .dark)
         .preferredColorScheme(.dark)
         .onAppear {
             syncFavoriteState()
+            if let notice = PerBookSkipMigration.consumePendingNoticeIfNeeded() {
+                player.showInlineToast(notice)
+            }
         }
         .onChange(of: player.currentBookID) { _, _ in
             syncFavoriteState()
         }
         .onChange(of: libraryStore.shelfBookIDs) { _, _ in
             syncFavoriteState()
+        }
+        .onChange(of: player.inlineFeedback?.id) { _, _ in
+            if let message = player.inlineFeedback?.message {
+                UIAccessibility.post(notification: .announcement, argument: message)
+            }
         }
         .gesture(
             DragGesture(minimumDistance: 24)
@@ -228,6 +245,32 @@ struct PlayerScreen: View {
                 }
         )
         .sheet(item: $activeSheet, content: sheetContent)
+    }
+
+    private func inlineFeedbackPill(_ feedback: PlayerInlineFeedback) -> some View {
+        HStack(spacing: Spacing.s2) {
+            Image(systemName: feedback.canUndoIntroSkip ? "forward.frame.fill" : "info.circle.fill")
+                .font(DSTypography.caption2)
+                .foregroundStyle(Color.dsAccent)
+            Text(feedback.message)
+                .font(DSTypography.caption.weight(.medium))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+            if feedback.canUndoIntroSkip {
+                Button("撤销") {
+                    DSHapticPolicy.fire(.selection)
+                    player.undoIntroSkipForCurrentChapter()
+                }
+                .font(DSTypography.caption.weight(.semibold))
+                .foregroundStyle(Color.dsAccent)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, Spacing.s3)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(Color.black.opacity(0.68)))
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+        .padding(.horizontal, Spacing.pageHorizontal)
     }
 
     @ViewBuilder
@@ -267,9 +310,16 @@ struct PlayerScreen: View {
                 },
                 onClose: { activeSheet = nil }
             )
+        case .skip:
+            SkipSheet(player: player, onClose: { activeSheet = nil })
         case .more:
             MoreSheet(
                 player: player,
+                onOpenSkip: {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        activeSheet = .skip
+                    }
+                },
                 onOpenAudioEffects: {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                         activeSheet = .audioEffects
@@ -299,10 +349,10 @@ struct PlayerScreen: View {
                 _ = try downloadManager.enqueueChaptersWithCheck([ch], for: book, kind: "manual")
                 downloadBounceCount &+= 1
                 DSHapticPolicy.fire(.success)
-                BannerCenter.shared.show("已开始下载当前章节，再次点击可管理离线章节", kind: .success)
+                player.showInlineToast("已开始下载当前章节，再次点击可管理离线章节")
             } catch {
                 DSHapticPolicy.fire(.error)
-                BannerCenter.shared.show(error.localizedDescription, kind: .error)
+                player.showInlineToast(error.localizedDescription)
             }
         case .downloading, .completed, .failed:
             activeSheet = .downloads
@@ -359,10 +409,6 @@ struct PlayerScreen: View {
         isBookFavorited = nowInShelf
         heartBounceCount &+= 1
         DSHapticPolicy.fire(nowInShelf ? .success : .selection)
-        BannerCenter.shared.show(
-            nowInShelf ? "已加入书架" : "已从书架移除",
-            kind: nowInShelf ? .success : .info,
-            bypassDeduplication: true
-        )
+        player.showInlineToast(nowInShelf ? "已加入书架" : "已从书架移除")
     }
 }

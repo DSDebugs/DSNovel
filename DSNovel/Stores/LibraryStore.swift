@@ -277,7 +277,8 @@ final class LibraryStore {
                 intro: bookRef.intro,
                 inShelf: true,
                 addedAt: .now,
-                totalChapters: max(totalChapters, bookRef.chapterCount)
+                totalChapters: max(totalChapters, bookRef.chapterCount),
+                speed: AppSettingsStore.shared.defaultSpeed
             )
             ctx.insert(newBook)
         }

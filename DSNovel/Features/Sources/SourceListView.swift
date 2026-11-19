@@ -182,21 +182,22 @@ struct SourceListView: View {
         .sheet(isPresented: $showGroupEditor) {
             SourceGroupEditor(sourceStore: sourceStore, onClose: { showGroupEditor = false })
         }
-        .confirmationDialog(
-            "确认删除书源「\(pendingDeleteSource?.name ?? "")」？",
+        .alert(
+            "删除书源",
             isPresented: Binding(
                 get: { pendingDeleteSource != nil },
                 set: { if !$0 { pendingDeleteSource = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
+            Button("取消", role: .cancel) { pendingDeleteSource = nil }
             Button("删除书源", role: .destructive) {
                 if let target = pendingDeleteSource {
                     pendingDeleteSource = nil
                     Task { await sourceStore.deleteSources([target.id]) }
                 }
             }
-            Button("取消", role: .cancel) { pendingDeleteSource = nil }
+        } message: {
+            Text("确认删除书源「\(pendingDeleteSource?.name ?? "")」？")
         }
         .onAppear {
             sourceStore.modelContext = modelContext

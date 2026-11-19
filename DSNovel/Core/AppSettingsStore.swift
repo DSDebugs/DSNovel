@@ -107,17 +107,20 @@ final class AppSettingsStore {
         "launchBehavior",
         "precacheCount",
         "rememberBookVolume",
-        "defaultSkipIntroSec",
-        "defaultSkipOutroSec",
         "discoverLayout",
         "shelfLayout",
         "shelfSort",
         "appearanceMode",
         "hapticsEnabled",
         "wifiOnlyDownload",
-        "currentDiscoverSourceID",
         "nightDimEnabled",
-        "reduceMotionOverride"
+        "reduceMotionOverride",
+        "audioQualityTier",
+        "audioEffectPreset",
+        "customEQBandsDb",
+        "audioBoostDB",
+        "audioBalance",
+        "onlyPlayDownloadedInOffline"
     ]
 
     private let defaults: UserDefaults
@@ -155,12 +158,6 @@ final class AppSettingsStore {
     }
     var rememberBookVolume: Bool {
         didSet { defaults.set(rememberBookVolume, forKey: "rememberBookVolume") }
-    }
-    var defaultSkipIntroSec: Int {
-        didSet { defaults.set(defaultSkipIntroSec, forKey: "defaultSkipIntroSec") }
-    }
-    var defaultSkipOutroSec: Int {
-        didSet { defaults.set(defaultSkipOutroSec, forKey: "defaultSkipOutroSec") }
     }
     var discoverLayout: DiscoverLayoutStyle {
         didSet { defaults.set(discoverLayout.rawValue, forKey: "discoverLayout") }
@@ -230,8 +227,6 @@ final class AppSettingsStore {
         }
         self.precacheCount = defaults.object(forKey: "precacheCount") as? Int ?? 2
         self.rememberBookVolume = defaults.object(forKey: "rememberBookVolume") as? Bool ?? true
-        self.defaultSkipIntroSec = defaults.integer(forKey: "defaultSkipIntroSec")
-        self.defaultSkipOutroSec = defaults.integer(forKey: "defaultSkipOutroSec")
         self.discoverLayout = DiscoverLayoutStyle(rawValue: defaults.string(forKey: "discoverLayout") ?? "") ?? .grid
         self.shelfLayout = DiscoverLayoutStyle(rawValue: defaults.string(forKey: "shelfLayout") ?? "") ?? .grid
         self.shelfSort = ShelfSortOrder(rawValue: defaults.string(forKey: "shelfSort") ?? "") ?? .lastPlayed
@@ -262,15 +257,12 @@ final class AppSettingsStore {
         launchBehavior = .restorePaused
         precacheCount = 2
         rememberBookVolume = true
-        defaultSkipIntroSec = 0
-        defaultSkipOutroSec = 0
         discoverLayout = .grid
         shelfLayout = .grid
         shelfSort = .lastPlayed
         appearanceMode = .system
         hapticsEnabled = true
         wifiOnlyDownload = true
-        currentDiscoverSourceID = ""
         nightDimEnabled = false
         reduceMotionOverride = false
         audioQualityTier = .high
@@ -279,5 +271,8 @@ final class AppSettingsStore {
         audioBoostDB = 0.0
         audioBalance = 0.0
         onlyPlayDownloadedInOffline = false
+        if self === Self.shared {
+            PlayerEngine.shared.syncGlobalAudioPreferencesFromSettings()
+        }
     }
 }

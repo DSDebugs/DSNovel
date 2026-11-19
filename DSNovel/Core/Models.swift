@@ -25,6 +25,7 @@ final class Book {
     var lastPositionMs: Int
     var lastPlayedAt: Date?
     var volume: Double
+    var skipEnabled: Bool = false
     var skipIntroSec: Int
     var skipOutroSec: Int
     var speed: Double
@@ -53,6 +54,7 @@ final class Book {
         lastPositionMs: Int = 0,
         lastPlayedAt: Date? = nil,
         volume: Double = 1.0,
+        skipEnabled: Bool = false,
         skipIntroSec: Int = 0,
         skipOutroSec: Int = 0,
         speed: Double = 1.0,
@@ -79,6 +81,7 @@ final class Book {
         self.lastPositionMs = lastPositionMs
         self.lastPlayedAt = lastPlayedAt
         self.volume = volume
+        self.skipEnabled = skipEnabled
         self.skipIntroSec = skipIntroSec
         self.skipOutroSec = skipOutroSec
         self.speed = speed
@@ -556,7 +559,8 @@ enum Route: Hashable {
     case sourceList
     case sourceDetail(id: String, focus: SourceFocus? = nil)
     case sourceImport
-    case skipSettings
+    case playbackMore
+    case about
     case pluginManager
     case downloadManager
 }

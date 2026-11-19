@@ -30,13 +30,13 @@ struct DownloadsRootView: View {
 
             Section {
                 StorageOverviewCard(
-                    manualBytes: downloadManager.totalManualDownloadedBytes(),
-                    precacheBytes: downloadManager.totalPrecacheAndTempBytes(),
+                    manualBytes: downloadManager.cachedManualDownloadedBytes,
+                    precacheBytes: downloadManager.cachedTemporaryCacheBytes ?? downloadManager.totalPrecacheAndTempBytes(),
                     freeDiskBytes: downloadManager.availableDiskBytesProvider(),
                     onClearPrecache: {
-                        downloadManager.clearPrecacheOnly()
+                        downloadManager.clearTemporaryCaches()
                         DSHapticPolicy.fire(.success)
-                        BannerCenter.shared.show("已清理预缓存", kind: .success)
+                        BannerCenter.shared.show("已清理预缓存与封面缓存", kind: .success)
                     }
                 )
                 .listRowInsets(EdgeInsets())
@@ -176,6 +176,9 @@ struct DownloadsRootView: View {
         .onAppear {
             downloadManager.modelContext = modelContext
             downloadManager.reconcileCompletedFiles()
+        }
+        .task {
+            await downloadManager.refreshCachedStorageMetrics()
         }
     }
 }
