@@ -131,7 +131,8 @@ struct DSBookCard: View {
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
-                        .frame(width: side, minHeight: 34, alignment: .topLeading)
+                        .frame(width: side)
+                        .frame(minHeight: 34, alignment: .topLeading)
                 }
                 .contentShape(Rectangle())
             }

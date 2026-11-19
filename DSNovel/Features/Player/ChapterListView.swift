@@ -18,7 +18,7 @@ struct ChapterListView: View {
     @FocusState private var isSearchFocused: Bool
 
     init(
-        book: BookRef? = PlayerEngine.shared.currentBook,
+        book: BookRef? = nil,
         chapters: [ChapterDTO],
         currentChapterID: String?,
         isPlaying: Bool,
@@ -93,6 +93,7 @@ struct ChapterListView: View {
                         Spacer()
                     } else {
                         List(snapshots) { snap in
+                            let chapterAccessibilityLabel = "第 \(snap.displayIndex) 章，\(snap.chapter.title)"
                             ChapterRow(
                                 snapshot: snap,
                                 onSelect: {
@@ -116,7 +117,7 @@ struct ChapterListView: View {
                             .listRowBackground(Color.dsSurfaceCard)
                             .id(snap.id)
                             .accessibilityElement(children: .combine)
-                            .accessibilityLabel("第 \(snap.displayIndex) 章，\(snap.chapter.title)")
+                            .accessibilityLabel(chapterAccessibilityLabel)
                             .accessibilityValue(accessibilityDownloadDescription(for: snap))
                         }
                         .listStyle(.plain)
