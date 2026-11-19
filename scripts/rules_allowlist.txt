@@ -1,0 +1,3 @@
+no-ontapgesture-nav:DSNovel/DesignSystem/Components/DSSearchField.swift
+no-ji-term:DSNovel/Features/BookDetail/BookTitleFormatter.swift
+no-ji-term:DSNovel/DesignSystem/Components/DSActionButton.swift
