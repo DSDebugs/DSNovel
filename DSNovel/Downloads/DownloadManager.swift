@@ -1134,8 +1134,9 @@ final class DownloadManager {
             upsertSnapshot(for: nextItem, isFileVerified: false)
             mutated = true
 
-            let task = Task { @MainActor [weak self] in
-                await self?.executeDownload(for: nextItem)
+            let task: Task<Void, Never> = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.executeDownload(for: nextItem)
             }
             launchedTasks.append(task)
         }
