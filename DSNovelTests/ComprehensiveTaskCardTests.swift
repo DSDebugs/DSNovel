@@ -109,6 +109,7 @@ final class ComprehensiveTaskCardTests: XCTestCase {
         XCTAssertEqual(center.count(for: .discover), 0)
     }
 
+    @MainActor
     func testT2_01_TargetTabResolutionForAllRoutes() {
         let ref = BookRef(sourceID: "s", bookURL: "u", title: "t")
         XCTAssertEqual(AppRouter.targetTab(for: .book(ref), currentTab: .discover), .discover)
@@ -120,8 +121,12 @@ final class ComprehensiveTaskCardTests: XCTestCase {
     }
 
     func testT3_01_BookSnapshotSortPerformance500Items() {
-        let items: [BookSnapshot] = (0..<500).map { i in
-            BookSnapshot(
+        var items: [BookSnapshot] = []
+        items.reserveCapacity(500)
+        for i in 0..<500 {
+            let added = Date(timeIntervalSince1970: Double(i * 60))
+            let played = Date(timeIntervalSince1970: Double(i * 120))
+            let snap = BookSnapshot(
                 id: "s::\(i)",
                 sourceID: "s",
                 bookURL: "u/\(i)",
@@ -130,19 +135,20 @@ final class ComprehensiveTaskCardTests: XCTestCase {
                 cover: "",
                 intro: "",
                 inShelf: true,
-                addedAt: Date(timeIntervalSince1970: Double(i * 60)),
+                addedAt: added,
                 categoryID: nil,
                 lastChapterID: "c1",
                 lastChapterTitle: "第 1 章",
                 lastChapterIndex: 1,
                 totalChapters: 100,
                 lastPositionMs: 1000,
-                lastPlayedAt: Date(timeIntervalSince1970: Double(i * 120)),
+                lastPlayedAt: played,
                 isPinned: i % 50 == 0,
                 hasUpdate: i % 10 == 0,
                 latestChapterCount: 100,
                 updateCheckedAt: nil
             )
+            items.append(snap)
         }
         let sorted = LibraryStore.sortSnapshots(items, by: .lastPlayed)
         XCTAssertEqual(sorted.count, 500)
@@ -254,15 +260,18 @@ final class ComprehensiveTaskCardTests: XCTestCase {
         XCTAssertTrue(cleaned.contains("第二段\"引用\""))
     }
 
+    @MainActor
     func testT4_5_NextChapterAvailabilityStates() {
         let player = PlayerEngine.shared
         let book = BookRef(sourceID: "s", bookURL: "b", title: "测试")
         let ch1 = ChapterDTO(index: 0, title: "第 1 章", url: "u1")
         let ch2 = ChapterDTO(index: 1, title: "第 2 章", url: "u2")
         player.prepare(book: book, chapters: [ch1, ch2], chapter: ch1, positionMs: 0)
-        XCTAssertEqual(player.nextChapterAvailability, .availableOnline(ch2))
+        let avail1 = player.nextChapterAvailability
+        XCTAssertEqual(avail1, .availableOnline(ch2))
         player.prepare(book: book, chapters: [ch1, ch2], chapter: ch2, positionMs: 0)
-        XCTAssertEqual(player.nextChapterAvailability, .none)
+        let avail2 = player.nextChapterAvailability
+        XCTAssertEqual(avail2, .none)
     }
 
     func testT4_5_SleepTimerOptionsLabelsUseZhang() {
@@ -317,6 +326,7 @@ final class ComprehensiveTaskCardTests: XCTestCase {
         XCTAssertEqual(ShellTab.me.icon, "person.crop.circle")
     }
 
+    @MainActor
     func testT4_6c_DownloadsDataHelperPartitioning() {
         let i1 = DownloadItem(id: "1", bookID: "b1", bookTitle: "B1", chapterID: "c1", chapterTitle: "C1", sourceID: "s", state: "downloading")
         let i2 = DownloadItem(id: "2", bookID: "b1", bookTitle: "B1", chapterID: "c2", chapterTitle: "C2", sourceID: "s", state: "failed")
