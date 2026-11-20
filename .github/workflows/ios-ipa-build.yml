@@ -34,6 +34,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Prepare CI Logs Directory
+        run: mkdir -p ci-logs
+
       - name: Select Xcode 26+ & Verify iOS SDK
         run: |
           set -euo pipefail
@@ -41,18 +44,18 @@ jobs:
           if [ -n "$XCODE_APP" ] && [ -d "$XCODE_APP" ]; then
             sudo xcode-select -s "$XCODE_APP/Contents/Developer"
           fi
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          xcodebuild -version | tee ci-logs/env.txt
+          xcrun --sdk iphoneos --show-sdk-version | tee -a ci-logs/env.txt
 
       - name: Run Static Architecture & Design Rules (verify_rules.sh)
-        run: bash scripts/verify_rules.sh
+        run: bash scripts/verify_rules.sh 2>&1 | tee ci-logs/verify-rules.log
 
       - name: Run JS Runtime Selfcheck
         continue-on-error: true
         run: |
           set -euo pipefail
           if [ -f parser-tools/ep_selfcheck.js ]; then
-            node parser-tools/ep_selfcheck.js
+            node parser-tools/ep_selfcheck.js 2>&1 | tee ci-logs/js-selfcheck.log
           fi
 
       - name: Install XcodeGen & Generate Xcode Project
@@ -61,8 +64,8 @@ jobs:
           if ! command -v xcodegen >/dev/null 2>&1; then
             brew install xcodegen
           fi
-          xcodegen generate
-          xcodebuild -list -project DSNovel.xcodeproj
+          xcodegen generate 2>&1 | tee ci-logs/xcodegen.log
+          xcodebuild -list -project DSNovel.xcodeproj 2>&1 | tee -a ci-logs/xcodegen.log
 
       - name: Cache SwiftPM Packages
         uses: actions/cache@v4
@@ -75,23 +78,23 @@ jobs:
       - name: Run Unit Tests (Simulator)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
         run: |
-          set -euo pipefail
+          set -o pipefail
           SIM_ID=$(xcrun simctl list devices available | grep -E "iPhone" | head -n 1 | sed -E 's/.*\(([0-9A-F-]+)\).*/\1/')
           if [ -z "$SIM_ID" ]; then
             echo "::error::No available iPhone simulator found for unit tests"
             exit 1
           fi
-          echo "Using simulator ID: $SIM_ID"
+          echo "Using simulator ID: $SIM_ID" | tee -a ci-logs/env.txt
           xcodebuild test \
             -project DSNovel.xcodeproj \
             -scheme DSNovel \
             -destination "platform=iOS Simulator,id=$SIM_ID" \
             -derivedDataPath build-test \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee ci-logs/xcodebuild-test.log
 
       - name: Build Unsigned Release App (iphoneos)
         run: |
-          set -euo pipefail
+          set -o pipefail
           xcodebuild clean build \
             -project DSNovel.xcodeproj \
             -scheme DSNovel \
@@ -100,7 +103,7 @@ jobs:
             -derivedDataPath build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee ci-logs/xcodebuild-release.log
 
       - name: Package Versioned Unsigned IPA
         run: |
@@ -135,6 +138,36 @@ jobs:
           echo "VERSION_TAG=$VERSION_TAG" >> "$GITHUB_ENV"
           echo "IPA_NAME=$IPA_NAME" >> "$GITHUB_ENV"
           ls -lh "$IPA_NAME"
+
+      - name: Extract Error Summary for Mobile & Export
+        if: always()
+        run: |
+          {
+            echo "=== DSNovel CI Error & Failure Summary (Run #${{ github.run_number }}) ==="
+            for f in ci-logs/xcodebuild-test.log ci-logs/xcodebuild-release.log; do
+              if [ -f "$f" ]; then
+                echo ""
+                echo "--- $f ---"
+                grep -nE ": error:|fatal error:|\*\* TEST FAILED \*\*|\*\* BUILD FAILED \*\*|Test Case .* failed" "$f" -C 2 | head -n 200 || echo "(no error lines matched)"
+              fi
+            done
+          } > ci-logs/errors-summary.txt
+
+          {
+            echo "### 构建报错精简摘要 (Run #${{ github.run_number }})"
+            echo '```text'
+            head -n 120 ci-logs/errors-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Build & Error Logs Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSNovel-ci-logs-b${{ github.run_number }}
+          path: ci-logs/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload Unsigned IPA Artifact
         uses: actions/upload-artifact@v4
