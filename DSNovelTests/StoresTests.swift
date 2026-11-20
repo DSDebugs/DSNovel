@@ -396,9 +396,9 @@ final class StoresTests: XCTestCase {
         let g2 = try XCTUnwrap(store.createGroup(named: "精品有声"))
         XCTAssertNil(store.createGroup(named: "主力听书")) // 重名拦截
 
-        let p1 = PluginRecord(id: "p1", packageID: "pkg", name: "番茄畅听", version: "1.0", isEnabled: true, discoverable: true, groupID: g1.id, order: 0)
-        let p2 = PluginRecord(id: "p2", packageID: "pkg", name: "喜马拉雅", version: "1.0", isEnabled: true, discoverable: true, groupID: g1.id, order: 1)
-        let p3 = PluginRecord(id: "p3", packageID: "pkg", name: "云图有声", version: "1.0", isEnabled: true, discoverable: true, groupID: g2.id, order: 0)
+        let p1 = PluginRecord(id: "p1", packageID: "pkg", name: "番茄畅听", version: "1.0", groupID: g1.id, order: 0, isEnabled: true, discoverable: true)
+        let p2 = PluginRecord(id: "p2", packageID: "pkg", name: "喜马拉雅", version: "1.0", groupID: g1.id, order: 1, isEnabled: true, discoverable: true)
+        let p3 = PluginRecord(id: "p3", packageID: "pkg", name: "云图有声", version: "1.0", groupID: g2.id, order: 0, isEnabled: true, discoverable: true)
         ctx.insert(p1); ctx.insert(p2); ctx.insert(p3)
         try ctx.save()
         store.refreshNow()
