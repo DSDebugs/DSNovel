@@ -251,7 +251,7 @@ final class ComprehensiveTaskCardTests: XCTestCase {
         let cleaned = BookDetailModel.cleanHTML(raw)
         XCTAssertFalse(cleaned.contains("<p>"))
         XCTAssertTrue(cleaned.contains("第一段 内容"))
-        XCTAssertTrue(cleaned.contains("第二段"引用""))
+        XCTAssertTrue(cleaned.contains("第二段\"引用\""))
     }
 
     func testT4_5_NextChapterAvailabilityStates() {

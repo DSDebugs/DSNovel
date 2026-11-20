@@ -777,14 +777,14 @@ enum PlayerAudioPipeline {
             process: dsAudioTapProcess
         )
 
-        var tapOut: Unmanaged<MTAudioProcessingTap>?
+        var tapOut: MTAudioProcessingTap?
         let status = MTAudioProcessingTapCreate(
             kCFAllocatorDefault,
             &callbacks,
             kMTAudioProcessingTapCreationFlag_PreEffects,
             &tapOut
         )
-        guard status == noErr, let tap = tapOut?.takeRetainedValue() else {
+        guard status == noErr, let tap = tapOut else {
             Unmanaged<AudioTapDSPContext>.fromOpaque(retainedClientInfo).release()
             return nil
         }
