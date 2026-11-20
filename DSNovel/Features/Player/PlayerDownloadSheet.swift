@@ -24,7 +24,7 @@ struct PlayerDownloadSheet: View {
         self.onClose = onClose
         let curOneBased = max(1, player.currentChapterOneBasedIndex)
         let total = max(1, player.chapterQueue.count)
-        let targetBookID = player.currentBookID
+        let targetBookID = player.currentBookID ?? ""
         self._allItems = Query(
             filter: #Predicate<DownloadItem> { $0.bookID == targetBookID },
             sort: [SortDescriptor(\DownloadItem.createdAt, order: .reverse)]
