@@ -1,0 +1,227 @@
+import Accelerate
+import AVFoundation
+import Foundation
+
+/// AudioTapProcessor 底层 biquad 系数计算、实时 PCM 渲染与白盒离线单测扩展（拆分保持单文件 <= 385 行）
+extension AudioTapProcessor {
+    final class BiquadHolder: @unchecked Sendable {
+        let setup: vDSP_biquad_Setup?
+        let sampleRate: Double
+        let gainsDB: [Float]
+
+        init(gainsDB: [Float], sampleRate: Double) {
+            self.gainsDB = gainsDB
+            self.sampleRate = max(8_000, sampleRate)
+            let coeffs = Self.computePeakingCoefficients(gainsDB: gainsDB, sampleRate: self.sampleRate)
+            self.setup = vDSP_biquad_CreateSetup(coeffs, vDSP_Length(AudioDSPParameters.centerFrequencies.count))
+        }
+
+        deinit {
+            if let s = setup { vDSP_biquad_DestroySetup(s) }
+        }
+
+        static func computePeakingCoefficients(gainsDB: [Float], sampleRate: Double) -> [Double] {
+            let sr = max(8_000, sampleRate)
+            var out: [Double] = []
+            out.reserveCapacity(gainsDB.count * 5)
+            for (idx, gainDB) in gainsDB.enumerated() {
+                let f0 = AudioDSPParameters.centerFrequencies[idx]
+                let a = pow(10.0, Double(gainDB) / 40.0)
+                let w0 = 2.0 * Double.pi * min(f0, sr * 0.45) / sr
+                let alpha = sin(w0) / 2.4
+                let cosW0 = cos(w0)
+                let b0 = 1.0 + alpha * a, b1 = -2.0 * cosW0, b2 = 1.0 - alpha * a
+                let a0 = 1.0 + alpha / a, a1 = -2.0 * cosW0, a2 = 1.0 - alpha / a
+                out.append(contentsOf: [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0])
+            }
+            return out
+        }
+    }
+
+    static func processAudioBufferList(
+        _ bufferListInOut: UnsafeMutablePointer<AudioBufferList>,
+        frames: Int,
+        format: FormatState,
+        params: AudioDSPParameters,
+        setup: vDSP_biquad_Setup?,
+        delayLeft: inout [Float],
+        delayRight: inout [Float],
+        levelingGain: inout Float
+    ) -> Bool {
+        let boostLinear: Float = params.volumeBoostDB > 0.05 ? powf(10.0, params.volumeBoostDB / 20.0) : 1.0
+        let baseGain = params.fadeGain * boostLinear
+        let leftGain = baseGain * (params.stereoBalance > 0 ? (1.0 - params.stereoBalance) : 1.0)
+        let rightGain = baseGain * (params.stereoBalance < 0 ? (1.0 + params.stereoBalance) : 1.0)
+        let abl = UnsafeMutableAudioBufferListPointer(bufferListInOut)
+
+        if format.isNonInterleaved {
+            var detectedNonFinite = false
+            let isMono = abl.count == 1
+            let requiredBytes = frames * MemoryLayout<Float>.size
+            for (chIdx, buf) in abl.enumerated() {
+                guard let mData = buf.mData, Int(buf.mDataByteSize) >= requiredBytes else { continue }
+                let samples = mData.assumingMemoryBound(to: Float.self)
+                if sanitizeNonFiniteInputs(samples, count: frames) {
+                    detectedNonFinite = true
+                }
+                if let s = setup {
+                    if chIdx == 0 {
+                        vDSP_biquad(s, &delayLeft, samples, 1, samples, 1, vDSP_Length(frames))
+                    } else if chIdx == 1 {
+                        vDSP_biquad(s, &delayRight, samples, 1, samples, 1, vDSP_Length(frames))
+                    }
+                }
+                if params.dynamicLevelingEnabled && chIdx == 0 {
+                    updateDynamicLevelingGain(samples: samples, count: frames, stride: 1, currentGain: &levelingGain)
+                }
+                var gain = (isMono ? baseGain : ((chIdx == 0) ? leftGain : rightGain)) * (params.dynamicLevelingEnabled ? levelingGain : 1.0)
+                if abs(gain - 1.0) > 0.001 {
+                    vDSP_vsmul(samples, 1, &gain, samples, 1, vDSP_Length(frames))
+                }
+                if sanitizeAndClip(samples, count: frames, stride: 1) {
+                    detectedNonFinite = true
+                }
+            }
+            return detectedNonFinite
+        } else if let buf = abl.first, let mData = buf.mData {
+            let channels = max(1, format.channelsPerFrame)
+            if Int(buf.mDataByteSize) >= frames * channels * MemoryLayout<Float>.size {
+                return processInterleavedPCM(
+                    samples: mData.assumingMemoryBound(to: Float.self),
+                    frames: frames,
+                    channels: channels,
+                    params: params,
+                    setup: setup,
+                    delayLeft: &delayLeft,
+                    delayRight: &delayRight,
+                    levelingGain: &levelingGain
+                )
+            }
+        }
+        return false
+    }
+
+    /// 供白盒单元测试离线下验证与实时回调完全一致的 biquad EQ / 增益 / 单声道保护 / 限幅 / NaN 防护逻辑
+    internal func processOfflinePCMForTesting(samples: inout [Float], channelCount: Int, sampleRate: Double) {
+        let channels = max(1, channelCount)
+        let frames = samples.count / channels
+        guard frames > 0 else { return }
+
+        let (ctx, fallbackParams) = contextLock.withLock { (activeContext, latestParams) }
+        let params = ctx?.currentSnapshot().params ?? fallbackParams
+        let holder = BiquadHolder(gainsDB: params.bandGainsDB, sampleRate: sampleRate)
+        var delayLeft: [Float] = Array(repeating: 0, count: 14)
+        var delayRight: [Float] = Array(repeating: 0, count: 14)
+        var levelingGain: Float = 1.0
+
+        samples.withUnsafeMutableBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            _ = Self.processInterleavedPCM(
+                samples: base, frames: frames, channels: channels,
+                params: params, setup: holder.setup,
+                delayLeft: &delayLeft, delayRight: &delayRight,
+                levelingGain: &levelingGain
+            )
+        }
+    }
+
+    static func processInterleavedPCM(
+        samples: UnsafeMutablePointer<Float>,
+        frames: Int,
+        channels: Int,
+        params: AudioDSPParameters,
+        setup: vDSP_biquad_Setup?,
+        delayLeft: inout [Float],
+        delayRight: inout [Float],
+        levelingGain: inout Float
+    ) -> Bool {
+        let boostLinear: Float = params.volumeBoostDB > 0.05 ? powf(10.0, params.volumeBoostDB / 20.0) : 1.0
+        let baseGain = params.fadeGain * boostLinear
+        let isMono = channels == 1
+        let leftGain = isMono ? baseGain : baseGain * (params.stereoBalance > 0 ? (1.0 - params.stereoBalance) : 1.0)
+        let rightGain = baseGain * (params.stereoBalance < 0 ? (1.0 + params.stereoBalance) : 1.0)
+        let stride = vDSP_Stride(channels)
+        let inputHadNonFinite = sanitizeNonFiniteInputs(samples, count: frames * channels)
+
+        if let s = setup {
+            vDSP_biquad(s, &delayLeft, samples, stride, samples, stride, vDSP_Length(frames))
+            if channels >= 2 {
+                let rightPtr = samples.advanced(by: 1)
+                vDSP_biquad(s, &delayRight, rightPtr, stride, rightPtr, stride, vDSP_Length(frames))
+            }
+        }
+        if params.dynamicLevelingEnabled {
+            updateDynamicLevelingGain(samples: samples, count: frames, stride: Int(stride), currentGain: &levelingGain)
+        }
+        let dynFactor: Float = params.dynamicLevelingEnabled ? levelingGain : 1.0
+        var lGain = leftGain * dynFactor
+        if abs(lGain - 1.0) > 0.001 {
+            vDSP_vsmul(samples, stride, &lGain, samples, stride, vDSP_Length(frames))
+        }
+        if channels >= 2 {
+            let rightPtr = samples.advanced(by: 1)
+            var rGain = rightGain * dynFactor
+            if abs(rGain - 1.0) > 0.001 {
+                vDSP_vsmul(rightPtr, stride, &rGain, rightPtr, stride, vDSP_Length(frames))
+            }
+        }
+        let postNonFinite = sanitizeAndClip(samples, count: frames * channels, stride: 1)
+        return inputHadNonFinite || postNonFinite
+    }
+
+    private static func sanitizeNonFiniteInputs(_ samples: UnsafeMutablePointer<Float>, count: Int) -> Bool {
+        var found = false
+        for i in 0..<count where !samples[i].isFinite {
+            samples[i] = 0
+            found = true
+        }
+        return found
+    }
+
+    /// 实时 RMS 包络软压缩器（防爆音动态均衡：快速压制突发巨响，温和抬升轻声旁白）
+    private static func updateDynamicLevelingGain(
+        samples: UnsafeMutablePointer<Float>,
+        count: Int,
+        stride: Int,
+        currentGain: inout Float
+    ) {
+        guard count > 0 else { return }
+        var sumSq: Float = 0
+        for i in 0..<count {
+            let v = samples[i * stride]
+            if v.isFinite { sumSq += v * v }
+        }
+        let rms = sqrtf(sumSq / Float(count))
+        guard rms > 0.004 else {
+            currentGain += (1.0 - currentGain) * 0.03
+            return
+        }
+        let targetRMS: Float = 0.16
+        let desired = min(2.0, max(0.35, targetRMS / rms))
+        let coeff: Float = desired < currentGain ? 0.30 : 0.04
+        currentGain += (desired - currentGain) * coeff
+        if !currentGain.isFinite { currentGain = 1.0 }
+    }
+
+    /// 平滑软膝限幅（0.85 起软饱和至 <1.0，杜绝高增益硬截断破音）与 NaN 防护
+    static func sanitizeAndClip(_ ptr: UnsafeMutablePointer<Float>, count: Int, stride: vDSP_Stride) -> Bool {
+        var foundNonFinite = false
+        let step = Int(stride)
+        let knee: Float = 0.85
+        let headroom: Float = 0.15
+        var idx = 0
+        for _ in 0..<count {
+            let v = ptr[idx]
+            if !v.isFinite {
+                ptr[idx] = 0
+                foundNonFinite = true
+            } else if v > knee {
+                ptr[idx] = knee + headroom * tanhf((v - knee) / headroom)
+            } else if v < -knee {
+                ptr[idx] = -(knee + headroom * tanhf((-v - knee) / headroom))
+            }
+            idx += step
+        }
+        return foundNonFinite
+    }
+}
