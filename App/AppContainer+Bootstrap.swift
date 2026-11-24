@@ -1,0 +1,44 @@
+import DSStorage
+import Foundation
+
+extension AppContainer {
+    static func bootstrapStorage(inMemoryOnly: Bool, storageDir: URL) throws -> StorageBootstrapResult {
+        if inMemoryOnly {
+            let mem = try StorageContainerFactory.makeInMemory()
+            return StorageBootstrapResult(
+                container: mem,
+                storeURL: storageDir.appendingPathComponent("DSNovelV3-Memory.store"),
+                isDegradedInMemory: false,
+                startupErrorDescription: nil
+            )
+        }
+        do {
+            return try StorageContainerFactory.makePersistent(baseDirectory: storageDir)
+        } catch {
+            let mem = try StorageContainerFactory.makeInMemory()
+            return StorageBootstrapResult(
+                container: mem,
+                storeURL: storageDir.appendingPathComponent("DSNovelV3.store"),
+                isDegradedInMemory: true,
+                startupErrorDescription: "无法创建持久化存储，已降级为内存恢复模式：\(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// P1-19：将大体积音频下载与可再生缓存目录排除出 iCloud / 设备备份
+    static func excludeCachesFromBackup(baseDir: URL) {
+        for name in ["Downloads", "ChapterCache", "PluginCache"] {
+            var dirURL = baseDir.appendingPathComponent(name, isDirectory: true)
+            try? FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? dirURL.setResourceValues(values)
+        }
+    }
+
+    static func loadBundledResource(named name: String, ext: String) -> String {
+        guard let url = Bundle.main.url(forResource: name, withExtension: ext),
+              let content = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return content
+    }
+}
